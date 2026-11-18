@@ -1414,6 +1414,27 @@ albedo by the attributed irradiance and clamps the output channels.
 Pass `undefined` to use the fallback. The override can change independently
 of the original model, material palette, and recorded lighting values.
 
+### Pixel art direction and surface paint
+
+`KIT.pixel.direct(material, { pattern, edges, quiet })` makes a material variant.
+Set `pattern: false` for a plain lit fill, `edges: false` to suppress that
+material's pixel outlines, or `quiet` between 0 and 1 to compress the lighting
+toward the middle of the palette ramp. Geometry and sampling use the original
+material settings. Apply variants to broad surfaces and leave details such as
+shingles and edge sprites on their own material.
+
+`KIT.pixel.surfacePaint.chart(id, origin, u, v, columns, rows)` describes a
+named planar surface. The cross product of the extent vectors `u` and `v`
+points outward. Attach the charts as `paintSurfaces` in world metadata. A
+paint document addresses colors as `[surfaceId, column, row, paletteIndex]`.
+Keep the ID and cell counts when resizing or moving the surface. The renderer
+projects the saved cells onto the current frame. A missing surface leaves its
+paint dormant until the ID returns.
+
+The CLI renders versioned paint documents in
+`studio/paint/<scene>/surface-paint.json`. Legacy PNG paint-over decals in
+`decals.json` continue to render alongside the surface layer.
+
 ### Paint domains
 
 `KIT.procedural.clipPaintDomain(field, domain, { mode })` limits a resolved

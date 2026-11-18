@@ -712,6 +712,14 @@ function render(world, o) {
           }
           pixed[p] = 1;
         }
+        if (world.paintColor && PIX[i * 8] > 0) {
+          const painted = world.paintColor([HX[p], HY[p], HZ[p]], [PIX[i * 8 + 3], PIX[i * 8 + 4], PIX[i * 8 + 5]]);
+          if (painted >= 0 && PALC[painted]) {
+            for (let channel = 0; channel < 3; channel++) col[p * 3 + channel] = PALC[painted][channel];
+            pixed[p] = 1;
+            continue;
+          }
+        }
         if (!PALC[ci]) continue;
         const base = PALC[ci],
           c = surface?.has(i)

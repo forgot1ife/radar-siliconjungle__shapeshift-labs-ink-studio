@@ -311,7 +311,12 @@ function makeSculpt(B) {
             pz = z - s[2];
           let t = (px * s[3] + py * s[4] + pz * s[5]) / s[6];
           t = t < 0 ? 0 : t > 1 ? 1 : t;
-          const q = Math.hypot(px - s[3] * t, py - s[4] * t, pz - s[5] * t) - (s[7] + (s[8] - s[7]) * t);
+          const dx = px - s[3] * t, dy = py - s[4] * t, dz = pz - s[5] * t;
+          const squared = dx * dx + dy * dy + dz * dz;
+          // Usual scene scales can use a direct norm. Keep the scaled norm
+          // for values whose squares could overflow or lose precision.
+          const distance = squared > 1e-200 && squared < 1e200 ? Math.sqrt(squared) : Math.hypot(dx, dy, dz);
+          const q = distance - (s[7] + (s[8] - s[7]) * t);
           if (q < d) d = q;
         }
         return d;
@@ -437,6 +442,7 @@ function makeSculpt(B) {
   // field just reports MARG, which is all the shadow and occlusion marches need.
   const MARG = 1.0;
   let grid = null,
+    cuts = null,
     always = [],
     gmin = [0, 0, 0],
     gdim = [1, 1, 1],
@@ -477,7 +483,23 @@ function makeSculpt(B) {
             (grid[c] || (grid[c] = [])).push(p);
           }
     }
+    // Subtractors use the same cell lookup as the positive field. Keep their
+    // original order for ties and the full list for queries outside the grid.
+    cuts = neg.length > 4 && neg.every(p => Number.isFinite(p.br) && p.bc.every(Number.isFinite))
+      ? new Array(grid.length) : null;
+    if (cuts) for (const p of neg) {
+      const margin = Math.abs(p.br + 0.5) + 8 * Number.EPSILON * Math.max(1, Math.abs(p.br), ...p.bc.map(Math.abs));
+      const lo = p.bc.map((x, k) => Math.max(0, Math.floor((x - margin - gmin[k]) / CS)));
+      const hi = p.bc.map((x, k) => Math.min(gdim[k] - 1, Math.floor((x + margin - gmin[k]) / CS)));
+      for (let ix = lo[0]; ix <= hi[0]; ix++)
+        for (let iy = lo[1]; iy <= hi[1]; iy++)
+          for (let iz = lo[2]; iz <= hi[2]; iz++) {
+            const c = (ix * gdim[1] + iy) * gdim[2] + iz;
+            (cuts[c] || (cuts[c] = [])).push(p);
+          }
+    }
   }
+  const noCuts = [];
   function field(x, y, z) {
     let d = 1e9,
       gd = 1e9,
@@ -489,8 +511,11 @@ function makeSculpt(B) {
     const ix = Math.floor((x - gmin[0]) / CS),
       iy = Math.floor((y - gmin[1]) / CS),
       iz = Math.floor((z - gmin[2]) / CS);
-    if (ix >= 0 && iy >= 0 && iz >= 0 && ix < gdim[0] && iy < gdim[1] && iz < gdim[2])
-      list = grid[(ix * gdim[1] + iy) * gdim[2] + iz] || always;
+    let cell = -1;
+    if (ix >= 0 && iy >= 0 && iz >= 0 && ix < gdim[0] && iy < gdim[1] && iz < gdim[2]) {
+      cell = (ix * gdim[1] + iy) * gdim[2] + iz;
+      list = grid[cell] || always;
+    }
     for (let i = 0; i < list.length; i++) {
       const p = list[i];
       if (p.g !== cur) {
@@ -533,8 +558,9 @@ function makeSculpt(B) {
     if (d > MARG) d = MARG;
     own = o;
     ownNeg = null;
-    for (let i = 0; i < neg.length; i++) {
-      const p = neg[i],
+    const subtractors = cuts && cell >= 0 ? cuts[cell] || noCuts : neg;
+    for (let i = 0; i < subtractors.length; i++) {
+      const p = subtractors[i],
         dx = x - p.bc[0],
         dy = y - p.bc[1],
         dz = z - p.bc[2],
@@ -894,6 +920,8 @@ function makeSculpt(B) {
       ramp = r[0];
       t = r[1];
     }
+    const quiet = m.quiet ?? m0.quiet;
+    if (quiet && !m.em) t += (0.5 - t) * quiet;
     if (AA && S.keepAttrs) B.attrNext(AA.curv * res, AA.cav, AA.up, AA.along);
     let ci = ramp[clamp(Math.floor(t * ramp.length), 0, ramp.length - 1)],
       flat = false;
@@ -1537,17 +1565,17 @@ function makeSculpt(B) {
             z -= g3[2] * st;
             d = field(x, y, z);
           }
-          if (Math.abs(d) > res * 0.5) return;
+          if (Math.abs(d) > res * 0.5 || !own) return;
+          // The centered field evaluation already found the material owner.
+          // The three normal probes also query the field, so keep that owner here.
+          const pr = ownNeg && ownNeg.mat.r ? ownNeg : own,
+            m = pr.mat;
+          if (!m.r || m.skip) return;
           grad(x, y, z, d);
           const nx = g3[0],
             ny = g3[1],
             nz = g3[2];
-          field(x, y, z);
-          if (!own) return;
-          const m = ownNeg && ownNeg.mat.r ? ownNeg.mat : own.mat;
-          if (!m.r || m.skip) return;
           if (S.capture) {
-            const pr = ownNeg && ownNeg.mat.r ? ownNeg : own;
             let occ = 0,
               w = 1;
             for (let j = 1; j <= 3; j++) {
@@ -1559,10 +1587,9 @@ function makeSculpt(B) {
             return;
           }
           if (S.merge && merged(x, y, z, res, m)) return;
-          curP = ownNeg && ownNeg.mat.r ? ownNeg : own;
+          curP = pr;
           if (S.emit) {
-            const pr = curP,
-              n0 = B.count();
+            const n0 = B.count();
             light(m, res, x, y, z, nx, ny, nz, true);
             S.emit(pr, n0, B.count());
           } else light(m, res, x, y, z, nx, ny, nz, true);

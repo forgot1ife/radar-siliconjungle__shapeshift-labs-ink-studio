@@ -865,13 +865,16 @@ function makeBuilder(seed, hex) {
     /* paint-over decals (ink-studio paint): pixels painted over a view of the diorama, each pinned where it fell on the surface, as a
        flat dab one pixel across of that palette colour just in front of it. Whatever builds the diorama puts its decals in
        INK_DECAL_NEXT as [x, y, z, nx, ny, nz, palette index] (the game's build embeds them as INK_PAINT, by diorama) */
-    const dec = typeof globalThis !== 'undefined' ? globalThis.INK_DECAL_NEXT : null;
-    if (dec && dec.length) {
+    const paint = typeof globalThis !== 'undefined' ? globalThis.INK_DECAL_NEXT : null;
+    let surfacePaint;
+    if (paint) {
       globalThis.INK_DECAL_NEXT = null;
       const px = 1 / ((meta && meta.detail) || 12);
-      for (const [x, y, z, nx, ny, nz, c] of dec)
+      const dec = Array.isArray(paint) ? paint : paint.decals || [];
+      if (!Array.isArray(paint)) surfacePaint = KIT.pixel.surfacePaint.read(paint.surfacePaint || paint);
+      for (const [x, y, z, nx, ny, nz, c, size = px] of dec)
         if (P[c])
-          disc(x + nx * px * 0.3, y + ny * px * 0.3, z + nz * px * 0.3, [nx, ny, nz], px * 0.6, px * 0.12, P[c], 3);
+          disc(x + nx * size * 0.3, y + ny * size * 0.3, z + nz * size * 0.3, [nx, ny, nz], size * 0.6, size * 0.12, P[c], 3);
     }
     return Object.assign(
       {
@@ -883,6 +886,7 @@ function makeBuilder(seed, hex) {
         rampOff: pix ? rampOff.slice() : undefined,
         pats: pix ? pats.slice() : undefined,
         ...(surfaceData ? { surfaceData: surfaceData.slice(0, n * SurfaceLook.STRIDE), surfaces: surfaces.slice() } : {}),
+        ...(surfacePaint ? { surfacePaint } : {}),
         fine: fine
           ? fine.length >= n * 12
             ? fine.subarray(0, n * 12)

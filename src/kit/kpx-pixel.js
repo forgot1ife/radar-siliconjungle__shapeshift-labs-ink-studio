@@ -121,6 +121,18 @@
   const step = (ramp, b, d) => ramp[Math.max(0, Math.min(ramp.length - 1, b + d))];
 
   K.pixel = { worley: (x, y, z, cell, seed) => worley(x, y, z, cell, seed || 1).slice() };
+  /* Art direction without changing geometry or sampling. Suppressing a pattern
+     keeps the material's lighting ramp. Edges are an independent choice. */
+  K.pixel.direct = (material, { pattern = true, edges, quiet } = {}) => {
+    if (quiet !== undefined && (!Number.isFinite(quiet) || quiet < 0 || quiet > 1))
+      throw new RangeError('quiet must be between zero and one');
+    return {
+      ...material,
+      ...(pattern ? {} : { pat: null, tex: null }),
+      ...(edges === undefined ? {} : { line: edges }),
+      ...(quiet === undefined ? {} : { quiet })
+    };
+  };
   // what a material is, as plain data (no functions, no pixel size): enough to make its pattern again, per pixel
   const spec = (kind, o) => ({
     kind,

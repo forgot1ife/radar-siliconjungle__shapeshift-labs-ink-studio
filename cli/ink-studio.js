@@ -112,10 +112,16 @@ function build(id) {
   if (opt.fine) globalThis.INK_FINE = true; // inked detail: dabs are baked with a tile of the surface under them
   const s = scene(id);
   // Load paint by scene ID so rendering the same file from another path finds its decals.
-  const decalFile = path.join(paintDirectory(s.id), 'decals.json');
-  globalThis.INK_DECAL_NEXT = fs.existsSync(decalFile)
+  const decalFile = path.join(paintDirectory(s.id), 'decals.json'),
+    surfaceFile = path.join(paintDirectory(s.id), 'surface-paint.json'),
+    embedded = (globalThis.INK_PAINT || {})[s.id],
+    decals = fs.existsSync(decalFile)
     ? JSON.parse(fs.readFileSync(decalFile, 'utf8')).decals
-    : (globalThis.INK_PAINT || {})[s.id] || null;
+    : Array.isArray(embedded) ? embedded : embedded?.decals;
+  const surfacePaint = fs.existsSync(surfaceFile)
+    ? JSON.parse(fs.readFileSync(surfaceFile, 'utf8'))
+    : embedded?.surfacePaint;
+  globalThis.INK_DECAL_NEXT = surfacePaint ? { decals, surfacePaint } : decals || null;
   const t0 = Date.now(),
     seed = opt.seed === undefined ? s.seed : +opt.seed;
   let w = s.build(seed);
@@ -127,6 +133,10 @@ function build(id) {
       (w.pixView = lib().KIT.pixel.VIEW),
       (w.pixUnfold = lib().KIT.pixel.unfold),
       (w.pixAnchors = lib().KIT.pixel.anchors)); // (colour per pixel: its patterns, to be called for each pixel; where edge sprites stand)
+  if (w.surfacePaint?.dabs.length) {
+    const { atlas, colorAt } = lib().KIT.pixel.surfacePaint, layer = atlas(w.surfacePaint, w.paintSurfaces);
+    w.paintColor = (position, normal) => colorAt(layer, position, normal);
+  }
   w.buildMs = Date.now() - t0;
   w.id = s.id;
   w.name = s.name;

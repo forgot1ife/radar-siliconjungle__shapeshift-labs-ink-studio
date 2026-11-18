@@ -256,7 +256,9 @@
     r = Math.min(r, w, h);
     const qx = Math.abs(u) - w + r,
       qy = Math.abs(v) - h + r;
-    return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
+    // The norm is only needed outside both sides of the rounded corner.
+    if (qx <= 0 || qy <= 0) return Math.max(qx, qy) - r;
+    return Math.hypot(qx, qy) - r;
   };
   K.sweep = (S, pts, pf, mat, o) => {
     o = o || {};
@@ -272,8 +274,8 @@
           k = Math.min(63, Math.floor(q));
         return T[k] + (T[k + 1] - T[k]) * (q - k);
       },
-      W = t => tab(WT, t),
-      H = t => tab(HT, t),
+      W = typeof pf.w === 'function' ? t => tab(WT, t) : () => WT[0],
+      H = typeof pf.h === 'function' ? t => tab(HT, t) : () => HT[0],
       shape = pf.shape || 'flat',
       fold = pf.fold || 0,
       cup = pf.cup || 0,
@@ -344,14 +346,18 @@
         dx * dx + dy * dy + dz * dz || 1e-12,
         ...f0.N,
         ...f0.B,
-        ...f1.N,
-        ...f1.B,
+        f1.N[0] - f0.N[0],
+        f1.N[1] - f0.N[1],
+        f1.N[2] - f0.N[2],
+        f1.B[0] - f0.B[0],
+        f1.B[1] - f0.B[1],
+        f1.B[2] - f0.B[2],
         cum[i] / (L || 1),
-        cum[i + 1] / (L || 1)
+        cum[i + 1] / (L || 1),
+        Math.sqrt(dx * dx + dy * dy + dz * dz || 1e-12)
       ]);
     }
-    let NI = 0,
-      NF = 0;
+    let NI = 0, NF = 0, RX = 0, RY = 0, RZ = 0;
     // where along the curve a point is nearest: which segment (NI) and how far along it (NF)
     const near = (x, y, z) => {
       let best = 1e18;
@@ -363,7 +369,14 @@
           ey = y - g[1] - g[4] * f,
           ez = z - g[2] - g[5] * f,
           d2 = ex * ex + ey * ey + ez * ez;
-        if (d2 < best) ((best = d2), (NI = i), (NF = f));
+        if (d2 < best) {
+          best = d2;
+          NI = i;
+          NF = f;
+          RX = ex;
+          RY = ey;
+          RZ = ez;
+        }
       }
     };
     const p = {
@@ -379,26 +392,30 @@
         const g = SEG[NI],
           f = NF,
           // the frame here: the two ends' frames mixed, put square again
-          nx0 = g[7] + (g[13] - g[7]) * f,
-          ny0 = g[8] + (g[14] - g[8]) * f,
-          nz0 = g[9] + (g[15] - g[9]) * f,
-          nl = Math.hypot(nx0, ny0, nz0) || 1,
-          bx0 = g[10] + (g[16] - g[10]) * f,
-          by0 = g[11] + (g[17] - g[11]) * f,
-          bz0 = g[12] + (g[18] - g[12]) * f,
-          bl = Math.hypot(bx0, by0, bz0) || 1,
-          tl = Math.sqrt(g[6]),
-          rx = x - g[0] - g[3] * f,
-          ry = y - g[1] - g[4] * f,
-          rz = z - g[2] - g[5] * f,
-          u = (rx * bx0 + ry * by0 + rz * bz0) / bl,
-          v = (rx * nx0 + ry * ny0 + rz * nz0) / nl,
-          a = (rx * g[3] + ry * g[4] + rz * g[5]) / tl,
+          nx0 = g[7] + g[13] * f,
+          ny0 = g[8] + g[14] * f,
+          nz0 = g[9] + g[15] * f,
+          bx0 = g[10] + g[16] * f,
+          by0 = g[11] + g[17] * f,
+          bz0 = g[12] + g[18] * f,
+          // Frame components come from unit vectors. The direct norm avoids
+          // scaling every query, with a fallback for degenerate blends.
+          nl2 = nx0 * nx0 + ny0 * ny0 + nz0 * nz0,
+          bl2 = bx0 * bx0 + by0 * by0 + bz0 * bz0,
+          nl = nl2 > 1e-20 ? Math.sqrt(nl2) : Math.hypot(nx0, ny0, nz0) || 1,
+          bl = bl2 > 1e-20 ? Math.sqrt(bl2) : Math.hypot(bx0, by0, bz0) || 1,
+          u = (RX * bx0 + RY * by0 + RZ * bz0) / bl,
+          v = (RX * nx0 + RY * ny0 + RZ * nz0) / nl,
           t = g[19] + (g[20] - g[19]) * f,
-          d2 = section(u, v, t),
-          // past an end: how far beyond it, along the curve
-          out = (NI === 0 && f === 0 && a < 0 ? -a : 0) + (NI === SEG.length - 1 && f === 1 && a > 0 ? a : 0);
-        return out > 0 ? Math.hypot(Math.max(d2, 0), out) * safe : d2 * safe;
+          d2 = section(u, v, t);
+        const first = NI === 0 && f === 0,
+          last = NI === SEG.length - 1 && f === 1;
+        if (first || last) {
+          const axial = (RX * g[3] + RY * g[4] + RZ * g[5]) / g[21],
+            out = first ? -axial : axial;
+          if (out > 0) return Math.hypot(Math.max(d2, 0), out) * safe;
+        }
+        return d2 * safe;
       },
       sample(f) {
         const res = this.res,
