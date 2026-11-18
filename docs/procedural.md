@@ -1435,6 +1435,11 @@ The CLI renders versioned paint documents in
 `studio/paint/<scene>/surface-paint.json`. Legacy PNG paint-over decals in
 `decals.json` continue to render alongside the surface layer.
 
+For sweep-heavy scenes, set `S.fastNorm = true` before adding tubes and
+sweeps to use direct square-root norms at ordinary scales. The direct norm
+can differ in the last floating-point bits. Keep the default for existing
+scenes whose procedural selections or simulation depend on exact bakes.
+
 ### Paint domains
 
 `KIT.procedural.clipPaintDomain(field, domain, { mode })` limits a resolved

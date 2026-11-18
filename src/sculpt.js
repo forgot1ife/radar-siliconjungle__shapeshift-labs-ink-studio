@@ -255,6 +255,12 @@ function makeSculpt(B) {
   // limb or branch through a list of points; radius goes r0 -> r1, or is a function of 0..1
   S.tube = (pts, r0, r1, mat, o) => {
     const rf = typeof r0 === 'function' ? r0 : t => r0 + (r1 - r0) * t,
+      length = S.fastNorm
+        ? (x, y, z) => {
+            const squared = x * x + y * y + z * z;
+            return squared > 1e-200 && squared < 1e200 ? Math.sqrt(squared) : Math.hypot(x, y, z);
+          }
+        : Math.hypot,
       segs = [],
       cum = [0];
     let tot = 0,
@@ -311,11 +317,7 @@ function makeSculpt(B) {
             pz = z - s[2];
           let t = (px * s[3] + py * s[4] + pz * s[5]) / s[6];
           t = t < 0 ? 0 : t > 1 ? 1 : t;
-          const dx = px - s[3] * t, dy = py - s[4] * t, dz = pz - s[5] * t;
-          const squared = dx * dx + dy * dy + dz * dz;
-          // Usual scene scales can use a direct norm. Keep the scaled norm
-          // for values whose squares could overflow or lose precision.
-          const distance = squared > 1e-200 && squared < 1e200 ? Math.sqrt(squared) : Math.hypot(dx, dy, dz);
+          const distance = length(px - s[3] * t, py - s[4] * t, pz - s[5] * t);
           const q = distance - (s[7] + (s[8] - s[7]) * t);
           if (q < d) d = q;
         }

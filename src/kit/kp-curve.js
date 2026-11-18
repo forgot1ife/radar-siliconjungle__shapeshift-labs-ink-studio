@@ -283,6 +283,12 @@
       rnd = pf.round === undefined ? 0.3 : pf.round,
       tf = Math.tan(fold),
       safe = fold || cup ? 0.75 : 0.95,
+      frameLength = S.fastNorm
+        ? (x, y, z) => {
+            const squared = x * x + y * y + z * z;
+            return squared > 1e-20 ? Math.sqrt(squared) : Math.hypot(x, y, z);
+          }
+        : Math.hypot,
       F = C.frames(pts, o.up),
       n = F.length,
       cum = [0];
@@ -378,6 +384,12 @@
           RZ = ez;
         }
       }
+      if (best === 1e18) {
+        const g = SEG[NI];
+        RX = x - g[0] - g[3] * NF;
+        RY = y - g[1] - g[4] * NF;
+        RZ = z - g[2] - g[5] * NF;
+      }
     };
     const p = {
       bc: [cx, cy, cz],
@@ -398,12 +410,8 @@
           bx0 = g[10] + g[16] * f,
           by0 = g[11] + g[17] * f,
           bz0 = g[12] + g[18] * f,
-          // Frame components come from unit vectors. The direct norm avoids
-          // scaling every query, with a fallback for degenerate blends.
-          nl2 = nx0 * nx0 + ny0 * ny0 + nz0 * nz0,
-          bl2 = bx0 * bx0 + by0 * by0 + bz0 * bz0,
-          nl = nl2 > 1e-20 ? Math.sqrt(nl2) : Math.hypot(nx0, ny0, nz0) || 1,
-          bl = bl2 > 1e-20 ? Math.sqrt(bl2) : Math.hypot(bx0, by0, bz0) || 1,
+          nl = frameLength(nx0, ny0, nz0) || 1,
+          bl = frameLength(bx0, by0, bz0) || 1,
           u = (RX * bx0 + RY * by0 + RZ * bz0) / bl,
           v = (RX * nx0 + RY * ny0 + RZ * nz0) / nl,
           t = g[19] + (g[20] - g[19]) * f,
