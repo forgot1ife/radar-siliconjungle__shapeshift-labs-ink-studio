@@ -104,6 +104,7 @@ const mesh = P.geometry.toKitMesh(geometry, (owner, material) => [.6, .64, .61])
 | `routes.terrain(start, end, options)` | Bounded, terrain-aware search between pinned points with slope, signed clearance, keep-out regions and turn costs |
 | `hydrology.analyze(height, options)` | Priority-Flood, D8 catchments, stream orders, channel routes, wetness and optional D-infinity flow |
 | `hydrology.breach(basin)`, `hydrology.incise(basin)`, `hydrology.meander(route)`, `hydrology.corridor(routes, height)`, `hydrology.habitat(basin)` | Watershed edits, river migration and cutoff routes, levees, floodplain masks and climate fields |
+| `biomes.create(options)` | Shared XYZ sampling of normalized biome weights, air, solid or water membership, and local conditions |
 | `routes.visibility(start, end, obstacles)`, `routes.spline(route, options)`, `routes.travelTime(sources, options)` | Polygon visibility paths, clearance-tested corner fitting and fast-marching travel-time fields |
 | `geometry.delaunay(points, options)`, `geometry.triangulatePolygon(rings)`, `routes.network(points)`, `routes.steiner(points, edges, terminals)` | Constrained planar triangulation, graph layouts with optional loops, and shared branch networks |
 | `routes.tensor(components)`, `routes.followTensor(field, seeds)`, `routes.growStreets(seeds, options)`, `routes.parcels(outline)`, `routes.medial(rings)` | Directional street systems, connected seeded roads, frontage lots and medial paths |
@@ -1252,6 +1253,76 @@ node cli/ink-studio.js render examples/watershed.js --ortho --colored
 
 `examples/river-processes.js` bakes the same endpoints as a straight channel
 or a migrated river with floodplain vegetation. Seed 1 enables the terrain edits.
+
+### World-space biome queries
+
+`P.biomes.create({fallback, regions, media, solid, conditions})` prepares a
+query for the same world coordinates used by terrain, placement and gameplay.
+It is available through the Node toolkit and browser bundle.
+`sample(x, y, z, time = 0)` returns `{biome, weights, medium, conditions}`.
+`mediumAt(x, y, z, time = 0)` returns the medium alone and skips biome and
+condition sampling.
+
+- Each region has a unique `id`, inclusive XYZ `bounds: {min, max}`, and
+  an optional `biome` ID that defaults to the region ID. `weight` defaults
+  to 1 and accepts a number in [0, 1] or a callback
+  `(x, y, z, time, conditions, medium)`. Overlapping regions of the same
+  biome contribute their maximum. The fallback (default ID `default`)
+  fills any weight left below a total of 1. Totals above 1 are normalized.
+  The result lists positive `{id, weight}` entries from highest to lowest,
+  with ties resolved by ID. `biome` is the first ID in that list.
+- Each medium has a unique `id`, inclusive XYZ `bounds`, and `kind` of
+  `water` or `air`. Its optional `sdf(x, y, z, time)` restricts its
+  interior to negative samples. Water also requires a `surface` height
+  (a number or `(x, z, time)`) and occupies points strictly below it.
+  Its `current` is an optional XYZ velocity or `(x, y, z, time)` callback.
+  Overlapping media resolve by highest integer `priority` (default 0)
+  and then by ascending ID. Use an air volume of higher priority for a
+  pocket inside water.
+- A negative sample from the optional `solid(x, y, z, time)` terrain
+  field takes precedence over all media. Open space defaults to air.
+  `medium` returns `{kind, id, surface, depth, current}`. Water depth is
+  the vertical distance below the selected surface. Open air and solid
+  have a null ID. All non-water samples have a null surface, zero depth
+  and zero current.
+- `conditions(x, y, z, time, medium)` can return a record of finite scalar
+  values such as moisture, exposure and temperature. A nullish result
+  supplies an empty record. Both the returned condition record and the
+  medium are read-only. Use `hydrology.habitat(...).sample(x, z)` as an input
+  for open terrain, or return a different profile inside sheltered volumes.
+
+Use conservative bounds covering a region's full blend and a medium's
+full extent over the sampled time range. The query captures definitions
+and bounds when created and skips region and medium callbacks outside their
+bounds. Supply deterministic callbacks and the same definitions, world
+coordinates and time to adjacent chunks. Create a new query when editing
+the definitions or changing their bounds. A callback can sample external
+fields, so their revision must stay consistent across consumers.
+
+```js
+const bounds = { min: [-2, -6, -2], max: [2, -2, 2] };
+const cave = (x, y, z) => Math.hypot(x, y + 4, z) - 2;
+const world = P.biomes.create({
+  fallback: 'forest',
+  solid: (x, y, z) => Math.max(y, -cave(x, y, z)),
+  conditions: (x, y, z, time, medium) => ({
+    moisture: medium.kind === 'water' ? 1 : 0.3,
+    exposure: y >= 0 ? 1 : 0
+  }),
+  regions: [{ id: 'cavern', bounds, weight: (x, y, z) => Number(cave(x, y, z) < 0) }],
+  media: [
+    { id: 'aquifer', kind: 'water', bounds, sdf: cave, surface: -3, current: [0.3, 0, 0] },
+    { id: 'air-pocket', kind: 'air', priority: 1, bounds,
+      sdf: (x, y, z) => Math.hypot(x, y + 3.5, z) - 0.25 }
+  ]
+});
+world.sample(0, 1, 0);       // forest, air
+world.sample(0, -4, 0);      // cavern, water with depth 1
+world.mediumAt(0, -3.5, 0); // air pocket within the cavern
+```
+
+In [river-processes.js](../examples/river-processes.js), the same biome query
+drives the ground's splat palette and the placement of floodplain reeds.
 
 ### Stable spacing and finite Poisson sampling
 

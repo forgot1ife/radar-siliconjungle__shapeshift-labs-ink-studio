@@ -30,6 +30,16 @@ module.exports = ({ makeBuilder, makeSculpt, KIT: K }) => ({
       climate = H.habitat(raw, { wind: [1, 0.3], waterDistance: distance, waterRange: 0.65, humidity: 0.5 }),
       wet = K.tab2((x, z) => banks.floodplain(x, z) * 0.75 + (climate.sample(x, z)?.moisture ?? 0) * 0.38,
         [-5.2, 5.2, -3.45, 3.45], 0.115);
+    const biomes = P.biomes.create({
+      fallback: 'alluvium',
+      conditions: (x, y, z) => ({ moisture: Math.min(1, wet(x, z)) }),
+      regions: advanced ? [{
+        id: 'floodplain',
+        bounds: { min: [-5.2, -2, -3.45], max: [5.2, 3, 3.45] },
+        weight: (x, y, z, time, { moisture }) => Math.min(1, moisture + 0.07)
+      }] : []
+    });
+    const isFloodplain = (x, y, z) => advanced && biomes.sample(x, y, z).biome === 'floodplain';
     const y = K.tab2((x, z) => {
       const { river, distance = Infinity, levee } = banks.sample(x, z),
         soil = eroded(x, z) + (advanced ? levee : 0);
@@ -41,7 +51,7 @@ module.exports = ({ makeBuilder, makeSculpt, KIT: K }) => ({
       r: [1, 2, 3, 4, 5],
       mod: (x, y, z) => (B.n3(x * 3, y * 2, z * 3) - 0.5) * 0.27,
       tex(x, y, z, ny, t) {
-        if (advanced && wet(x, z) > 0.43 && distance(x, z) > 0.31) return S.pick([6, 7, 8, 9], t);
+        if (isFloodplain(x, y, z) && distance(x, z) > 0.31) return S.pick([6, 7, 8, 9], t);
       }
     };
     S.ground(land, {
@@ -57,7 +67,7 @@ module.exports = ({ makeBuilder, makeSculpt, KIT: K }) => ({
       const x = (dice() * 2 - 1) * 4.55, z = (dice() * 2 - 1) * 2.9,
         d = distance(x, z), chance = dice(), h = y(x, z);
       if (d < 0.34 || Math.hypot(x / 4.8, z / 3.1) > 1) continue;
-      if (advanced && wet(x, z) > 0.43 && chance < 0.64) {
+      if (chance < 0.64 && isFloodplain(x, h, z)) {
         for (let k = -1; k <= 1; k++) {
           const a = [x + k * 0.028, h, z], p = [x + k * 0.057, h + 0.16 + 0.09 * dice(), z + 0.042];
           S.tube([a, p], 0.026, 0.013, reeds, { res: 0.056 });
