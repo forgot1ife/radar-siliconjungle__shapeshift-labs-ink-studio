@@ -107,6 +107,7 @@ const mesh = P.geometry.toKitMesh(geometry, (owner, material) => [.6, .64, .61])
 | `biomes.create(options)` | Shared XYZ sampling of normalized biome weights, air, solid or water membership, and local conditions |
 | `waterBodies.create(options)`, `waterBodies.fromShallowWater(snapshot, options)`, `waterBodies.scene(bodies)` | Water frames shared by shoreline placement, current and depth queries, and WebGL visibility |
 | `biomeRecipes.create(options)` | Retained biome recipes, brush strokes, placement pins, and explained habitat and population queries |
+| `biomeWorld.create(options)` | Headless chunk realization with sampled terrain and cave collision, traversal, placements, splats, and local rebuilds |
 | `routes.visibility(start, end, obstacles)`, `routes.spline(route, options)`, `routes.travelTime(sources, options)` | Polygon visibility paths, clearance-tested corner fitting and fast-marching travel-time fields |
 | `geometry.delaunay(points, options)`, `geometry.triangulatePolygon(rings)`, `routes.network(points)`, `routes.steiner(points, edges, terminals)` | Constrained planar triangulation, graph layouts with optional loops, and shared branch networks |
 | `routes.tensor(components)`, `routes.followTensor(field, seeds)`, `routes.growStreets(seeds, options)`, `routes.parcels(outline)`, `routes.medial(rings)` | Directional street systems, connected seeded roads, frontage lots and medial paths |
@@ -1375,9 +1376,17 @@ const eyesMedium = environment.mediumAt(...eyePosition);
   advances. Previous frames remain readable.
 - A scene supports up to eight bodies with distinct IDs and nonoverlapping
   XYZ bounding interiors. Bodies can sit at different heights at the same XZ.
-  Set each column's bed and surface to describe the wet interval. Keep
-  arbitrary solid or air SDF overrides in mind when authoring water geometry,
-  since an override to the biome query alone does not carve the WebGL volume.
+  Set each column's bed and surface to describe the wet interval.
+- `W.scene(bodies, {airPockets: [{id, bounds}, ...]})` accepts up to eight
+  axis-aligned XYZ air pockets. Their strict interiors override water
+  membership and subtract dry intervals from the WebGL light path. Overlapping
+  pockets subtract their union. The body surface still drives ripples, foam
+  and refraction. Use the scene's `media` to share the same pocket geometry
+  with the biome query.
+- `next.changesFrom(previous)` returns conservative dirty bounds for
+  physical column or pocket changes. An unchanged grid gets one bounding
+  box over the modified columns. Optics-only edits use the new render
+  snapshot directly.
 
 ### Retained biome recipes
 
@@ -1465,6 +1474,67 @@ view.inspect(-3, 0.5, 3);                        // marsh moisture and elevation
 view.inspect(7, -2, 3, { species: 'kelp' });       // kelp blocked by low water clarity
 view.inspect(7, -9, 3, { species: 'glow-moss' });  // cave pool at the same XZ
 ```
+
+### Headless biome world realization
+
+`P.biomeWorld.create({height, caves, cell, chunkCells, verticalCells,
+terrainSlope, layers, project, emit, palette, dependencyHalo, maxSplats})`
+realizes a retained biome recipe view against caller-supplied terrain.
+The [headless coast example](../examples/biome-world.js) walks from a ridge
+through a marsh, dives through a flooded passage, and surfaces in an
+underground air pocket. It uses one water snapshot for each tide revision.
+
+```js
+const { KIT } = require('.').load();
+const coast = require('./examples/biome-world')(KIT);
+const { compiler, author, indices } = coast;
+const frame = compiler.prepare(author.view(), { water: coast.water(0.38) });
+await compiler.update(frame, indices);
+const world = compiler.makeWorld(frame, compiler.chunks());
+const trip = frame.traceRoute(coast.itinerary(frame));
+```
+
+- The carrier `height(x,z)` plus the recipe's blended height offset gives
+  the terrain. Each cave supplies `{bounds, sdf(x,y,z)}` with negative values
+  inside the carve and conservative bounds. The frame's `heightAt`,
+  `distance` and `supports` use the same solid field as the chunk bake.
+  `terrainSlope` bounds the realized terrain grade for conservative
+  distance queries. For a valid distance field, `traceRoute` reserves half
+  a sample stride past the requested sphere radius and reports medium changes
+  or the first sample that fails clearance. Use `frame.traversal(body)`
+  for the shared ground walker.
+- A chunk index is `[x,z]` on the world lattice. Each chunk spans
+  `chunkCells` by `chunkCells` horizontally and the fixed, inclusive
+  endpoints in `verticalCells` vertically. `build(frame,index)` can run
+  independently. `chunk.field.sample(x,y,z)` interpolates the signed
+  lattice from the bake and returns `null` outside the chunk.
+  `chunk.field.values()` copies the lattice in X-fastest order.
+  Use the frame's continuous field for precise traversal. Chunk splats
+  use stable IDs keyed by world cell or placement. Chunks also expose
+  placements, clipped route segments, and bake work counts.
+- Each population layer supplies `{id, height?, habitatOffset?, options?}`.
+  Its optional height sampler receives `(x,z,frame)` and selects a support
+  or returns `null`. The default uses the remaining surface of the carrier
+  after carving. Unpinned landmarks and route points project to the nearest
+  support by height. Supply `project(point,feature,geometry)` for explicit
+  swim waypoints or other placement policies. XYZ pins retain their positions.
+  Use `emit(builder,placement,frame)` to bake the actual asset's splats.
+  The default emits one placeholder splat per placement.
+- Use `prepare` with the same water snapshot that the renderer should show.
+  The frame takes its recipe media and air pockets from that snapshot.
+  `update` accepts the full desired index set and publishes a patch of
+  replaced chunks and removed keys. It compares retained recipe edits,
+  old and new route spans, and water changes, then checks the dependency
+  halo of each chunk. Unchanged chunks retain their payloads. Updates
+  serialize and publish only complete builds. Use `dependencyHalo` when
+  a custom layer sampler, feature projection, or emitter reads beyond the
+  default spacing and surface sampling halos. Keep these callbacks
+  deterministic over their captured inputs.
+- `makeWorld(frame,chunks,meta)` assembles an ordered packed splat world
+  from independently built chunks or the currently published chunk set.
+  It accepts normal render metadata such as `cam`. Assemble on chunk
+  changes and reuse the packed world across render frames. Water optics
+  use the [WebGL renderer](browser-renderer.md#water-optics).
 
 ### Stable spacing and finite Poisson sampling
 
@@ -2179,6 +2249,10 @@ optionally a `normal(x, y, z)` callback. Results provide `points`,
 `normals`, cell keys, and fit errors. Those samples can feed a custom
 sculpt solid. Preview consumers can use `quads`, indexed `triangles`,
 or `mesh({owner, surface, material})`.
+Supply integer XYZ `latticeBounds` to place corners at global indices
+times `cell`, which keeps coordinates identical across neighboring tiles.
+`topology: false` skips face construction for splat builds.
+`captureField: true` exposes `fieldSamples()` to copy the signed lattice.
 
 `K.sdfgrid(sd, lo, hi, cell).reinitialize({passes: 2})` starts fast
 sweeping from interpolated subcell crossings. It preserves field sign

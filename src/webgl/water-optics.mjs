@@ -1,6 +1,7 @@
 // Exact ray intervals through the published water columns. Distance is in
 // world units, independently of perspective, ortho, and the scene depth ramp.
-export const waterGLSL = `
+export const waterGLSL = airPockets => `
+${airPockets ? '#define WATER_AIR_POCKETS' : ''}
 uniform highp sampler2D u_waterData;
 uniform int u_waterCount;
 uniform vec4 u_waterMin[8], u_waterMax[8], u_waterGrid[8];
@@ -16,6 +17,38 @@ bool waterSlab(inout vec2 interval, float p, float d, float low, float high) {
   interval = vec2(max(interval.x, min(times.x, times.y)), min(interval.y, max(times.x, times.y)));
   return interval.x < interval.y;
 }
+
+#ifdef WATER_AIR_POCKETS
+uniform int u_waterAirCount;
+uniform vec4 u_waterAirMin[8], u_waterAirMax[8];
+
+bool airSlab(inout vec2 interval, float p, float d, float low, float high) {
+  if (abs(d) < 1e-8) return p > low && p < high;
+  return waterSlab(interval, p, d, low, high);
+}
+
+bool inAir(float t, vec2 air[8], int count) {
+  for (int i = 0; i < 8; i++) {
+    if (i >= count || air[i].x > t) break;
+    if (t < air[i].y) return true;
+  }
+  return false;
+}
+
+float wetLength(vec2 wet, vec2 air[8], int count) {
+  float remaining = wet.y - wet.x;
+  float cursor = wet.x;
+  for (int i = 0; i < 8; i++) {
+    if (i >= count || air[i].x >= wet.y) break;
+    float a = max(cursor, air[i].x), b = min(wet.y, air[i].y);
+    if (b > a) {
+      remaining -= b - a;
+      cursor = b;
+    }
+  }
+  return max(0.0, remaining);
+}
+#endif
 
 void waterSurface(int body, vec3 p, vec3 ray, vec4 column, inout vec3 light, inout vec3 through,
                   inout vec3 mark) {
@@ -38,7 +71,11 @@ void waterSurface(int body, vec3 p, vec3 ray, vec4 column, inout vec3 light, ino
   }
 }
 
-void waterColumns(int body, vec3 eye, vec3 ray, float limit, inout vec3 light, inout vec3 through,
+void waterColumns(int body, vec3 eye, vec3 ray, float limit,
+                  #ifdef WATER_AIR_POCKETS
+                  vec2 air[8], int airCount,
+                  #endif
+                  inout vec3 light, inout vec3 through,
                   inout vec3 mark, inout float caustic) {
   vec4 low = u_waterMin[body], high = u_waterMax[body], grid = u_waterGrid[body];
   vec2 range = vec2(0.0, limit);
@@ -69,15 +106,22 @@ void waterColumns(int body, vec3 eye, vec3 ray, float limit, inout vec3 light, i
       if (horizontal ? eye.y > column.x && eye.y < column.y : waterSlab(wet, eye.y, ray.y, column.x, column.y)) {
         float top = horizontal ? -1.0 : (column.y - eye.y) / ray.y;
         bool surface = !surfaceSeen && top >= start && top <= end && top < limit;
+        bool endpoint = wet.y == limit;
+        float distance = wet.y - wet.x;
+        #ifdef WATER_AIR_POCKETS
+        surface = surface && !inAir(top, air, airCount);
+        endpoint = endpoint && !inAir(limit, air, airCount);
+        distance = wetLength(wet, air, airCount);
+        #endif
         if (surface && ray.y < 0.0)
           waterSurface(body, eye + ray * top, ray, column, light, through, mark);
-        vec3 transmission = exp(-u_waterLoss[body].rgb * (wet.y - wet.x));
+        vec3 transmission = exp(-u_waterLoss[body].rgb * distance);
         light += through * (1.0 - transmission) * u_waterTint[body].rgb;
         through *= transmission;
         if (surface && ray.y > 0.0)
           waterSurface(body, eye + ray * top, ray, column, light, through, mark);
         surfaceSeen = surfaceSeen || surface;
-        if (wet.y == limit) {
+        if (endpoint) {
           vec3 p = eye + ray * limit;
           float depth = column.y - p.y;
           vec2 xz = p.xz - clamp(column.zw, vec2(-4.0), vec2(4.0)) * (u_waterTime * 0.17);
@@ -107,6 +151,25 @@ vec3 waterPaint(vec3 color, vec2 pixel, vec2 size, float axial, out vec3 mark) {
   float rayScale = length(direction);
   vec3 ray = direction / rayScale;
   float limit = axial * rayScale;
+  #ifdef WATER_AIR_POCKETS
+  vec2 air[8];
+  int airCount = 0;
+  for (int i = 0; i < 8; i++) {
+    if (i >= u_waterAirCount) break;
+    vec3 low = u_waterAirMin[i].xyz, high = u_waterAirMax[i].xyz;
+    vec2 hit = vec2(0.0, 1e30);
+    if (!airSlab(hit, eye.x, ray.x, low.x, high.x) || !airSlab(hit, eye.y, ray.y, low.y, high.y) ||
+        !airSlab(hit, eye.z, ray.z, low.z, high.z) || hit.x >= limit) continue;
+    int at = airCount;
+    for (int j = 0; j < 8; j++) {
+      if (at <= 0 || air[at - 1].x <= hit.x) break;
+      air[at] = air[at - 1];
+      at--;
+    }
+    air[at] = hit;
+    airCount++;
+  }
+  #endif
   float starts[8];
   for (int i = 0; i < 8; i++) {
     starts[i] = 1e30;
@@ -127,15 +190,19 @@ vec3 waterPaint(vec3 color, vec2 pixel, vec2 size, float axial, out vec3 mark) {
     }
     if (body < 0) break;
     starts[body] = 1e30;
-    waterColumns(body, eye, ray, limit, light, through, mark, caustic);
+    waterColumns(body, eye, ray, limit,
+      #ifdef WATER_AIR_POCKETS
+      air, airCount,
+      #endif
+      light, through, mark, caustic);
   }
   return light + through * mix(color, vec3(0.93, 1.0, 0.86), caustic);
 }
 `;
 
-export const waterBackgroundShader = `#version 300 es
+export const waterBackgroundShader = airPockets => `#version 300 es
 precision highp float;
-${waterGLSL}
+${waterGLSL(airPockets)}
 uniform vec2 u_waterViewport;
 uniform vec3 u_waterBackground;
 layout(location=0) out vec4 scene;

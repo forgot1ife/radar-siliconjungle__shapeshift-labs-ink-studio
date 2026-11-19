@@ -14,6 +14,7 @@
   const order = (a, b) => a < b ? -1 : a > b ? 1 : 0;
   const key = (type, ...ids) => type + '/' + JSON.stringify(ids);
   const validMedium = new Set(['air', 'water', 'solid']);
+  const environments = new WeakMap();
   const byId = (a, b) => order(a.id, b.id);
   const nonnegative = n => finite(n) && n >= 0;
 
@@ -124,7 +125,11 @@
     return { id, channel, target, operation, strength, index, brush, bounds };
   }
 
-  function compileView(snapshot, { media, solid, conditions }, recipeCache) {
+  const same = (a, b) => a === b || JSON.stringify(a) === JSON.stringify(b);
+
+  function compileView(snapshot, environment, recipeCache) {
+    const { media, solid, conditions, project } = environment;
+    if (project !== undefined && typeof project !== 'function') throw new TypeError('Biome feature projection needs a sampler');
     const settings = snapshot.entities[root];
     const { seed, fallback, nextStroke } = settings?.parameters ?? {};
     if (settings?.type !== root || settings.parameters.version !== 1 || !seedOK(seed) || !name(fallback) ||
@@ -197,7 +202,8 @@
       for (const marker of [...recipe.markers.values()].sort(byId)) {
         const id = key('landmark', region.id, marker.id), pin = landmarkPins.get(id);
         const dice = K.grow.dice(hash(id, seed));
-        const point = pin?.point ?? atWorld(marker.at).map(v => v + (2 * dice() - 1) * marker.jitter);
+        const generated = atWorld(marker.at).map(v => v + (2 * dice() - 1) * marker.jitter);
+        const point = pin?.point ?? (project ? project(generated, { kind: 'landmark', id: marker.id, region: region.id }) : generated);
         if (!vector(point)) throw new RangeError('Nonfinite landmark placement');
         const item = freeze({ id: marker.id, region: region.id, asset: marker.asset,
           point, pinned: Boolean(pin), clearance: marker.clearance });
@@ -210,7 +216,12 @@
       }
       for (const path of [...recipe.paths.values()].sort(byId)) {
         const pin = routePins.get(key('route', region.id, path.id));
-        const route = P.routes.polyline(pin?.points ?? path.points.map(p => Array.isArray(p) ? atWorld(p) : markers.get(p.landmark).point));
+        const points = pin?.points ?? path.points.map((p, index) => {
+          if (!Array.isArray(p)) return markers.get(p.landmark).point;
+          const generated = atWorld(p);
+          return project ? project(generated, { kind: 'route', id: path.id, region: region.id, index }) : generated;
+        });
+        const route = P.routes.polyline(points);
         const item = freeze({ id: path.id, region: region.id, points: route.points,
           pinned: Boolean(pin), clearance: path.clearance });
         routes.push(item);
@@ -254,20 +265,26 @@
       return { point, time, raw, biome: resolved[0].id, weights: resolved, exclusions, applied };
     }
 
-    function appearance(local, surfaceY, point = local.point) {
-      const { time, weights, biome } = local, y = point[1];
+    function heightOffsetAt(local, point) {
+      let offset = 0;
+      for (const { id, weight } of local.weights) offset += weight * recipes.get(id).height(...point, local.time);
+      if (!finite(offset)) throw new RangeError('Biome landforms must resolve to a finite height');
+      return offset;
+    }
+    function materialAt(local, surfaceY, y) {
       if (!finite(surfaceY)) throw new RangeError('Biome strata need a finite surface height');
+      const recipe = recipes.get(local.biome), stratum = recipe.bands.at(y - surfaceY);
+      return { stratum, ramp: recipe.ramps.get(stratum.material) };
+    }
+    function appearance(local, surfaceY, point = local.point) {
+      const { weights, biome } = local, y = point[1];
       const chosen = recipes.get(biome), ambient = new Map();
-      let heightOffset = 0;
       for (const { id, weight } of weights) {
         const recipe = recipes.get(id);
-        heightOffset += weight * recipe.height(...point, time);
         for (const cue of recipe.cues.values()) ambient.set(cue.id, (ambient.get(cue.id) ?? 0) + weight * cue.gain);
       }
-      if (!finite(heightOffset)) throw new RangeError('Biome landforms must resolve to a finite height');
-      const stratum = chosen.bands.at(y - surfaceY);
-      return { landform: chosen.definition.landform ?? {}, heightOffset,
-        stratum, ramp: chosen.ramps.get(stratum.material), traversal: chosen.traversal,
+      return { landform: chosen.definition.landform ?? {}, heightOffset: heightOffsetAt(local, point),
+        ...materialAt(local, surfaceY, y), traversal: chosen.traversal,
         ambient: [...ambient].sort(([a], [b]) => order(a, b)).map(([id, gain]) => ({ id, gain })) };
     }
 
@@ -336,10 +353,69 @@
       return freeze({ ...plan, instances: plan.instances.map(row => ({ ...row, id: key(layer, row.key) })) });
     }
 
-    return Object.freeze({ snapshot, seed, layout, sample, inspect, populate,
-      appearanceAt: (x, y, z, { time = 0, surfaceY = y } = {}) => freeze(appearance(sampleAt([x, y, z], time), surfaceY)),
+    function changesFrom(previous) {
+      const old = previous.snapshot.entities, next = snapshot.entities;
+      if (previous.seed !== seed || old[root]?.parameters.fallback !== fallback ||
+          environments.get(previous)?.conditions !== environment.conditions)
+        return freeze({ global: true, regions: [] });
+      const dirty = [];
+      for (const id of new Set([...Object.keys(old), ...Object.keys(next)])) {
+        const a = old[id], b = next[id];
+        if (a === b || same(a?.parameters, b?.parameters) && a?.type === b?.type) continue;
+        for (const row of [a, b]) {
+          if (row?.type === types.recipe) return freeze({ global: true, regions: [] });
+          if (row?.type === types.region) dirty.push(row.parameters.bounds);
+          if (row?.type === types.stroke) dirty.push(compileStroke(row.parameters).bounds);
+        }
+      }
+      function features(type) {
+        const map = list => new Map(list.map(item => [key(type, item.region, item.id), item]));
+        const a = map(previous.layout[type]), b = map(layout[type]);
+        for (const id of new Set([...a.keys(), ...b.keys()])) {
+          const left = a.get(id), right = b.get(id);
+          if (same(left, right)) continue;
+          if (left?.points && right?.points && left.pinned === right.pinned && left.clearance === right.clearance) {
+            const segments = Math.max(left.points.length, right.points.length) - 1;
+            for (let i = 0; i < segments; i++) {
+              const before = left.points.slice(i, i + 2), after = right.points.slice(i, i + 2);
+              if (same(before, after)) continue;
+              for (const points of [before, after]) if (points.length === 2)
+                dirty.push(P.spatial.expand(P.spatial.boxOf(points), left.clearance));
+            }
+            continue;
+          }
+          for (const item of [left, right]) {
+            if (!item) continue;
+            const points = item.points ?? [item.point];
+            if (points.length === 1) dirty.push(P.spatial.expand(P.spatial.boxOf(points), item.clearance));
+            else for (let i = 1; i < points.length; i++)
+              dirty.push(P.spatial.expand(P.spatial.boxOf([points[i - 1], points[i]]), item.clearance));
+          }
+        }
+      }
+      features('landmarks');
+      features('routes');
+      return freeze({ global: dirty.length > 4096, regions: dirty.length > 4096 ? [] : dirty });
+    }
+
+    const result = Object.freeze({ snapshot, seed, layout, sample, inspect, populate, changesFrom,
+      withEnvironment: overrides => compileView(snapshot, { ...environment, ...overrides }, recipeCache),
+      heightOffsetAt: (x, y, z, time = 0) => {
+        const point = [x, y, z];
+        return heightOffsetAt(sampleAt(point, time), point);
+      },
+      appearanceAt: (x, y, z, { time = 0, surfaceY = y, probe = [x, y, z] } = {}) => {
+        if (!vector(probe)) throw new Error('Biome appearance needs a finite XYZ probe');
+        return freeze(appearance(sampleAt(probe, time), surfaceY, [x, y, z]));
+      },
+      materialAt: (x, y, z, { time = 0, surfaceY = y, probe = [x, y, z] } = {}) => {
+        if (!vector(probe)) throw new Error('Biome material needs a finite XYZ probe');
+        return freeze(materialAt(sampleAt(probe, time), surfaceY, y));
+      },
       mediumAt: base.mediumAt,
       recipe: id => recipes.get(id)?.definition ?? null });
+    environments.set(result, environment);
+    return result;
   }
 
   function create({ seed = 1, fallback, recipes = [], regions = [], snapshot, media, solid, conditions, historyLimit } = {}) {

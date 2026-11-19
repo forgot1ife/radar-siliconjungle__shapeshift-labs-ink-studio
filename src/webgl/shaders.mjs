@@ -2,7 +2,7 @@
 // Hosts provide the ASCII shader hooks and Ink Studio's shared PixelLook GLSL.
 import { waterGLSL } from './water-optics.mjs';
 
-export function splatShaderSources(ascii, sampleCoverage, { water = false } = {}) {
+export function splatShaderSources(ascii, sampleCoverage, { water = false, airPockets = false } = {}) {
   const SPLAT_VS = `#version 300 es
 precision highp float; precision highp int;
 uniform highp sampler2D u_data;
@@ -196,7 +196,7 @@ uniform float u_idx;
 layout(location=0) out vec4 o;
 layout(location=1) out vec4 od;
 layout(location=2) out vec4 oa;
-${water ? waterGLSL + 'flat in float v_waterAxial; uniform vec2 u_viewport;' : ''}
+${water ? waterGLSL(airPockets) + 'flat in float v_waterAxial; uniform vec2 u_viewport;' : ''}
 void main(){
 ${ascii ? ascii.fsMain : ''}  float power = -0.5 * (v_conic.x * v_d.x * v_d.x + v_conic.z * v_d.y * v_d.y) - v_conic.y * v_d.x * v_d.y;
   if (power > 0.0 || power < -4.5) discard;
@@ -232,7 +232,7 @@ ${water ? '  vec3 mark; rgb = waterPaint(rgb, gl_FragCoord.xy, u_viewport, v_wat
   return { vertex: SPLAT_VS, fragment: SPLAT_FS };
 }
 
-export function pixelShaderSources(PixelLook, { water = false } = {}) {
+export function pixelShaderSources(PixelLook, { water = false, airPockets = false } = {}) {
   const POST_VS = `#version 300 es
 void main(){ vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
   const POST_FS = `#version 300 es
@@ -250,7 +250,7 @@ uniform float u_grade; uniform float u_bars;
 uniform float u_dither, u_luma, u_bypass, u_colored, u_refract, u_ao, u_aor;
 uniform float u_lines, u_lineGap, u_lineK, u_lineLit;
 out vec4 o;
-${water ? waterGLSL + `
+${water ? waterGLSL(airPockets) + `
 uniform highp sampler2D u_waterMask;
 ivec2 waterPixel(ivec2 p) {
   vec3 mark = texelFetch(u_waterMask, p, 0).rgb;
@@ -790,7 +790,7 @@ precision highp float; precision highp int;
 uniform highp sampler2D u_sprTex, u_depth, u_idxTex, u_pixTex, u_dat; uniform mat4 u_pview; uniform vec3 u_peye; uniform float u_tanF, u_asp, u_portho, u_eGap, u_tol;
 flat in ivec2 v_a; flat in ivec4 v_i; flat in float v_dA; flat in vec3 v_P, v_N;
 out vec4 o;
-${water ? waterGLSL + `
+${water ? waterGLSL(airPockets) + `
 uniform vec3 u_waterSpritePalette[64];
 uniform vec4 u_rmp4[128], u_rmpN4[16];
 int spriteColor(int v) {

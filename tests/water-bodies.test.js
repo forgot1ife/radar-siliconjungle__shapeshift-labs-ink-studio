@@ -6,6 +6,7 @@ const os = require('node:os');
 const { pathToFileURL } = require('node:url');
 const { execFileSync } = require('node:child_process');
 const core = require('..');
+const coastline = require('../examples/biome-world');
 const { biomes, waterBodies, motion } = core.load().KIT.procedural;
 
 test('a water frame shares shoreline, depth and currents with biome queries and particles', () => {
@@ -64,7 +65,23 @@ test('water frames allow stacked or adjoining bodies and reject ambiguous overla
   assert.throws(() => waterBodies.scene([low, low]), /distinct IDs/);
 });
 
-function browserProbe(createRenderer, compileSprites) {
+test('water changes bound modified columns and carry strict interior air pockets', () => {
+  const body = changed => waterBodies.create({ id: 'pool', bounds: { min: [-4, 0], max: [4, 4] }, resolution: [4, 2],
+    sample: (x, z) => ({ bed: -4, surface: changed && x < -2 && z < 2 ? 1 : 0 }) });
+  const before = waterBodies.scene([body(false)]);
+  const bounds = { min: [-2, -2, 1], max: [0, -0.5, 3] };
+  const after = waterBodies.scene([body(true)], { airPockets: [{ id: 'void', bounds }] });
+  assert.equal(after.mediumAt(-1, -1, 2).id, 'void');
+  assert.equal(after.mediumAt(-2, -1, 2).kind, 'water');
+  assert.equal(after.mediumAt(-1, -2, 2).kind, 'water');
+  assert.equal(after.mediumAt(-3, 0.5, 1).kind, 'water');
+  assert.deepEqual(after.changesFrom(before), [{ min: [-4, -4, 0], max: [-2, 1, 2] }, bounds]);
+  assert.deepEqual(waterBodies.scene([body(true)], { airPockets: [{ id: 'void', bounds }] }).changesFrom(after), []);
+  assert.equal(after.pack().uniforms.u_waterAirCount, 1);
+  assert.throws(() => waterBodies.scene([body(false)], { airPockets: [{ id: 'pool', bounds }] }), /distinct IDs/);
+});
+
+function browserProbe(createRenderer, compileSprites, coastline) {
   const canvas = document.querySelector('canvas');
   const { waterBodies } = KIT.procedural;
   const renderer = createRenderer(canvas, { toolkit: { KIT, PixelLook } });
@@ -156,6 +173,28 @@ function browserProbe(createRenderer, compileSprites) {
     [0, 0, 1], 0.07, 0.01, B.P[2], 1);
   const inFront = B.finish({ cam: camera, water: clear });
   close(draw(inFront)(), draw(inFront, { water: false })(), 'refraction preserves the foreground');
+
+  const pockets = waterBodies.scene([volume()], { airPockets: [
+    { id: 'left', bounds: { min: [-1, -2, -1], max: [1, -0.25, 1] } },
+    { id: 'right', bounds: { min: [-1, -2, -0.5], max: [1, -0.25, 1.5] } }
+  ] });
+  const throughPockets = { ...baseCamera, target: [0, -1, -2] };
+  checkAttenuation(throughPockets, 1.5, 'water ray excludes the union of overlapping air boxes', [], { water: pockets });
+  checkAttenuation({ ...throughPockets, dist: 2.1 }, 1, 'ray leaves an air pocket and re-enters water', [], { water: pockets });
+
+  const coast = coastline(KIT), frame = coast.compiler.prepare(coast.author.view(), { water: coast.water(0.38) });
+  const route = frame.traceRoute(coast.itinerary(frame));
+  if (!route.ok || route.media.map(row => row.kind).join(',') !== 'air,water,air' || route.media.at(-1).id !== 'chamber-air')
+    throw new Error('coast traversal did not reach the air chamber');
+  const assembled = coast.compiler.makeWorld(frame, coast.indices.map(index => coast.compiler.build(frame, index)));
+  const seal = frame.view.layout.landmarks.find(item => item.id === 'seal');
+  const chamberCamera = { target: [seal.point[0], seal.point[1] + 0.22, seal.point[2]], dist: 1.2, yaw: -Math.PI / 2 };
+  const chamber = draw(assembled, { camera: chamberCamera })(), clearChamber = draw(assembled, { camera: chamberCamera, water: false })();
+  if (clearChamber[0] < 110) throw new Error('chamber seal missing from the compiled frame');
+  close(chamber, clearChamber, 'chamber seal stays clear inside the shared air pocket');
+  const tunnelCamera = { target: [8.6, -2.5, 0.54], dist: 2.1, yaw: -Math.PI / 2 };
+  const tunnel = draw(assembled, { camera: tunnelCamera })(), dryTunnel = draw(assembled, { camera: tunnelCamera, water: false })();
+  if (dryTunnel[0] - tunnel[0] < 15) throw new Error('compiled tunnel should absorb through water');
   renderer.dispose();
 }
 
@@ -178,7 +217,7 @@ try {
     const resources = createResources(gl);
     resources.program(shaders.SPR_VS, shaders.SPR_FS);
     resources.dispose();
-  });
+  }, ${coastline.toString()});
   result.textContent = 'PASS';
 } catch (error) { result.textContent = error.stack; }
 </script>`);
@@ -186,7 +225,7 @@ try {
       '--headless', '--no-first-run', '--disable-background-networking', '--allow-file-access-from-files',
       '--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--user-data-dir=' + path.join(temp, 'profile'),
       '--dump-dom', pathToFileURL(path.join(temp, 'water.html')).href
-    ], { timeout: 45000, encoding: 'utf8', maxBuffer: 4e6, stdio: ['ignore', 'pipe', 'ignore'] });
+    ], { timeout: 60000, encoding: 'utf8', maxBuffer: 4e6, stdio: ['ignore', 'pipe', 'ignore'] });
     assert.equal(html.match(/<pre id="result">([^<]*)<\/pre>/)?.[1], 'PASS');
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });

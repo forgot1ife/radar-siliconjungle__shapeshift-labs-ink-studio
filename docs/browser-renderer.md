@@ -67,6 +67,8 @@ depends on the distance traveled through water. Foreground splats and
 translucent layers composite in the existing back-to-front draw order, so
 water behind an object cannot tint the object's own color. A frame can
 contain rays above, below, and crossing the waterline.
+Air pockets on the water snapshot subtract their shared XYZ bounds from
+each optical path, so a chamber can stay clear inside a flooded body.
 
 Water bodies have optional `optics` controls. `tint` and `surfaceColor`
 take 0–1 RGB triples. `extinction` is a nonnegative RGB coefficient per

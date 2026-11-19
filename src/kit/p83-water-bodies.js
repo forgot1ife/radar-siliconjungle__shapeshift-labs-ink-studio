@@ -2,7 +2,7 @@
 (function (K) {
   const P = K.procedural;
   const maxAxis = 64, maxBodies = 8;
-  const states = new WeakMap();
+  const states = new WeakMap(), sceneStates = new WeakMap();
   const number = value => Number.isFinite(value) && Number.isFinite(Math.fround(value));
   const pair = value => Array.isArray(value) && value.length === 2 && number(value[0]) && number(value[1]);
   const unit = value => number(value) && value >= 0 && value <= 1;
@@ -124,17 +124,61 @@
     });
   }
 
-  function scene(bodies) {
+  function pocket({ id, bounds: source } = {}) {
+    const triplet = v => Array.isArray(v) && v.length === 3 && Array.from(v).every(number);
+    if (!name(id) || !triplet(source?.min) || !triplet(source?.max)) throw new TypeError('An air pocket needs an ID and finite XYZ bounds');
+    const bounds = P.data.freeze({ min: source.min.map(Math.fround), max: source.max.map(Math.fround) });
+    if (bounds.min.some((v, i) => v >= bounds.max[i])) throw new RangeError('An air pocket needs positive XYZ extents');
+    const { min, max } = bounds;
+    return Object.freeze({ id, kind: 'air', priority: 1, bounds, sdf: (x, y, z) =>
+      Math.max(min[0] - x, x - max[0], min[1] - y, y - max[1], min[2] - z, z - max[2]) });
+  }
+
+  const equalVector = (a, b) => a.every((v, i) => v === b[i]);
+  const equalBounds = (a, b) => equalVector(a.min, b.min) && equalVector(a.max, b.max);
+  function changedBody(before, after) {
+    if (!before || !after) return (before ?? after).bounds;
+    if (before === after) return null;
+    const a = states.get(before), b = states.get(after), old = before.bounds, next = after.bounds;
+    if (a.nx !== b.nx || a.nz !== b.nz || a.dx !== b.dx || a.dz !== b.dz ||
+        [0, 2].some(i => old.min[i] !== next.min[i] || old.max[i] !== next.max[i]))
+      return P.spatial.boxOf([old.min, old.max, next.min, next.max]);
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < a.data.length; i += 4) {
+      if (a.data[i] === b.data[i] && a.data[i + 1] === b.data[i + 1] &&
+          a.data[i + 2] === b.data[i + 2] && a.data[i + 3] === b.data[i + 3]) continue;
+      const x = i / 4 % a.nx, z = Math.floor(i / 4 / a.nx);
+      lo[0] = Math.min(lo[0], next.min[0] + x * a.dx);
+      lo[2] = Math.min(lo[2], next.min[2] + z * a.dz);
+      hi[0] = Math.max(hi[0], x === a.nx - 1 ? next.max[0] : next.min[0] + (x + 1) * a.dx);
+      hi[2] = Math.max(hi[2], z === a.nz - 1 ? next.max[2] : next.min[2] + (z + 1) * a.dz);
+      if (a.data[i] < a.data[i + 1]) {
+        lo[1] = Math.min(lo[1], a.data[i]);
+        hi[1] = Math.max(hi[1], a.data[i + 1]);
+      }
+      if (b.data[i] < b.data[i + 1]) {
+        lo[1] = Math.min(lo[1], b.data[i]);
+        hi[1] = Math.max(hi[1], b.data[i + 1]);
+      }
+    }
+    return lo[0] === Infinity ? null : { min: lo, max: hi };
+  }
+
+  function scene(bodies, { airPockets = [] } = {}) {
     if (!Array.isArray(bodies) || bodies.length > maxBodies || !Array.from(bodies).every(body => states.has(body)) ||
         new Set(bodies.map(body => body.id)).size !== bodies.length)
       throw new TypeError('A water scene holds up to eight water bodies with distinct IDs');
+    if (!Array.isArray(airPockets) || airPockets.length > 8) throw new TypeError('A water scene holds up to eight air pockets');
+    const pockets = Array.from(airPockets, pocket).sort(compare);
+    if (new Set([...pockets, ...bodies].map(item => item.id)).size !== pockets.length + bodies.length)
+      throw new TypeError('Water bodies and air pockets need distinct IDs');
     const sorted = bodies.slice().sort(compare), active = sorted.filter(body => !states.get(body).empty);
     for (let i = 0; i < active.length; i++) for (let j = i + 1; j < active.length; j++) {
       const a = active[i].bounds, b = active[j].bounds;
       if (a.min.every((v, axis) => v < b.max[axis] && a.max[axis] > b.min[axis]))
         throw new RangeError('Water body bounds overlap: ' + active[i].id + ' and ' + active[j].id);
     }
-    const media = Object.freeze(sorted.map(body => body.medium));
+    const media = Object.freeze([...sorted.map(body => body.medium), ...pockets]);
     const { mediumAt } = P.biomes.create({ media });
     function pack() {
       const rows = active.reduce((sum, body) => sum + states.get(body).nz, 0);
@@ -142,6 +186,11 @@
       const boxesMin = new Float32Array(maxBodies * 4), boxesMax = new Float32Array(maxBodies * 4);
       const grids = new Float32Array(maxBodies * 4), tint = new Float32Array(maxBodies * 4);
       const extinction = new Float32Array(maxBodies * 4), highlights = new Float32Array(maxBodies * 4);
+      const airMin = new Float32Array(32), airMax = new Float32Array(32);
+      pockets.forEach(({ bounds }, i) => {
+        airMin.set(bounds.min, i * 4);
+        airMax.set(bounds.max, i * 4);
+      });
       let row = 0;
       active.forEach((body, i) => {
         const { nx, nz, dx, dz, data: grid, style } = states.get(body), o = i * 4;
@@ -155,10 +204,33 @@
         row += nz;
       });
       const uniforms = { u_waterCount: active.length, u_waterMin: boxesMin, u_waterMax: boxesMax,
-        u_waterGrid: grids, u_waterTint: tint, u_waterLoss: extinction, u_waterHighlight: highlights };
+        u_waterGrid: grids, u_waterTint: tint, u_waterLoss: extinction, u_waterHighlight: highlights,
+        u_waterAirCount: pockets.length, u_waterAirMin: airMin, u_waterAirMax: airMax };
       return { width: maxAxis, height: Math.max(rows, 1), data, uniforms };
     }
-    return Object.freeze({ media, mediumAt, count: active.length, pack });
+    function changesFrom(previous) {
+      if (previous === result) return [];
+      const old = previous == null ? { active: [], pockets: [] } : sceneStates.get(previous);
+      if (!old) throw new TypeError('Expected a previous water scene');
+      const changed = [];
+      function compareRows(before, after, difference) {
+        const a = new Map(before.map(row => [row.id, row])), b = new Map(after.map(row => [row.id, row]));
+        for (const id of new Set([...a.keys(), ...b.keys()])) {
+          const bounds = difference(a.get(id), b.get(id));
+          if (bounds) changed.push(bounds);
+        }
+      }
+      compareRows(old.active, active, changedBody);
+      compareRows(old.pockets, pockets, (a, b) => {
+        if (!a || !b) return (a ?? b).bounds;
+        return equalBounds(a.bounds, b.bounds) ? null :
+          P.spatial.boxOf([a.bounds.min, a.bounds.max, b.bounds.min, b.bounds.max]);
+      });
+      return P.data.freeze(changed);
+    }
+    const result = Object.freeze({ media, mediumAt, count: active.length, pack, changesFrom });
+    sceneStates.set(result, { active, pockets });
+    return result;
   }
 
   P.waterBodies = Object.freeze({ create, fromShallowWater, scene });

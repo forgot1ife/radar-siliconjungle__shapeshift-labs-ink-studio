@@ -13,7 +13,8 @@ export function createSplatPipeline(gl, { ascii, specialize = true, sampleCovera
   try {
     const { vertex, fragment } = splatShaderSources(ascii, sampleCoverage);
     const full = resources.program(vertex, fragment);
-    let plain, water, plainUnavailable = false;
+    const water = new Map();
+    let plain, plainUnavailable = false;
     let disposed = false;
     let orderCapacity = 0, orderCount = 0;
     const vao = resources.allocate('VertexArray');
@@ -41,11 +42,12 @@ export function createSplatPipeline(gl, { ascii, specialize = true, sampleCovera
       programFor(features) {
         check();
         if (features?.water) {
-          if (!water) {
-            const wet = splatShaderSources(ascii, sampleCoverage, { water: true });
-            water = resources.program(wet.vertex, wet.fragment);
+          const airPockets = Boolean(features.airPockets);
+          if (!water.has(airPockets)) {
+            const wet = splatShaderSources(ascii, sampleCoverage, { water: true, airPockets });
+            water.set(airPockets, resources.program(wet.vertex, wet.fragment));
           }
-          return water;
+          return water.get(airPockets);
         }
         if (!specialize || plainUnavailable || features?.lamps !== false ||
             features.fine !== false || features.textZones !== false) return full;
