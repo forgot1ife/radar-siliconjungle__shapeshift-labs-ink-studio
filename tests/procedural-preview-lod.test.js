@@ -73,3 +73,33 @@ test('Gaussian LOD locks silhouettes, owner edges, material seams and authored m
   assert.deepEqual(result,lod.mergeSplats(originals,options));
   assert.equal(lod.mergeSplats(originals,{...options,maxPairs:1}).status,'budget');
 });
+
+test('dense single-material surfaces stay inside the pair budget', () => {
+  const samples = Array.from({ length: 2000 }, (_, i) => ({
+    id: String(i), position: [(i % 50) * 0.001, 0, Math.floor(i / 50) * 0.001],
+    normal: [0, 1, 0], color: [0.5, 0.5, 0.5], radius: 0.005
+  }));
+  const reduced = lod.mergeSplats(samples, { ratio: 0.25, maxPairs: 20000 });
+  assert.equal(reduced.status, 'ok');
+  assert.equal(reduced.splats.length, 500);
+  assert.equal(new Set(reduced.splats.flatMap(splat => splat.members)).size, samples.length);
+});
+
+test('screen coverage can reject a reduction while keeping the full authored splats', () => {
+  const samples = [0, 0.04].map(x => ({
+    position: [x, 0, 0], normal: [0, 0, 1], color: [0.3, 0.5, 0.7], radius: 0.065
+  }));
+  const reference = Float32Array.of(0, 0.9, 0.9, 0.1);
+  const preview = Float32Array.of(0, 0.9, 0.49, 0.8);
+  const comparison = lod.compareCoverage(reference, preview);
+  assert.equal(comparison.missingFraction, 0.5);
+  assert.equal(comparison.extraFraction, 0.5);
+  const rejected = lod.mergeSplats(samples, { target: 1, guard: rows => {
+    assert.equal(rows.length, 1);
+    return comparison.accepted;
+  } });
+  assert.equal(rejected.status, 'coverage');
+  assert.equal(rejected.splats.length, 2);
+  assert.equal(rejected.work.merged, 0);
+  assert.equal(rejected.work.attemptedMerges, 1);
+});

@@ -12,7 +12,7 @@ const files = () =>
   [
     'src/art-passes.js', 'src/art-ink.js', 'src/art-effects.js', 'src/art-stability.js',
     'src/pixel-look.js', 'src/reflection-plane.js', 'src/airflow.js', 'src/light-schedule.js',
-    'src/route-visibility.js', 'src/sample-coverage.js', 'src/sample-visibility.js', 'src/swept-disc.js', 'src/splat-order.js', 'src/ripple-field.js',
+    'src/route-visibility.js', 'src/sample-coverage.js', 'src/sample-visibility.js', 'src/swept-disc.js', 'src/splat-order.js', 'src/splat-codec.js', 'src/ripple-field.js',
     'src/volume-field.js', 'src/volume-light.js', 'src/scene-optics.js', 'src/splat-effects.js',
     'src/surface-look.js', 'src/builder.js', 'src/sculpt.js'
   ]

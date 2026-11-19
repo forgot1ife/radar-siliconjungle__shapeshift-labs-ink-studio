@@ -145,6 +145,7 @@ const mesh = P.geometry.toKitMesh(geometry, (owner, material) => [.6, .64, .61])
 | `geometry.octree(field, bounds, options)`, `geometry.stitchVoxelLevels(tree, options)`, `geometry.adaptiveSurface(field, bounds, options)` | Sparse field sampling, 2:1 voxel levels and stitched adaptive previews |
 | `geometry.simplifyQEM(mesh, options)`, `lod.mergeSplats(records, options)`, `lod.packSplats(result)` | Error-driven previews with retained material seams, ownership and protected samples |
 | `sampleVisibility.create(count)`, `splatOrder.compile(indices, depthAt)` | Packed visibility updates and reusable depth buckets for retained samples |
+| `splatCodec.encode(data, count, options)`, `splatCodec.decode(bytes, options)` | Compact, ordered native splat rows for offline delivery |
 | `motion.streamline(field, start, options)`, `motion.obstacleWake(sdf, options)`, `motion.loopTrajectory(points, options)`, `motion.surfaceAdvection(chart, seeds, options)` | Field integration, wake and curl sampling, closed tracks and UV-attached motion |
 | `motion.stableFluid(options)`, `motion.shallowWater(options)` | Persistent density and velocity grids, and conservative terrain-aligned water |
 | `motion.surfaceWeather(options)`, `motion.materialStateGraph(machine, entities, options)` | Persistent wetness and thermal fields, and event-driven material changes |
@@ -2076,7 +2077,7 @@ default. Pass one owner, surface, and material record per face in
 `groups`. The result maps source vertices to surviving indices.
 
 `lod.mergeSplats(records, {ratio, target, maxDistance, maxRadius,
-viewDirections, silhouette, lockSeams})` reduces native Gaussian samples.
+viewDirections, silhouette, lockSeams, seamDistance})` reduces native Gaussian samples.
 Each record has `id`, `position`, `normal`, `color` in normalized RGB,
 optional `opacity`, and a `radius` or symmetric six-component
 `covariance`. Owner, material, and surface names define independent
@@ -2088,6 +2089,52 @@ Constraints may stop reduction above the requested count.
 `lod.packSplats(result)` returns the static `data` and `count` fields
 used by the renderer. `examples/preview-lod.js` packs an original and
 reduced shield side by side.
+
+The search ranks up to `candidateLimit` nearest candidates per survivor
+(default 8) within each group and merges disjoint pairs in rounds. Set
+`maxPairs` to bound candidate and cross-group pair checks. Increase
+`candidateLimit` if close samples have incompatible normals or colours.
+Use `seamDistance` to set the width of the protected area around boundaries
+independently of the merge distance. It defaults to `maxDistance`.
+A result with status `budget` may still contain valid merges. If the seam
+scan stops early, the original rows are retained.
+
+To protect a screen-space result, pass `guard(splats)`. It receives the
+candidate records and returns a boolean. A failed guard returns status
+`coverage` and retains the input. For example, render the original and
+candidate using `studio.render(world, { captureCoverage: true, ...camera })`
+and pass their coverage arrays to
+`lod.compareCoverage(original, candidate, { threshold, maxMissing, maxExtra })`.
+This measures holes and silhouette growth relative to the original foreground.
+Repeat at the cameras and zoom levels the preview is intended for.
+The packed output is static. Authoring data indexed by the original samples
+must be rebuilt or remapped through each survivor's `members`.
+
+### Delivery of baked rows
+
+`KIT.procedural.splatCodec.encode(world.data, world.count, options)` returns a
+`Uint8Array`. `decode(bytes, { maxRows })` returns `{ data, count }`.
+Row order is preserved. Rig IDs, light captures, per-sample arrays, scene
+settings and palettes travel with the host's scene data.
+
+The position error limit defaults to `maxPositionError: 0.0001` world units
+per axis. Each block uses 16-bit local bounds when the requested limit can be
+met after reconstructing float32 positions. Other positions are stored exactly.
+Axial covariances use a quantized direction and two logarithmic variances, when
+the reconstructed float32 matrix passes the relative Frobenius error limit
+(`maxCovarianceError: 0.004` by default) and keeps variance along the encoded
+axis within 1%. Other covariances retain their original bits. Set both limits
+to zero for bit-exact encoding. Colour, density, kind and motion fields always
+retain their bits. NaN and infinite positions are rejected.
+
+The little-endian stream starts with the four version bytes `IRC1` followed by
+a 32-bit row count. Rows are grouped into blocks of up to 2,048 without
+reordering. Within each block, fields are stored as constants or transposed
+byte planes, with dedicated modes for position deltas and axial covariance.
+Gzip or Brotli is applied by the host. The decoder validates its section bounds
+and defaults to a four-million-row limit. Set a smaller `maxRows` for the
+maximum size of the scene you expect to load. Use
+`node scripts/benchmark-splat-codec.js` to compare size and decode time.
 
 ### Currents and surface motion
 
@@ -3020,3 +3067,46 @@ a known affine fragment in one prism. Otherwise `step` controls tessellation.
 `budget` limits the number of pieces. Plane records mark the upper, lower
 and fragment perimeter as `exterior`. Triangulation seams stay unmarked
 so callers can add contact clearance without widening the seams.
+
+### Captured lighting for a host renderer
+
+Call `KIT.light.capture(B, S)` before baking and `KIT.light.pack(stage, capture,
+{ sun })` after the stage's rig is bound. The pack supplies one entry per native
+row and a palette ramp table. Both arrays are interleaved float32 vectors:
+
+| Buffer | Components |
+| --- | --- |
+| `normalLevel` | Baked normal x, y, z and ramp level |
+| `rigRamp` | Ramp index (−1 for uncaptured), part ID (0 for static), live-sun flag, reference term |
+
+`step(packed, row, position, normal, lights, flash)` returns the palette index
+the lighting calculation selects, or −1 for an uncaptured row. Supply the
+current position and a unit normal matching that pose. A host using the stage
+rig's convention applies the normal's part matrix and normalizes the result.
+Part IDs are those of the bound stage rig. Repack after changing part ownership,
+the capture, the baked reference lighting, or the selected sun parts.
+
+Include `KIT.light.glsl` in a high-precision GLSL shader. Start with the stored
+ramp level. Where the live-sun flag is set, evaluate `capturedSun` and add any
+baked lamp shares with `capturedLampShare`. Pass this value, the reference term,
+and the host's shade factor to `capturedBase`. A host must provide an equivalent
+shade when `sun.shade` is a JavaScript function. Add active dynamic lamp shares
+and flash. Pass each lamp's visibility as its per-splat mask divided by 255,
+or 1 when there is no mask. Find the largest share among the lights with their
+own colour ramp. Use its ramp when `capturedOverride` is true. Index the selected
+ramp with `capturedStep`.
+
+`sun.keep` defaults to 0.09 and limits the residual from the bake. With
+`sun.keep: Infinity`, `packed.delta` is true, the reference term is the
+rest-pose lighting, and `baked` is an extra array of original palette indices
+(−1 when a row has no delta mode). Pass `packed.delta` to `capturedBase`.
+When there is no dominant lamp ramp and `capturedAtRest` is true, use that
+original palette index if available. `sun.lights` optionally specifies the
+bake's lamps for the live sun calculation. Baked lamp ramps are already
+represented in the baked colour. Dynamic lamps with their own ramp can change
+the output ramp. The CPU stage painter still composes with other painters in
+stage order. The host is responsible for composing its own render passes.
+
+Set `INK_TEST_CHROME` to the Chrome executable and run
+`node --test tests/captured-light.test.js` to verify the GLSL against the CPU
+reference using WebGL2 transform feedback.
