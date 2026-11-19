@@ -197,8 +197,10 @@
         cell, latticeBounds: grid, topology: false, refine: 1, captureField: true,
         normal: (x, y, z) => internals.normalOf(distance, x, y, z)
       });
-      const builder = makeBuilder(hash(key, view.seed), pal, { renderMetadata: false }), ids = [];
       if (surface.points.length > maxSplats) throw new RangeError('Biome chunk exceeds its splat budget');
+      const builder = makeBuilder(hash(key, view.seed), pal, {
+        renderMetadata: false, initialCapacity: Math.max(1, surface.points.length)
+      }), ids = [];
       const owned = p => P.spatial.contains(bounds, p) && p[0] < bounds.max[0] && p[2] < bounds.max[2];
       for (let i = 0; i < surface.points.length; i++) {
         const point = surface.points[i], normal = surface.normals[i];
@@ -242,9 +244,11 @@
       }
       if (builder.count() > maxSplats) throw new RangeError('Biome chunk exceeds its splat budget');
       const { data, count, moving, back } = builder.finish();
+      const packed = data.byteLength === data.buffer.byteLength ? data : data.slice();
       return Object.freeze({ key, index: freeze(index.slice()), bounds, placements: scenePlacements, routes: freeze(routes),
         field: latticeField(grid, bounds, cell, surface.fieldSamples()),
-        work: freeze({ ...surface.work, heightColumns: columns.size }), splats: Object.freeze({ data, count, moving, back, ids: freeze(ids) }) });
+        work: freeze({ ...surface.work, heightColumns: columns.size }),
+        splats: Object.freeze({ data: packed, count, moving, back, ids: freeze(ids) }) });
     }
 
     function makeWorld(frame, chunks, meta = {}) {

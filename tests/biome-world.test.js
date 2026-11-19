@@ -30,6 +30,7 @@ test('chunks build deterministic splats, placements and sampled solids against t
   assert.deepEqual(forwardWorld.data, reverseWorld.data);
   assert.deepEqual(forwardWorld.splatIds, reverseWorld.splatIds);
   assert.equal(new Set(forwardWorld.splatIds).size, forwardWorld.count);
+  for (const { splats } of ordered) assert.equal(splats.data.buffer.byteLength, splats.count * 16 * 4);
   const cpu = core.render(forwardWorld, { w: 72, h: 48, px: 1, raw: true });
   assert.equal(cpu.w, 72);
   assert.equal(cpu.h, 48);

@@ -82,7 +82,9 @@ function makeNoise(seed) {
 }
 
 // ---------------- shared builder: splat storage plus shape helpers ----------------
-function makeBuilder(seed, hex, { renderMetadata = true } = {}) {
+function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 15 } = {}) {
+  if (!Number.isSafeInteger(initialCapacity) || initialCapacity < 1 || initialCapacity > Number.MAX_SAFE_INTEGER / 16)
+    throw new RangeError('Initial splat capacity must be a positive integer');
   seed = seed >>> 0;
   let gen = mulberry32(seed ^ 0x5bd1e995);
   const R = () => gen(),
@@ -121,7 +123,7 @@ function makeBuilder(seed, hex, { renderMetadata = true } = {}) {
     return [r * Math.cos(a), y, r * Math.sin(a)];
   };
 
-  let cap = 1 << 15,
+  let cap = initialCapacity,
     n = 0,
     data = new Float32Array(cap * 16);
   const moving = [],
