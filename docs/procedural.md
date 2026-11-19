@@ -105,6 +105,7 @@ const mesh = P.geometry.toKitMesh(geometry, (owner, material) => [.6, .64, .61])
 | `hydrology.analyze(height, options)` | Priority-Flood, D8 catchments, stream orders, channel routes, wetness and optional D-infinity flow |
 | `hydrology.breach(basin)`, `hydrology.incise(basin)`, `hydrology.meander(route)`, `hydrology.corridor(routes, height)`, `hydrology.habitat(basin)` | Watershed edits, river migration and cutoff routes, levees, floodplain masks and climate fields |
 | `biomes.create(options)` | Shared XYZ sampling of normalized biome weights, air, solid or water membership, and local conditions |
+| `waterBodies.create(options)`, `waterBodies.fromShallowWater(snapshot, options)`, `waterBodies.scene(bodies)` | Water frames shared by shoreline placement, current and depth queries, and WebGL visibility |
 | `routes.visibility(start, end, obstacles)`, `routes.spline(route, options)`, `routes.travelTime(sources, options)` | Polygon visibility paths, clearance-tested corner fitting and fast-marching travel-time fields |
 | `geometry.delaunay(points, options)`, `geometry.triangulatePolygon(rings)`, `routes.network(points)`, `routes.steiner(points, edges, terminals)` | Constrained planar triangulation, graph layouts with optional loops, and shared branch networks |
 | `routes.tensor(components)`, `routes.followTensor(field, seeds)`, `routes.growStreets(seeds, options)`, `routes.parcels(outline)`, `routes.medial(rings)` | Directional street systems, connected seeded roads, frontage lots and medial paths |
@@ -1324,6 +1325,56 @@ world.mediumAt(0, -3.5, 0); // air pocket within the cavern
 
 In [river-processes.js](../examples/river-processes.js), the same biome query
 drives the ground's splat palette and the placement of floodplain reeds.
+
+### Water bodies
+
+A water body captures bed height, surface height, and current for each cell of
+an XZ grid. Use the same water frame for world queries and the
+[WebGL renderer](browser-renderer.md#water-optics).
+
+```js
+const W = K.procedural.waterBodies;
+const inlet = W.create({
+  id: 'inlet',
+  bounds: { min: [-5, -5], max: [5, 5] },
+  resolution: [24, 24],
+  sample(x, z) {
+    const bed = terrainHeight(x, z);
+    return { bed, surface: 0.5, current: [0.15, -0.2] };
+  }
+});
+const water = W.scene([inlet]);
+const environment = K.procedural.biomes.create({ media: water.media, solid: terrainSdf });
+const world = builder.finish({ water });
+const bodyMedium = environment.mediumAt(...bodyCenter);
+const eyesMedium = environment.mediumAt(...eyePosition);
+```
+
+- `create` samples column centers once. Use `null` or `surface <= bed`
+  for a dry cell. The default resolution is `[1, 1]`. Each axis supports up
+  to 64 cells. Heights are constant inside each cell and captured at Float32
+  precision for WebGL. A wet cell owns its lower XZ edges and excludes its
+  upper edges. Medium membership is strictly between bed and surface.
+- `inlet.columnAt(x, z)` returns `{bed, surface, depth, current}` for a
+  wet column and `null` elsewhere. Column depth measures the whole water
+  column. The biome query instead reports depth from the sampled XYZ point
+  to the surface and returns currents as XYZ vectors. A host controller can
+  sample the body center for swimming and current drift, and sample the eyes
+  separately for submersion.
+- `inlet.shoreline()` returns world-space segment endpoint pairs along wet
+  cell edges bordering dry cells or the grid exterior.
+  `inlet.particles({seed, count})` returns seeded `{position, current}`
+  samples inside wet cells. Emit Gaussian splats there for suspended detail.
+- `W.fromShallowWater(solver.snapshot(), {id, optics})` captures the existing
+  solver's bed, level, and XZ velocity. A solver larger than 64 cells on either
+  axis requires an explicit render `resolution` within that limit. Publish a
+  new scene and build its biome query from the same revision when the solver
+  advances. Previous frames remain readable.
+- A scene supports up to eight bodies with distinct IDs and nonoverlapping
+  XYZ bounding interiors. Bodies can sit at different heights at the same XZ.
+  Set each column's bed and surface to describe the wet interval. Keep
+  arbitrary solid or air SDF overrides in mind when authoring water geometry,
+  since an override to the biome query alone does not carve the WebGL volume.
 
 ### Stable spacing and finite Poisson sampling
 

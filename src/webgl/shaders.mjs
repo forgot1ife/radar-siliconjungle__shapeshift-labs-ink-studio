@@ -1,6 +1,8 @@
 // Shared draw and resolve shaders extracted from Inkwell Rebirth's WebGL renderer.
 // Hosts provide the ASCII shader hooks and Ink Studio's shared PixelLook GLSL.
-export function splatShaderSources(ascii, sampleCoverage) {
+import { waterGLSL } from './water-optics.mjs';
+
+export function splatShaderSources(ascii, sampleCoverage, { water = false } = {}) {
   const SPLAT_VS = `#version 300 es
 precision highp float; precision highp int;
 uniform highp sampler2D u_data;
@@ -24,6 +26,7 @@ layout(location=0) in vec2 a_corner;
 layout(location=1) in int a_index;
 out vec2 v_d; out vec3 v_conic; out vec4 v_color; out float v_depth; flat out float v_ownerDepth;
 out float v_gl; out float v_as; out float v_ast; uniform vec4 u_az[4]; uniform int u_azn; uniform float u_asoft, u_azst;
+${water ? 'flat out float v_waterAxial;' : ''}
 ${ascii ? ascii.vsDecl : ''}// Inked detail (an option, off unless asked for): a dab may carry a 4 by 4 picture of the surface under it. Its two half-axes are
 // carried to the screen here and turned inside out, so each pixel can find where on the surface it is looking.
 uniform highp sampler2D u_fine; uniform float u_fineOn;
@@ -136,6 +139,7 @@ void main(){
 
   vec4 cam = u_view * vec4(pos, 1.0);
   if (cam.z > -u_near) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+${water ? '  v_waterAxial = -cam.z;' : ''}
   vec4 clip = u_proj * cam;
   v_ownerDepth = u_idx > 1.5 ? clip.z / clip.w * 0.5 + 0.5 : 0.0;
   float dn = clamp((-cam.z - u_fogp.z) / (u_fogp.w - u_fogp.z), 0.0, 1.0);
@@ -192,6 +196,7 @@ uniform float u_idx;
 layout(location=0) out vec4 o;
 layout(location=1) out vec4 od;
 layout(location=2) out vec4 oa;
+${water ? waterGLSL + 'flat in float v_waterAxial; uniform vec2 u_viewport;' : ''}
 void main(){
 ${ascii ? ascii.fsMain : ''}  float power = -0.5 * (v_conic.x * v_d.x * v_d.x + v_conic.z * v_d.y * v_d.y) - v_conic.y * v_d.x * v_d.y;
   if (power > 0.0 || power < -4.5) discard;
@@ -218,15 +223,16 @@ ${ascii ? ascii.fsMain : ''}  float power = -0.5 * (v_conic.x * v_d.x * v_d.x + 
     float f = ij.y == 0 ? v_ft.x : ij.y == 1 ? v_ft.y : ij.y == 2 ? v_ft.z : v_ft.w;
     int ci = int(mod(floor(f / (ij.x == 0 ? 1.0 : ij.x == 1 ? 64.0 : ij.x == 2 ? 4096.0 : 262144.0)), 64.0));
     rgb = mix(u_fpal[min(ci, 63)], u_fog, v_fk); }
+${water ? '  vec3 mark; rgb = waterPaint(rgb, gl_FragCoord.xy, u_viewport, v_waterAxial, mark);' : ''}
   o = vec4(rgb * a, a);
   float a2 = v_color.a >= 1.0 && v_depth >= 0.0 ? a : 0.0;   // only solid splats write depth
   od = vec4(v_depth * a2, v_gl * a * 0.5, v_lit * a2, a2);   // (green: how much glass lies over this pixel, in front of the last solid thing; a solid splat wipes it)
-  oa = vec4(v_as * a, v_ast * 0.25 * a, 0.0, a);
+  oa = ${water ? 'vec4(mark * a, a)' : 'vec4(v_as * a, v_ast * 0.25 * a, 0.0, a)'};
 }`;
   return { vertex: SPLAT_VS, fragment: SPLAT_FS };
 }
 
-export function pixelShaderSources(PixelLook) {
+export function pixelShaderSources(PixelLook, { water = false } = {}) {
   const POST_VS = `#version 300 es
 void main(){ vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
   const POST_FS = `#version 300 es
@@ -244,6 +250,18 @@ uniform float u_grade; uniform float u_bars;
 uniform float u_dither, u_luma, u_bypass, u_colored, u_refract, u_ao, u_aor;
 uniform float u_lines, u_lineGap, u_lineK, u_lineLit;
 out vec4 o;
+${water ? waterGLSL + `
+uniform highp sampler2D u_waterMask;
+ivec2 waterPixel(ivec2 p) {
+  vec3 mark = texelFetch(u_waterMask, p, 0).rgb;
+  if (mark.x < 0.98) return p;
+  int code = int(round(mark.y * 255.0));
+  ivec2 shift = ivec2(clamp((code % 16) - 4, -4, 4), int(round(mark.z * 8.0)) - 4);
+  ivec2 dest = clamp(p + shift, ivec2(0), textureSize(u_waterMask, 0) - 1);
+  vec3 other = texelFetch(u_waterMask, dest, 0).rgb;
+  return other.x >= 0.98 && int(round(other.y * 255.0)) / 16 == code / 16 ? dest : p;
+}
+` : ''}
 const float BAYER[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
 const ivec2 AOT[8] = ivec2[8](ivec2(2, 0), ivec2(-2, 0), ivec2(0, 2), ivec2(0, -2), ivec2(1, 1), ivec2(-1, 1), ivec2(1, -1), ivec2(-1, -1));
 // light in the air behind a round stained window (a diorama's .glass): the window's centre and radius, the way its light travels, six glass
@@ -477,6 +495,11 @@ vec3 pixColour(ivec2 p, vec3 c) {
   // (only where the dab is what shows: nothing soft in front of it, no light carried onto it)
   vec4 t1 = texelFetch(u_dat, ivec2(((i & 511) << 2) + 1, i >> 9), 0); float pk = t1.w;
   vec3 baked = vec3(mod(pk, 256.0), mod(floor(pk / 256.0), 256.0), floor(pk / 65536.0)) / 255.0;
+${water ? `  vec3 mark;
+  vec3 center = texelFetch(u_dat, ivec2((i & 511) << 2, i >> 9), 0).xyz;
+  float axial = -(u_waterView * vec4(center, 1.0)).z;
+  vec2 size = vec2(textureSize(u_scene, 0));
+  baked = waterPaint(baked, vec2(p) + 0.5, size, axial, mark);` : ''}
   if (max(abs(baked.r - c.r), max(abs(baked.g - c.g), abs(baked.b - c.b))) > 0.03) return c;
   int r = int(A.x + 0.5) - 1; float dc = texelFetch(u_depth, p, 0).r, sum = 0.0, cnt = 0.0;
   vec4 Bq = pixB(i); vec3 n = vec3(A.w, Bq.x, Bq.y);
@@ -517,7 +540,7 @@ vec3 pixColour(ivec2 p, vec3 c) {
       int kk2 = bb * 2 >= rlen(r) ? (sky ? 1 : 0) : u_olK;
       if (bb >= 0) ci = rampAt(r, edge ? max(0, bb - kk2) : bb + ck); } }
   g_pixed = true;
-  return u_pal[clamp(ci, 0, 63)]; }
+  return ${water ? 'waterPaint(u_pal[clamp(ci, 0, 63)], vec2(p) + 0.5, size, axial, mark)' : 'u_pal[clamp(ci, 0, 63)]'}; }
 const int GPET[12] = int[12](0, 3, 1, 4, 0, 3, 2, 4, 0, 3, 1, 4); const int GOUT[6] = int[6](3, 1, 4, 2, 0, 1);
 vec3 glassPane(vec2 q) {
   float r = length(q) / u_gw.w * 2.6, a = fract(atan(q.y, q.x) / 6.2831853 + 1.0);
@@ -605,8 +628,9 @@ vec3 plainAt(ivec2 p) {
   p = holeFill(p);
   vec3 c = texelFetch(u_scene, p, 0).rgb;
   g_pixed = false;
-  if (u_pixOn > 0.5) { if (u_sprOn > 0.5) { vec4 sl = texelFetch(u_sprLayer, p, 0) * 255.0;
-      if (sl.a > 127.0) { int v = int(sl.r + 0.5), ci = v >= 100 ? v - 100 : rampAt(int(sl.g + 0.5), int(sl.b + 0.5) + v - 8); g_spr = true; g_pixed = true; return u_pal[clamp(ci, 0, 63)]; } }
+  if (u_pixOn > 0.5) { if (u_sprOn > 0.5) {
+${water ? '      vec4 sl = texelFetch(u_sprLayer, p, 0); if (sl.a > 0.5) { g_spr = true; g_pixed = true; return sl.rgb; }' :
+      '      vec4 sl = texelFetch(u_sprLayer, p, 0) * 255.0; if (sl.a > 127.0) { int v = int(sl.r + 0.5), ci = v >= 100 ? v - 100 : rampAt(int(sl.g + 0.5), int(sl.b + 0.5) + v - 8); g_spr = true; g_pixed = true; return u_pal[clamp(ci, 0, 63)]; }'} }
     c = pixColour(p, c); }
   // outline: this pixel sits clearly behind a neighbour, so it is the edge of something nearer
   ivec2 mx = textureSize(u_depth, 0) - 1;
@@ -663,6 +687,7 @@ float depthAt(ivec2 p) { return u_colored > 0.5 ? texelFetch(u_crispDepth, p, 0)
 void main(){
   ivec2 p = ivec2(gl_FragCoord.xy);
   if (u_bars > 0.0 && abs(gl_FragCoord.y / float(textureSize(u_crispScene, 0).y) - 0.5) > 0.5 - u_bars) { o = vec4(0.0, 0.0, 0.0, 1.0); return; }   /* letterbox bars, when a diorama asks for them */
+${water ? '  p = waterPixel(p);' : ''}
   if (u_bypass > 0.5) { o = vec4(texelFetch(u_scene, p, 0).rgb, 1.0); return; }
   vec3 c0 = lookAt(p);
   o = vec4(c0, g_spr && u_markA > 0.5 ? 0.5 : 1.0);   // (an edge sprite is marked for the clean-up pass, which leaves it as drawn)
@@ -765,6 +790,17 @@ precision highp float; precision highp int;
 uniform highp sampler2D u_sprTex, u_depth, u_idxTex, u_pixTex, u_dat; uniform mat4 u_pview; uniform vec3 u_peye; uniform float u_tanF, u_asp, u_portho, u_eGap, u_tol;
 flat in ivec2 v_a; flat in ivec4 v_i; flat in float v_dA; flat in vec3 v_P, v_N;
 out vec4 o;
+${water ? waterGLSL + `
+uniform vec3 u_waterSpritePalette[64];
+uniform vec4 u_rmp4[128], u_rmpN4[16];
+int spriteColor(int v) {
+  if (v >= 100) return clamp(v - 100, 0, 63);
+  int index = v_i.z;
+  int count = int(u_rmpN4[index >> 2][index & 3] + 0.5) & 15;
+  int offset = index * 8 + clamp(v_i.w + v - 8, 0, max(0, count - 1));
+  return clamp(int(u_rmp4[offset >> 2][offset & 3] + 0.5), 0, 63);
+}
+` : ''}
 const ivec2 EOD[4] = ivec2[4](ivec2(0, 1), ivec2(1, 0), ivec2(-1, 0), ivec2(0, -1)), ETD[4] = ivec2[4](ivec2(1, 0), ivec2(0, -1), ivec2(0, 1), ivec2(1, 0));
 vec4 sprT(int x, int y) { return texelFetch(u_sprTex, ivec2(x, y), 0); }
 int dabAt(ivec2 q) { ivec2 s = textureSize(u_idxTex, 0); if (q.x < 0 || q.y < 0 || q.x >= s.x || q.y >= s.y) return -1;
@@ -788,7 +824,11 @@ void main() {
       if (j < 0 || pixA(j).x < 0.5) other = dp - v_dA > u_eGap;
       else { vec4 A = pixA(j), B = pixB(j); other = abs(dot(hitAt(p, j, vec3(A.w, B.x, B.y)) - v_P, v_N)) > u_tol; }
       if (!other) discard; } }
-  o = vec4(float(v), float(v_i.z), float(v_i.w), 255.0) / 255.0; }`;
+  ${water ? `vec3 mark;
+  float axial = -(u_waterView * vec4(v_P, 1.0)).z;
+  o = vec4(waterPaint(u_waterSpritePalette[spriteColor(v)], gl_FragCoord.xy,
+    vec2(textureSize(u_depth, 0)), axial, mark), 1.0);` :
+    'o = vec4(float(v), float(v_i.z), float(v_i.w), 255.0) / 255.0;'} }`;
   const KEY_FS = POST_FS.replace('out vec4 o;', 'out ivec4 o;').replace(/void main\(\)\{[\s\S]*$/, 'void main(){ ivec2 p = ivec2(gl_FragCoord.xy); ivec3 k = keyCalc(p); o = ivec4(k, k.x == -99999 ? 0 : 1); }');
   return { POST_VS, POST_FS, KEY_FS, CLEAN_FS, DAMP_FS, COPY_FS, SPR_VS, SPR_FS };
 }

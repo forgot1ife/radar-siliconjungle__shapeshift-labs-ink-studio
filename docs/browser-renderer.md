@@ -51,11 +51,41 @@ tone mapping, and grading are inactive. Pass `reuseOrder: false` or
 | `clean`, `lineClean`, `damp` | Control isolated-pixel cleanup, line cleanup, and per-pixel flicker damping. |
 | `edges`, `lightShape` | Toggle surface edge sprites and per-pixel line shading. |
 | `scale`, `stepAnimation` | Change the splat size or disable the shared per-pixel animation clock stepping. |
+| `water: false` | Compare the scene with water optics disabled. |
 
 Set `frame.target` to a same-context framebuffer descriptor with `framebuffer`,
 `width`, and `height` to draw offscreen. Its dimensions supply the defaults for
 the frame. The [screen transition compositor](transitions.md#render-ink-studio-worlds-directly-into-a-transition)
 can create these targets and reuse their color textures on the GPU.
+
+## Water optics
+
+Attach a [water scene](procedural.md#water-bodies) as `world.water`.
+The renderer traces water along each perspective or orthographic ray before
+the background, and before each splat at its drawn depth. RGB extinction
+depends on the distance traveled through water. Foreground splats and
+translucent layers composite in the existing back-to-front draw order, so
+water behind an object cannot tint the object's own color. A frame can
+contain rays above, below, and crossing the waterline.
+
+Water bodies have optional `optics` controls. `tint` and `surfaceColor`
+take 0–1 RGB triples. `extinction` is a nonnegative RGB coefficient per
+world unit. `surface`, `foam`, and `caustics` take strengths in [0, 1].
+`refraction` takes a maximum displacement of 0–4 art pixels. Surface
+highlights are stronger at grazing angles, foam favors shallows, and
+stylized caustics fall off with depth. Screen-space refraction samples
+pixels that also see the same interface through the splat layers. The art
+palette still controls final quantization when `raw` is off.
+
+Run the [Sunken gate example](../examples/water-bodies.html) from the repository
+root with the commands below, then open the example through the local server.
+The camera controls show the same shallow-water snapshot from above, at the
+waterline, and underwater. The arrow keys swim against its sampled current.
+
+```sh
+node -e 'const fs = require("node:fs"); fs.mkdirSync("dist", { recursive: true }); fs.writeFileSync("dist/ink-studio.browser.js", require(".").bundle())'
+python3 -m http.server 8080
+```
 
 ## Feature coverage
 
@@ -66,6 +96,7 @@ can create these targets and reuse their color textures on the GPU.
 | Contours, cleanup, and camera-dependent glass beams | Supported | Supported |
 | Selective ink, diagnostic buffers, stable art resolves, and frame-history effects | Host integration | Supported |
 | View-dependent surface finishes, projected layers, reflection captures, and atmosphere volumes | Host integration | Supported |
+| Water-column extinction, surface highlights, foam, caustics, and refraction | Supported | Water data and queries |
 | Text rendering, PNG/APNG, scene reviews, and sprite atlases | Host integration | Supported |
 
 Pixel output can differ across the CPU and GPU backends. Use the same

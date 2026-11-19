@@ -13,7 +13,7 @@ export function createSplatPipeline(gl, { ascii, specialize = true, sampleCovera
   try {
     const { vertex, fragment } = splatShaderSources(ascii, sampleCoverage);
     const full = resources.program(vertex, fragment);
-    let plain, plainUnavailable = false;
+    let plain, water, plainUnavailable = false;
     let disposed = false;
     let orderCapacity = 0, orderCount = 0;
     const vao = resources.allocate('VertexArray');
@@ -40,6 +40,13 @@ export function createSplatPipeline(gl, { ascii, specialize = true, sampleCovera
       // explicitly be false before the shader can omit their work.
       programFor(features) {
         check();
+        if (features?.water) {
+          if (!water) {
+            const wet = splatShaderSources(ascii, sampleCoverage, { water: true });
+            water = resources.program(wet.vertex, wet.fragment);
+          }
+          return water;
+        }
         if (!specialize || plainUnavailable || features?.lamps !== false ||
             features.fine !== false || features.textZones !== false) return full;
         if (!plain) {
