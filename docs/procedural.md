@@ -106,6 +106,7 @@ const mesh = P.geometry.toKitMesh(geometry, (owner, material) => [.6, .64, .61])
 | `hydrology.breach(basin)`, `hydrology.incise(basin)`, `hydrology.meander(route)`, `hydrology.corridor(routes, height)`, `hydrology.habitat(basin)` | Watershed edits, river migration and cutoff routes, levees, floodplain masks and climate fields |
 | `biomes.create(options)` | Shared XYZ sampling of normalized biome weights, air, solid or water membership, and local conditions |
 | `waterBodies.create(options)`, `waterBodies.fromShallowWater(snapshot, options)`, `waterBodies.scene(bodies)` | Water frames shared by shoreline placement, current and depth queries, and WebGL visibility |
+| `biomeRecipes.create(options)` | Retained biome recipes, brush strokes, placement pins, and explained habitat and population queries |
 | `routes.visibility(start, end, obstacles)`, `routes.spline(route, options)`, `routes.travelTime(sources, options)` | Polygon visibility paths, clearance-tested corner fitting and fast-marching travel-time fields |
 | `geometry.delaunay(points, options)`, `geometry.triangulatePolygon(rings)`, `routes.network(points)`, `routes.steiner(points, edges, terminals)` | Constrained planar triangulation, graph layouts with optional loops, and shared branch networks |
 | `routes.tensor(components)`, `routes.followTensor(field, seeds)`, `routes.growStreets(seeds, options)`, `routes.parcels(outline)`, `routes.medial(rings)` | Directional street systems, connected seeded roads, frontage lots and medial paths |
@@ -1264,6 +1265,8 @@ It is available through the Node toolkit and browser bundle.
 `sample(x, y, z, time = 0)` returns `{biome, weights, medium, conditions}`.
 `mediumAt(x, y, z, time = 0)` returns the medium alone and skips biome and
 condition sampling.
+`inspect(x, y, z, time = 0)` adds the IDs, biome IDs, and raw weights of all
+regions whose bounds contain the query, including zero-weight regions.
 
 - Each region has a unique `id`, inclusive XYZ `bounds: {min, max}`, and
   an optional `biome` ID that defaults to the region ID. `weight` defaults
@@ -1376,6 +1379,93 @@ const eyesMedium = environment.mediumAt(...eyePosition);
   arbitrary solid or air SDF overrides in mind when authoring water geometry,
   since an override to the biome query alone does not carve the WebGL volume.
 
+### Retained biome recipes
+
+`P.biomeRecipes.create({seed, fallback, recipes, regions, media, solid, conditions})`
+combines recipe data with the shared XYZ biome query. It returns an authoring
+object and its retained `document`. `author.view()` gives a read view of one
+document revision. Baking, placement, and inspection can share that view.
+Edits become visible on the next view and earlier views continue to read their
+captured definitions. Keep external terrain and environment samplers stable
+for the lifetime of a view.
+
+Recipes are JSON records with an `id` and at least one named `materials` ramp.
+The other fields are optional.
+
+| Field | Meaning |
+| --- | --- |
+| `landform: {kind, height}` | A named landform and a height offset given as a number or [procedural field](#composable-procedural-fields). Shared biome weights blend the offsets. Apply the result to a host terrain carrier. |
+| `materials: {role: [color, ...]}` | Named ramps with up to 32 colors each. Colors accept hex strings, 24-bit integers, or normalized RGB triples. |
+| `strata: {fallback, layers}` | Material role names selected by height relative to the carrier surface. A layer has `min`, `max` and `material`, with an optional `id` and `pattern`. Negative heights are underground. The fallback defaults to the first role by ID. |
+| `habitat: {media, ranges}` | Optional allowed medium kinds and scalar conditions. A range supplies `min`, `max`, or both. Optional `fade` is the distance outside the range over which its weight falls to zero. Missing condition values contribute zero. |
+| `populations` | Records with `id`, `species`, `asset`, `density` in [0, 1], and optional `habitat`. Each rule scales its density by its recipe weight, habitat weight, and paint exclusion. |
+| `landmarks` | Records with `id`, `asset`, and `at` as normalized XYZ coordinates in a region. Optional seeded `jitter` and population `clearance` are in world units. |
+| `routes` | Records with `id`, `points`, and optional population `clearance`. A point is normalized XYZ or `{landmark: 'id'}`. Unpinned routes follow pinned landmark references. |
+| `ambient`, `traversal` | Ambient cue records `{id, gain}` have a gain in [0, 1]. Views blend gains across recipes. Traversal tags are strings from the highest-weight recipe. The host maps IDs and tags to assets and behavior. |
+
+Regions name an `id`, a `biome` recipe and inclusive XYZ `bounds`. An
+optional `weight` in [0, 1] defaults to 1. An optional seeded `field` expression
+contributes a second weight clamped to [0, 1]. Medium and conditions use
+the existing biome sampler. Habitat ranges can refer to any condition the host
+supplies, as well as `elevation` (world Y) and `depth` (from the local medium).
+The fallback recipe fills unused biome weight. Its population rules still
+test their own habitat.
+
+- `setRecipe(recipe)` and `setRegion(region)` add or replace the named JSON
+  records. `removeRegion(id)` removes the region and leaves its authored pins
+  available if the region returns. `setSeed(seed)` reseeds fields and generated
+  placements. Paint and pins stay in world space.
+- `paint({id, channel, target, operation, points, width, softness, radii,
+  strength, height})` uses the `masks.stroke` swept-disc shape.
+  Points are XZ. Optional `height: [minY, maxY]` restricts the stroke vertically.
+  `strength` defaults to 1. A `biome` add stroke blends toward its target
+  recipe; an erase blends back toward the procedural weights. A
+  `population` stroke adds or erases a species exclusion, with `*` for all
+  species. Global and species exclusions combine multiplicatively on the
+  remaining density. Strokes apply oldest to newest. Reusing an ID edits
+  that stroke in place. `removePaint(id)` deletes it.
+- `pinLandmark(regionId, landmarkId, point)` and
+  `pinRoute(regionId, routeId, points)` override generated positions with world
+  XYZ. `unpinLandmark` and `unpinRoute` restore generation. `view.layout`
+  gives the realized positions and paths. Clearance around each is 3D.
+- `view.sample(x,y,z,time)` returns the current weights, medium, and
+  conditions. `view.appearanceAt(x,y,z,{surfaceY,time})` returns the height
+  offset, chosen stratum and ramp, traversal tags, and weighted ambient cues.
+  `view.inspect(x,y,z,{surfaceY,time,species})` adds procedural region weights,
+  individual habitat checks, applied strokes, exclusions, and nearby
+  reservations. Set `species` to explain a rule even when its recipe has zero
+  weight at the point. A failed check has weight zero and a missing
+  measurement has value `null`.
+- `view.populate(bounds,{height,layer,time,...placementOptions})` returns
+  seeded instances using the stable population grid. The height callback
+  returns world Y or `null` for no surface. Use distinct layer names for the
+  surface, sea bed, and cave floor. Use the same world-space height sampler,
+  time, and placement options across chunks, including any neighbor halo.
+  Instance IDs combine layer and stable candidate key. Each sample supplies
+  its world position, species, asset, and recipe.
+  Pass the same optional `habitatOffset` to `populate` and `inspect` to
+  sample conditions and paint a fixed distance above or below the placement
+  point. A positive offset lets a sea-bed plant anchor at the bed and test
+  the water around its leaves. Output bounds and reservation checks still
+  use the anchor. Inspection reports the height it sampled as `sampleY`.
+
+Group edits with `document.transact(label, callback)` to share one undo step.
+`document.serialize()` saves intent. Pass the saved data as `snapshot` to
+`create` and supply the same external `media`, `solid`, and `conditions`.
+These runtime sources can come from a published water snapshot.
+
+The [headless example](../examples/biome-recipes.js) defines an alpine ridge,
+a tidal marsh, a clear kelp bed, and a flooded cave beneath the kelp.
+
+```js
+const { KIT } = require('.').load();
+const world = require('./examples/biome-recipes')(KIT);
+const view = world.view();
+view.inspect(-3, 0.5, 3);                        // marsh moisture and elevation checks
+view.inspect(7, -2, 3, { species: 'kelp' });       // kelp blocked by low water clarity
+view.inspect(7, -9, 3, { species: 'glow-moss' });  // cave pool at the same XZ
+```
+
 ### Stable spacing and finite Poisson sampling
 
 Opt in to minimum-distance placement with
@@ -1385,6 +1475,9 @@ the exclusion distance. Candidate identity and the decision are based on world
 coordinates and a bounded neighbor halo. Use the same seed, settings, and
 world-space evaluator in every chunk. The evaluator also sees candidates just
 outside the output regions so splitting a region produces the same placements.
+The optional fourth argument to `layout(regions, evaluate, options, include)`
+filters emitted samples with `include(sample)` before counting them against
+the instance budget. Eligible neighbors still participate in spacing.
 
 Set `exclusion.maxDistance` to bound variable `minDistance` values returned
 by the evaluator or values in `exclusion.species`. An evaluator may return

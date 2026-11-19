@@ -47,7 +47,37 @@
     }
     return near;
   }
-  A.spatial = { bounds, overlap, contains, expand, boxOf, rayBox };
+  // Snapshot the bounds. Leaves still test each bound exactly after pruning.
+  function pointIndex(records) {
+    function build(rows) {
+      if (!rows.length) return null;
+      const extent = boxOf(rows.flatMap(row => [row.box.min, row.box.max]));
+      if (rows.length <= 8) return { extent, rows };
+      const centres = boxOf(rows.map(row => row.centre));
+      let axis = 0;
+      for (let i = 1; i < 3; i++)
+        if (centres.max[i] - centres.min[i] > centres.max[axis] - centres.min[axis]) axis = i;
+      rows.sort((a, b) => a.centre[axis] - b.centre[axis] || a.index - b.index);
+      const middle = Math.floor(rows.length / 2);
+      return { extent, left: build(rows.slice(0, middle)), right: build(rows.slice(middle)) };
+    }
+    const tree = build(records.map((record, index) => {
+      const box = bounds(record.bounds);
+      return { box, centre: box.min.map((v, i) => v / 2 + box.max[i] / 2), record, index };
+    }));
+    function visit(node, point, match) {
+      if (!node || !contains(node.extent, point)) return;
+      if (node.rows) {
+        for (const row of node.rows)
+          if (contains(row.box, point)) match(row.record);
+        return;
+      }
+      visit(node.left, point, match);
+      visit(node.right, point, match);
+    }
+    return (point, match) => visit(tree, point, match);
+  }
+  A.spatial = { bounds, overlap, contains, expand, boxOf, rayBox, pointIndex };
   function plane(raw) {
     const d = clone(raw);
     if (!d || !name(d.id) || !vector(d.origin) || !vector(d.u) || !vector(d.v))

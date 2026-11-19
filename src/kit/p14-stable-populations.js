@@ -141,9 +141,10 @@
     return { at, accept, work: () => ({ evaluated: states.size * p.slots, comparisons }) };
   }
 
-  function layout(regions, evaluate, raw = {}) {
+  function layout(regions, evaluate, raw = {}, include) {
     const p = parameters(raw);
-    if (!Array.isArray(regions) || regions.length > 4096 || typeof evaluate !== 'function')
+    if (!Array.isArray(regions) || regions.length > 4096 || typeof evaluate !== 'function' ||
+        (include !== undefined && typeof include !== 'function'))
       throw new Error('Populations need bounded work regions and an evaluator');
     const cells = new Map(),
       instances = [],
@@ -167,6 +168,8 @@
       return regions.some(b => x >= b.min[0] && x <= b.max[0] && z >= b.min[2] && z <= b.max[2]);
     }
     function emit(candidate, sample) {
+      // Scope the output without changing which neighbors participate in spacing.
+      if (include && !include(sample)) return;
       if (instances.length >= p.maxInstances) throw new Error('Population exceeds its instance budget');
       instances.push(A.data.freeze({ ...candidate, sample }));
     }

@@ -1,7 +1,7 @@
 /* World-space biome weights and exact medium membership. */
 (function (K) {
   const P = K.procedural;
-  const { bounds, boxOf, contains } = P.spatial;
+  const { pointIndex } = P.spatial;
   const finite = Number.isFinite;
   const name = value => typeof value === 'string' && value.trim().length > 0;
   const vector = value => Array.isArray(value) && value.length === 3 &&
@@ -13,44 +13,16 @@
   const air = dryMedium('air');
   const rock = dryMedium('solid');
 
-  // Group world-space bounds by median centre. Leaves still test each bound
-  // before sampling a field, so the tree cannot change boundary membership.
-  function buildIndex(rows) {
-    if (!rows.length) return null;
-    const extent = boxOf(rows.flatMap(row => [row.bounds.min, row.bounds.max]));
-    if (rows.length <= 8) return { extent, rows };
-    const centres = boxOf(rows.map(row => row.centre));
-    let axis = 0;
-    for (let i = 1; i < 3; i++)
-      if (centres.max[i] - centres.min[i] > centres.max[axis] - centres.min[axis]) axis = i;
-    rows.sort((a, b) => a.centre[axis] - b.centre[axis] || compareIds(a.id, b.id));
-    const middle = Math.floor(rows.length / 2);
-    return { extent, left: buildIndex(rows.slice(0, middle)), right: buildIndex(rows.slice(middle)) };
-  }
-
-  function visit(node, point, match) {
-    if (!node || !contains(node.extent, point)) return;
-    if (node.rows) {
-      for (const row of node.rows)
-        if (contains(row.bounds, point)) match(row);
-      return;
-    }
-    visit(node.left, point, match);
-    visit(node.right, point, match);
-  }
-
   function compileRows(rows, type, prepare) {
     if (!Array.isArray(rows)) throw new TypeError('Biome ' + type + ' must be an array');
     const ids = new Set();
-    return buildIndex(Array.from(rows, raw => {
+    return pointIndex(Array.from(rows, raw => {
       const id = raw?.id;
       if (!name(id) || ids.has(id)) throw new TypeError('Biome ' + type + ' need unique nonempty IDs');
       ids.add(id);
       if (!vector(raw.bounds?.min) || !vector(raw.bounds?.max))
         throw new TypeError('Biome ' + type + ' need finite XYZ bounds');
-      const box = bounds(raw.bounds);
-      const centre = box.min.map((min, i) => min / 2 + box.max[i] / 2);
-      return { id, bounds: box, centre, ...prepare(raw) };
+      return { id, bounds: raw.bounds, ...prepare(raw) };
     }));
   }
 
@@ -94,7 +66,7 @@
       const [x, y, z] = point;
       if (solid && inside(solid, x, y, z, time)) return rock;
       let winner, surfaceY;
-      visit(mediumIndex, point, row => {
+      mediumIndex(point, row => {
         const { id, priority, sdf, fixed, surface } = row;
         if (sdf && !inside(sdf, x, y, z, time)) return;
         let height = null;
@@ -125,7 +97,7 @@
       return resolveMedium(pointAt(x, y, z, time), time);
     }
 
-    function sample(x, y, z, time = 0) {
+    function evaluate(x, y, z, time, trace) {
       const point = pointAt(x, y, z, time);
       const medium = resolveMedium(point, time);
       let local = empty;
@@ -141,11 +113,12 @@
         }
       }
 
-      const byBiome = new Map();
-      visit(regionIndex, point, ({ biome, weight }) => {
+      const byBiome = new Map(), regions = trace ? [] : null;
+      regionIndex(point, ({ id, biome, weight }) => {
         const value = typeof weight === 'function' ? weight(x, y, z, time, local, medium) : weight;
         if (!validWeight(value)) throw new RangeError('Biome weight samples must be in [0, 1]');
         if (value > (byBiome.get(biome) ?? 0)) byBiome.set(biome, value);
+        if (trace) regions.push({ id, biome, weight: value });
       });
       const entries = [...byBiome].sort(([a], [b]) => compareIds(a, b));
       const total = entries.reduce((sum, [, weight]) => sum + weight, 0);
@@ -156,10 +129,15 @@
       }
       entries.sort(([a, w], [b, v]) => v - w || compareIds(a, b));
       const weights = entries.map(([id, weight]) => ({ id, weight: weight / Math.max(1, total) }));
-      return { biome: weights[0].id, weights, medium, conditions: local };
+      const result = { biome: weights[0].id, weights, medium, conditions: local };
+      return trace ? { ...result, regions: regions.sort((a, b) => compareIds(a.id, b.id)) } : result;
     }
 
-    return Object.freeze({ sample, mediumAt });
+    return Object.freeze({
+      sample: (x, y, z, time = 0) => evaluate(x, y, z, time, false),
+      inspect: (x, y, z, time = 0) => evaluate(x, y, z, time, true),
+      mediumAt
+    });
   }
 
   P.biomes = Object.freeze({ create });
