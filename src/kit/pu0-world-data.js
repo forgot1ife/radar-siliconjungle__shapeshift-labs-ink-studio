@@ -84,30 +84,37 @@
     }
     return root;
   }
-  function write(root, path, value, remove, index = 0) {
-    check(record(root) || Array.isArray(root), 'Edit parent is not a collection at ' + path.slice(0,index).join('/'));
-    const key = path[index];
-    if (Array.isArray(root))
-      check(/^(0|[1-9][0-9]*)$/.test(key) && Number(key) <= root.length, 'Invalid array index ' + key);
-    if (index + 1 === path.length) {
-      if (remove) check(own(root,key), 'Cannot remove missing path ' + path.join('/'));
-      if (!remove && equal(root[key],value)) return root;
-      const next = Array.isArray(root) ? root.slice() : {...root};
-      if (!remove) next[key] = value;
-      else if (Array.isArray(next)) next.splice(Number(key),1);
-      else delete next[key];
-      return data.freeze(next);
-    }
-    const child = write(root[key],path,value,remove,index+1);
-    if (child === root[key]) return root;
-    const next = Array.isArray(root) ? root.slice() : {...root};
-    next[key] = child;
-    return data.freeze(next);
-  }
   function apply(source, operations, {validate = manifest} = {}) {
     check(Array.isArray(operations) && operations.length <= 10000, 'Expected a bounded array of world edits');
-    let next = source;
-    const paths = [];
+    let next = source, changed = false;
+    const paths = [], owned = new WeakSet();
+    function mutable(node) {
+      if(owned.has(node))return node;
+      const draft=Array.isArray(node)?node.slice():{...node};
+      owned.add(draft);
+      return draft;
+    }
+    function write(root,path,value,remove,index=0) {
+      check(record(root)||Array.isArray(root),'Edit parent is not a collection at '+path.slice(0,index).join('/'));
+      const key=path[index];
+      if(Array.isArray(root))
+        check(/^(0|[1-9][0-9]*)$/.test(key)&&Number(key)<=root.length,'Invalid array index '+key);
+      if(index+1===path.length){
+        if(remove)check(own(root,key),'Cannot remove missing path '+path.join('/'));
+        if(!remove&&equal(root[key],value))return root;
+        const draft=mutable(root);
+        if(!remove)draft[key]=value;
+        else if(Array.isArray(draft))draft.splice(Number(key),1);
+        else delete draft[key];
+        changed=true;
+        return draft;
+      }
+      const child=write(root[key],path,value,remove,index+1);
+      if(child===root[key])return root;
+      const draft=mutable(root);
+      draft[key]=child;
+      return draft;
+    }
     for (const [index, edit] of operations.entries()) {
       try {
         check(record(edit), 'Expected an edit record');
@@ -119,14 +126,14 @@
         check(['set','remove','merge'].includes(edit.op), 'Unknown edit operation ' + edit.op);
         if (edit.op === 'merge') check(record(before) && record(edit.value), 'Merge needs two records');
         const value = edit.op === 'remove' ? undefined : edit.op === 'merge' ? {...before,...copy(edit.value)} : copy(edit.value);
-        const changed = write(next,path,value,edit.op === 'remove');
-        if (changed !== next) paths.push(path);
-        next = changed;
+        changed=false;
+        next=write(next,path,value,edit.op==='remove');
+        if(changed)paths.push(path);
       } catch (error) {
         throw Error('Edit ' + (index + 1) + ': ' + error.message);
       }
     }
-    if (next !== source && validate) validate(next);
+    if (next !== source && validate) validate(data.freeze(next));
     return data.freeze({world:next, paths});
   }
   function endpoint(value) {

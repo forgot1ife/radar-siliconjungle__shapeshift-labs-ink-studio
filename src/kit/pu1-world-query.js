@@ -5,6 +5,7 @@
   const ok = value => ({status:'ok',value});
   const missing = (reason, status = 'unavailable') => ({status,reason});
   const sorted = object => Object.keys(object).sort();
+  const origin = Object.freeze([0,0,0]);
   function condition(rule, value) {
     if (rule === undefined) return true;
     check(record(rule), 'Expected a condition');
@@ -30,12 +31,95 @@
       default: throw Error('Unknown condition operator ' + rule.op);
     }
   }
-  function create(view, systems = {}) {
+  const parentOf = entity => entity?.anchor?.entity ?? entity?.parent;
+  function projection(systems) {
+    const poses=Object.entries(systems).filter(([,system])=>system.pose);
+    if(poses.some(([,system])=>typeof system.poseEntities!=='function'))return null;
+    const children=new Map();
+    let tree, current, revision, bounds;
+    function attach(parent,id) {
+      if(!parent)return;
+      const key=String(parent);
+      if(!children.has(key))children.set(key,new Set());
+      children.get(key).add(id);
+    }
+    function detach(parent,id) {
+      if(!parent)return;
+      const key=String(parent), attached=children.get(key);
+      if(!attached)return;
+      attached.delete(id);
+      if(!attached.size)children.delete(key);
+    }
+    function update(entities,states,location) {
+      const before=current;
+      if(before?.entities===entities&&poses.every(([id])=>before.states[id]===states[id]))return false;
+      // A failed or historical read can safely rebind the index to its own snapshot.
+      current=undefined;
+      const edits=revision&&revision.before===before?.entities&&revision.after===entities?revision.ids:null;
+      const rebuild=!before||before.entities!==entities&&!edits;
+      if(!rebuild){
+        const dirty=new Set(edits);
+        for(const id of dirty){
+          detach(parentOf(own(before.entities,id)?before.entities[id]:null),id);
+          attach(parentOf(own(entities,id)?entities[id]:null),id);
+        }
+        for(const [id,system] of poses){
+          if(before.states[id]===states[id])continue;
+          for(const state of [before.states[id],states[id]])
+            for(const entity of system.poseEntities(state))
+              if(typeof entity==='string'||typeof entity==='number')dirty.add(String(entity));
+        }
+        // Iteration includes new members, so parent changes reach nested attachments.
+        for(const id of dirty){
+          for(const child of children.get(id)??[])dirty.add(child);
+          set(entities,id,location);
+        }
+      }else{
+        tree=W.spatial.create();
+        bounds={min:[Infinity,Infinity,Infinity],max:[-Infinity,-Infinity,-Infinity]};
+        children.clear();
+        for(const id of Object.keys(entities)){
+          attach(parentOf(entities[id]),id);
+          set(entities,id,location);
+        }
+      }
+      current={entities,states};
+      if(revision?.after===entities)revision=undefined;
+      return rebuild;
+    }
+    function set(entities,id,location) {
+      const row=own(entities,id)&&entities[id];
+      const p=row&&(!poses.length&&!parentOf(row)?row.position??origin:location(id)?.point);
+      if(!p||!vector(p)){tree.remove(id);return;}
+      for(let axis=0;axis<3;axis++){
+        bounds.min[axis]=Math.min(bounds.min[axis],p[axis]);
+        bounds.max[axis]=Math.max(bounds.max[axis],p[axis]);
+      }
+      tree.set(id,{min:p,max:p,value:freeze({...row,id,position:p}),rank:0});
+    }
+    function change(before,after,ids) {
+      if(current?.entities===before&&before!==after)revision={before,after,ids};
+    }
+    function spatial(entities,states,location,point,radius,where) {
+      const cold=update(entities,states,location);
+      const result=[];
+      const min=point.map(n=>n-radius-Math.max(Math.abs(n),radius)*Number.EPSILON);
+      const max=point.map(n=>n+radius+Math.max(Math.abs(n),radius)*Number.EPSILON);
+      const sceneWide=min.every((n,axis)=>n<=bounds.min[axis]&&max[axis]>=bounds.max[axis]);
+      tree.overlap(min,max,({value})=>{
+        if(K.V.dist(point,value.position)<=radius&&condition(where,value))result.push(value);
+      },cold||sceneWide);
+      return result.sort((a,b)=>a.id.localeCompare(b.id));
+    }
+    return Object.freeze({change,spatial});
+  }
+
+  function create(view, systems = {}, projected) {
     const {world, states = {}, signals = {}, tick = 0, history = [], dropped = 0} = view;
     const fields = new Map(), traces = new Map();
     const base = {world, states, signals, tick, time:view.time ?? tick * world.dt};
     const locations = new Map(), active = new Set();
-    let spatialIndex;
+    let spatialIndex, aliases;
 
     function location(id) {
       if (locations.has(id)) return locations.get(id);
@@ -48,7 +132,7 @@
       }
       if (!point && entity) {
         point = entity.position ?? [0,0,0];
-        const parent = entity.anchor?.entity ?? entity.parent;
+        const parent = parentOf(entity);
         if (parent) {
           const host = location(parent);
           const origin = host&&socket(host,entity.anchor?.socket);
@@ -126,8 +210,14 @@
     }
     function resolve(map,name) {
       if (map.has(name)) return map.get(name);
-      const items = [...map.values()].filter(row => row.key === name);
-      return items.length === 1 ? items[0] : items.length ? null : undefined;
+      aliases ??= new Map();
+      let byKey=aliases.get(map);
+      if(!byKey){
+        byKey=new Map();
+        for(const row of map.values())byKey.set(row.key,byKey.has(row.key)?null:row);
+        aliases.set(map,byKey);
+      }
+      return byKey.get(name);
     }
     function execute(map,name,site,args) {
       const descriptor = resolve(map,name);
@@ -161,6 +251,7 @@
     }
     function spatial({point,radius,where} = {}) {
       check(vector(point) && Number.isFinite(radius) && radius >= 0, 'Expected a finite spatial query');
+      if(projected)return projected.spatial(world.entities,states,location,point,radius,where);
       const size=4, at=value=>Math.floor(value/size);
       if(!spatialIndex){
         const rows=[], cells=new Map();
@@ -269,5 +360,5 @@
     compare(a,b,[]);
     return freeze(operations);
   }
-  W.query = Object.freeze({create,condition,ok,missing,fromScene,keyedChanges});
+  W.query = Object.freeze({create,condition,ok,missing,fromScene,keyedChanges,projection});
 })(KIT);

@@ -3,14 +3,16 @@
   const W=K.world, Q=W.query, V=K.V, M=K.M;
   const {check,record,own,id,vector}=W.data, {clamp}=W.fields;
   const zero=[0,0,0], up=[0,1,0];
+  const prepared = new WeakMap();
+  const indexThreshold = 32;
   const spin=(rotation,omega,dt) => V.len(omega)>1e-9 ? M.mul(M.rot(V.norm(omega),V.len(omega)*dt),rotation) : rotation;
   function distance(body,point) {
-    const local=M.app(M.tr(body.rotation),V.sub(point,body.position));
+    const local=M.app(geometry(body).inverse,V.sub(point,body.position));
     const q=local.map((n,i)=>Math.abs(n)-body.half[i]);
     return Math.hypot(...q.map(n=>Math.max(n,0)))+Math.min(Math.max(...q),0);
   }
   function column(body,x,z,low,high) {
-    const inv=M.tr(body.rotation), from=M.app(inv,V.sub([x,high,z],body.position)), dir=M.app(inv,[0,-1,0]);
+    const inv=geometry(body).inverse, from=M.app(inv,V.sub([x,high,z],body.position)), dir=M.app(inv,[0,-1,0]);
     let start=0, end=high-low, face=-1, sign=1;
     for(let k=0;k<3;k++){
       if(Math.abs(dir[k])<1e-10){
@@ -27,14 +29,59 @@
     normal[face]=sign;
     return {y:high-start,normal:M.app(body.rotation,normal),id:body.id,material:body.material};
   }
-  function extents(body) {
-    return [0,1,2].map(i=>body.half.reduce((sum,n,j)=>sum+Math.abs(body.rotation[i*3+j])*n,0));
+  function geometry(body) {
+    let shape=prepared.get(body);
+    if(shape)return shape;
+    const {rotation,half}=body;
+    const extent=[0,1,2].map(i=>half.reduce((sum,n,j)=>sum+Math.abs(rotation[i*3+j])*n,0));
+    shape={extent,inverse:M.tr(rotation),bounds:null};
+    prepared.set(body,shape);
+    return shape;
   }
+  function boundsOf(body) {
+    const shape=geometry(body);
+    if(shape.bounds)return shape.bounds;
+    const {position,rotation}=body, {extent,inverse}=shape, product=M.mul(rotation,inverse);
+    const error=Math.max(...product.map((n,i)=>Math.abs(n-(i%4===0?1:0))));
+    const scale=Math.max(1,...position.map(Math.abs),...extent), padding=scale*(1e-12+8*error);
+    const min=position.map((n,i)=>n-extent[i]-padding), max=position.map((n,i)=>n+extent[i]+padding);
+    const bounded=error<=1e-9&&[...min,...max].every(Number.isFinite);
+    return shape.bounds={min,max,bounded};
+  }
+  function extents(body) { return geometry(body).extent; }
   function mechanics(config) {
     const start=config.bodies??{}, jointSpecs=config.joints??{}, forceSpecs=config.forces??{};
     check([start,jointSpecs,forceSpecs].every(group=>record(group)&&Object.keys(group).length<=512&&Object.keys(group).every(id)),
       'Mechanics needs bounded body, joint and force tables');
     const initialBodies={}, initials={}, inputs={}, outputs={}, claimed=new Map(), driveOrder=[], mountOrder=[];
+    const index = W.spatial.create(), indexed = new Map(), poseCache = new WeakMap();
+    let indexedBodies = null, unbounded = 0, enoughBodies = false;
+    const entityNames = new Set(Object.entries(start).map(([key,row])=>row.entity??key));
+    function updateCollider(body,rank) {
+      const prior=indexed.get(body.id);
+      if(prior?.body===body&&prior.rank===rank)return;
+      if(prior&&!prior.bounded)unbounded--;
+      const {min,max,bounded}=boundsOf(body);
+      if(!bounded)unbounded++;
+      indexed.set(body.id,{body,rank,bounded});
+      if(bounded)index.set(body.id,{min,max,rank,value:body});
+      else index.remove(body.id);
+    }
+    function colliderIndex(bodies) {
+      if(indexedBodies!==bodies){
+        const rows=Object.values(bodies);
+        indexedBodies=bodies;
+        enoughBodies=rows.length>=indexThreshold;
+        if(!enoughBodies)return null;
+        for(const [key,prior] of indexed)if(!own(bodies,key)){
+          if(!prior.bounded)unbounded--;
+          indexed.delete(key);
+          index.remove(key);
+        }
+        for(let rank=0;rank<rows.length;rank++)updateCollider(rows[rank],rank);
+      }
+      return enoughBodies&&!unbounded?index:null;
+    }
     for (const [key,item] of Object.entries(start)) {
       check(record(item)&&vector(item.half)&&item.half.every(n=>n>=.01)&&vector(item.position??zero)&&
         vector(item.velocity??zero)&&vector(item.angular??zero)&&Number.isFinite(item.mass??1)&&(item.mass??1)>0,
@@ -93,8 +140,8 @@
       const sampled=config.terrain&&context.query.probe(config.terrain,point);
       return sampled?.status==='ok'&&Number.isFinite(sampled.value)?sampled.value:config.ground??0;
     }
-    function placeMounted(bodies,joints,dt,previous=bodies) {
-      for (const key of mountOrder) {
+    function placeMounted(bodies,joints,dt,previous=bodies,order=mountOrder) {
+      for (const key of order) {
         const spec=jointSpecs[key], joint=joints[key], child=bodies[spec.child], parent=bodies[spec.parent];
         if (!joint.active||!child||spec.parent&&!parent) continue;
         const axis=V.norm(spec.axis??up), parentRotation=parent?.rotation??M.id();
@@ -138,17 +185,13 @@
       return next;
     }
     function rootsOf(bodies,joints) {
-      const parents={};
-      for(const key of mountOrder) {
+      const roots=Object.fromEntries(Object.keys(bodies).map(key=>[key,key]));
+      for(const key of mountOrder){
         const joint=jointSpecs[key];
         if(joints[key].active&&own(bodies,joint.child))
-          parents[joint.child]=joint.parent&&own(bodies,joint.parent)?joint.parent:null;
+          roots[joint.child]=joint.parent&&own(bodies,joint.parent)?roots[joint.parent]:null;
       }
-      function root(key){
-        if(!own(parents,key))return key;
-        return parents[key]===null?null:root(parents[key]);
-      }
-      return Object.fromEntries(Object.keys(bodies).map(key=>[key,root(key)]));
+      return roots;
     }
     const follows=Object.keys(start).filter(key=>start[key].fixed&&(start[key].follow===true||
       start[key].position===undefined&&start[key].entity!==undefined)&&!claimed.has(key));
@@ -173,11 +216,20 @@
           ctx.emit('support-lost',{joint:key,body:joint.child});
         }
       }
-      const roots=rootsOf(bodies,joints), masses={}, force={}, torque={};
+      const roots=rootsOf(bodies,joints), masses={}, force={}, torque={}, members=new Map(), mounts=new Map();
       placeMounted(bodies,joints,ctx.dt,state.bodies);
       for(const [key,body] of Object.entries(bodies)){
         const root=roots[key];
-        if(root) masses[root]=(masses[root]??0)+body.mass;
+        if(!root)continue;
+        masses[root]=(masses[root]??0)+body.mass;
+        if(!members.has(root))members.set(root,[]);
+        members.get(root).push(key);
+      }
+      for(const key of mountOrder){
+        const root=roots[jointSpecs[key].child];
+        if(!root||!joints[key].active)continue;
+        if(!mounts.has(root))mounts.set(root,[]);
+        mounts.get(root).push(key);
       }
       for(const [key,spec] of Object.entries(forceSpecs)){
         const body=bodies[spec.body], root=roots[spec.body];
@@ -221,8 +273,8 @@
       for(const key of rootKeys){
         if(bodies[key].fixed)continue;
         let lift=0;
-        for(const [child,body] of Object.entries(bodies)){
-          if(roots[child]!==key)continue;
+        for(const child of members.get(key)){
+          const body=bodies[child];
           const half=extents(body);
           const bottom=body.position[1]-half[1];
           for(const x of [-1,0,1])for(const z of [-1,0,1]){
@@ -238,18 +290,65 @@
       }
       placeMounted(bodies,joints,ctx.dt,state.bodies);
       const keys=Object.keys(bodies).sort();
-      for(let i=0;i<keys.length;i++)for(let j=i+1;j<keys.length;j++){
-        const a=bodies[keys[i]], b=bodies[keys[j]], ra=roots[a.id], rb=roots[b.id];
-        if(ra===rb)continue;
-        const wa=ra&&!bodies[ra].fixed?1/masses[ra]:0, wb=rb&&!bodies[rb].fixed?1/masses[rb]:0;
-        if(!wa&&!wb)continue;
-        const ea=extents(a),eb=extents(b),delta=V.sub(b.position,a.position),
-          overlap=delta.map((d,k)=>ea[k]+eb[k]-Math.abs(d));
-        if(overlap.some(n=>n<=1e-6))continue;
-        const axis=overlap.indexOf(Math.min(...overlap)), separation=Math.sign(delta[axis]||1)*overlap[axis]/(wa+wb);
-        if(wa)translateRoot(ra,axis,-separation*wa,-.15);
-        if(wb)translateRoot(rb,axis,separation*wb,-.15);
-        placeMounted(bodies,joints,ctx.dt,state.bodies);
+      const weights=Object.fromEntries(keys.map(key=>{
+        const root=roots[key];
+        return [key,root&&!bodies[root].fixed?1/masses[root]:0];
+      }));
+      if(Object.values(weights).some(Boolean)){
+        const broad=keys.length>=indexThreshold&&colliderIndex(bodies);
+        const order=broad&&new Map(keys.map((key,i)=>[key,i]));
+        const dirty=new Set();
+        function refit(root) {
+          for(const member of members.get(root))updateCollider(bodies[member],indexed.get(member).rank);
+        }
+        function move(root,axis,delta,defer) {
+          translateRoot(root,axis,delta,-.15);
+          placeMounted(bodies,joints,ctx.dt,state.bodies,mounts.get(root)??[]);
+          if(!broad)return;
+          if(defer)dirty.add(root);
+          else refit(root);
+        }
+        function correct(i,j,defer=false) {
+          const a=bodies[keys[i]], b=bodies[keys[j]], ra=roots[a.id], rb=roots[b.id];
+          if(ra===rb)return false;
+          const wa=weights[a.id], wb=weights[b.id];
+          if(!wa&&!wb)return false;
+          const ea=extents(a),eb=extents(b),delta=V.sub(b.position,a.position),
+            overlap=delta.map((d,k)=>ea[k]+eb[k]-Math.abs(d));
+          if(overlap.some(n=>n<=1e-6))return false;
+          const axis=overlap.indexOf(Math.min(...overlap)), separation=Math.sign(delta[axis]||1)*overlap[axis]/(wa+wb);
+          if(wa)move(ra,axis,-separation*wa,defer);
+          if(wb)move(rb,axis,separation*wb,defer);
+          return true;
+        }
+        function scanRow(i,from) {
+          for(let j=from;j<keys.length;j++)correct(i,j,true);
+          for(const root of dirty)refit(root);
+          dirty.clear();
+        }
+        for(let i=0;i<keys.length-1;i++){
+          if(!broad||unbounded){
+            scanRow(i,i+1);
+            continue;
+          }
+          let from=i+1;
+          while(from<keys.length){
+            const {min,max}=boundsOf(bodies[keys[i]]), hits=[];
+            broad.overlap(min,max,row=>{
+              const j=order.get(row.id);
+              if(j>=from && roots[row.id]!==roots[keys[i]] && (weights[row.id]||weights[keys[i]]))hits.push(j);
+            });
+            // A dense row is cheaper to visit in order and refit once at the end.
+            if(hits.length>=8&&hits.length>=(keys.length-from)/4){scanRow(i,from);break;}
+            hits.sort((a,b)=>a-b);
+            let collision=false;
+            for(const j of hits)if(correct(i,j)){from=j+1;collision=true;break;}
+            if(!collision)break;
+            // A correction can create contacts with later pairs in this row.
+            // Query the new bounds before discarding any of those pairs.
+            if(unbounded){scanRow(i,from);break;}
+          }
+        }
       }
       const contacts=[];
       for(const [key,spec] of Object.entries(forceSpecs)){
@@ -299,21 +398,36 @@
       if(!target.point) return Q.missing('point required');
       const [x,y,z]=target.point, high=args.high??y+.5, low=args.low??y-4;
       check(Number.isFinite(low)&&Number.isFinite(high)&&low<=high,'Invalid support interval');
-      const rows=Object.values(state.bodies).map(body=>column(body,x,z,low,high)).filter(row=>row&&row.normal[1]>.25);
+      const rows=[];
+      const visit=body=>{
+        const row=column(body,x,z,low,high);
+        if(row&&row.normal[1]>.25)rows.push(row);
+      };
+      const broad=colliderIndex(state.bodies);
+      // The column test treats near-parallel local axes as parallel.
+      const pad=(high-low)*2e-10+Math.max(1,Math.abs(x),Math.abs(z),Math.abs(low),Math.abs(high))*1e-12;
+      if(broad)broad.overlap([x-pad,low-pad,z-pad],[x+pad,high+pad,z+pad],row=>visit(row.value));
+      else for(const body of Object.values(state.bodies))visit(body);
       const floor=ground(context,target.point);
       if(floor>=low&&floor<=high)rows.push({y:floor,normal:up,id:'ground',material:'ground'});
       return Q.ok(rows.sort((a,b)=>b.y-a.y||a.id.localeCompare(b.id)));
     }
     function obstruction({state,target},excluded) {
       if(!target.point)return Q.missing('point required');
-      const hits=Object.values(state.bodies).filter(body=>body.id!==excluded&&body.entity!==excluded);
-      if(!hits.length)return Q.missing('no bodies','empty');
-      let nearest, value=Infinity;
-      for(const body of hits){
+      const broad=colliderIndex(state.bodies);
+      const eligible=body=>body.id!==excluded&&body.entity!==excluded;
+      if(broad){
+        const hit=broad.nearest(target.point,(row,point)=>eligible(row.value)?distance(row.value,point):Infinity);
+        if(hit)return {status:'ok',value:hit.value,body:hit.id};
+      }
+      let nearest, value=Infinity, count=0;
+      for(const body of Object.values(state.bodies)){
+        if(!eligible(body))continue;
+        count++;
         const d=distance(body,target.point);
         if(d<value){value=d;nearest=body.id;}
       }
-      return {status:'ok',value,body:nearest};
+      return count?{status:'ok',value,body:nearest}:Q.missing('no bodies','empty');
     }
     return {inputs,outputs,initial(ctx) {
       const bodies={...initialBodies}, joints={...initials};
@@ -336,11 +450,19 @@
           Array.isArray(omit)&&omit.every(i=>Number.isSafeInteger(i)&&i>=0&&i<parts)&&vector(args.impulse??zero),
           'Invalid fracture command');
       }
+    },*poseEntities(state) {
+      for(const body of Object.values(state?.bodies??{}))yield body.entity;
     },pose(state,entity) {
       if(!state)return null;
       const named=state.bodies[entity];
-      return (named?.entity===entity?named:Object.values(state.bodies).find(body=>body.entity===entity)) ??
-        (Object.values(initialBodies).some(body=>body.entity===entity)?false:null);
+      if(named?.entity===entity)return named;
+      let poses=poseCache.get(state.bodies);
+      if(!poses){
+        poses=new Map();
+        for(const body of Object.values(state.bodies))if(!poses.has(body.entity))poses.set(body.entity,body);
+        poseCache.set(state.bodies,poses);
+      }
+      return poses.get(entity)??(entityNames.has(entity)?false:null);
     },output(state){
       const out={};
       for(const [key,joint] of Object.entries(state.joints)){

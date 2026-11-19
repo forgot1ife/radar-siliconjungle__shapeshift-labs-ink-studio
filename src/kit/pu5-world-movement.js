@@ -166,7 +166,7 @@
   }
   function agents(config) {
     bounds(config.bounds);
-    const initial={}, profiles=config.species??{}, source=config.agents??{};
+    const initial={}, profiles=config.species??{}, source=config.agents??{}, poseCache=new WeakMap();
     check(record(profiles)&&record(source)&&Object.keys(source).length<=512,'Invalid creature catalog');
     for(const [key,spec] of Object.entries(profiles)){
       check(id(key)&&record(spec)&&['walk','swim','fly'].includes(spec.mode)&&
@@ -311,8 +311,18 @@
       const contacts=[], agents={};
       for(const key of Object.keys(state.agents).sort())agents[key]=one(state.agents[key],ctx,contacts);
       return {agents,contacts};
+    },*poseEntities(state){
+      for(const agent of Object.values(state?.agents??{}))yield agent.entity;
     },pose(state,entity){
-      return state&&Object.values(state.agents).find(agent=>agent.entity===entity&&agent.mode!=='dormant');
+      if(!state)return null;
+      let poses=poseCache.get(state.agents);
+      if(!poses){
+        poses=new Map();
+        for(const agent of Object.values(state.agents))
+          if(agent.mode!=='dormant'&&!poses.has(agent.entity))poses.set(agent.entity,agent);
+        poseCache.set(state.agents,poses);
+      }
+      return poses.get(entity);
     },fields:{
       agents:{type:'record',read:({state})=>Q.ok(state.agents)},
       contacts:{type:'records',units:'world',read:({state})=>Q.ok(state.contacts)}

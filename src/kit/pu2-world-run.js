@@ -158,6 +158,7 @@
     }
     const {plan}=result;
     const {systems,ports,incoming,order,names} = plan;
+    const projection = Q.projection(systems);
     const rootInputs = Object.fromEntries(Object.entries(ports.inputs).map(([name,port]) => [name,port.default]));
     const rootOutputs = Object.fromEntries(Object.entries(ports.outputs).map(([name,port]) => [name,port.default]));
     const rootDelays = Object.fromEntries([...incoming.values()].filter(edge => edge.delay).map(edge =>
@@ -246,11 +247,11 @@
     }
     if (checkpoint) restore(checkpoint);
     else {
-      const initialQuery = Q.create(view(),systems);
+      const initialQuery = Q.create(view(),systems,projection);
       for (const name of names) states[name] = rootedState(systems[name].initial(
         context(name,world,Object.freeze({}),0,{},() => {},initialQuery)));
       states = freeze(states);
-      const startQuery = Q.create(view(),systems);
+      const startQuery = Q.create(view(),systems,projection);
       const initialOutputs = {};
       for (const name of names) readOutputs(name,states[name],context(name,world,states,0,{},() => {},startQuery),initialOutputs);
       outputs = freeze(initialOutputs);
@@ -262,7 +263,7 @@
     }
     const origin = save();
     function query() {
-      return currentQuery ?? (currentQuery = Q.create(view(),systems));
+      return currentQuery ?? (currentQuery = Q.create(view(),systems,projection));
     }
     function evaluateScenario(nextView, events) {
       const rules = nextView.world.scenario;
@@ -292,7 +293,7 @@
     function step() {
       const at = tick+1, commands = scheduled.get(at) ?? [], events = [];
       check(tickOK(at),'Tick budget exceeded');
-      let nextWorld = world;
+      let nextWorld = world, changedEntities = new Set();
       const drafts = {...states}, nextManual = {...manual};
       const makeEmit = system => (kind,detail = {}) => {
         check(id(kind) && record(detail) && events.length < 10000, 'Invalid event or per-tick event budget exceeded');
@@ -308,6 +309,10 @@
             for(const edge of nextWorld.connections)
               check(portOf(nextWorld,edge.from)===portOf(result.world,edge.from)&&
                 portOf(nextWorld,edge.to)===portOf(result.world,edge.to),'Live patch rebinds a connected port');
+            for(const path of result.paths)if(changedEntities&&path[0]==='entities'){
+              if(path.length===1)changedEntities=null;
+              else changedEntities.add(String(path[1]));
+            }
             nextWorld = result.world;
             if (result.paths.length) emit('edit',{paths:result.paths});
           }
@@ -316,13 +321,14 @@
             emit(kind,detail);
           }
         } else {
-          const actionQuery = Q.create(view(nextWorld,{...drafts}),systems);
+          const actionQuery = Q.create(view(nextWorld,{...drafts}),systems,projection);
           const ctx = context(name,nextWorld,Object.freeze({...drafts}),at,{},emit,actionQuery);
           drafts[name] = rootedState(systems[name].actions[key](drafts[name],item.args,ctx));
         }
       }
+      projection?.change(world.entities,nextWorld.entities,changedEntities);
       const committed = freeze(drafts);
-      const previousQuery = Q.create(view(nextWorld,committed),systems);
+      const previousQuery = Q.create(view(nextWorld,committed),systems,projection);
       const immediate = {}, nextStates = {}, nextOutputs = {}, observed = {}, spent = {};
       for (const name of order) {
         const system = systems[name];

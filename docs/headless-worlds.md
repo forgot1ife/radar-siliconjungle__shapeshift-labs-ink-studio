@@ -198,6 +198,11 @@ include `checkAction(type,args)`, `validateState(state)`, `pose(state,id)`,
 `fields`, `traces`, typed `inputs` and `outputs`, and
 `output(state,context)`. A tick context exposes the world, peer state, shared
 queries, input values, `emit(kind, detail)`, and a seeded `random(key)`.
+Pose providers can also implement `poseEntities(state)` to enumerate all entity
+IDs whose pose they can override or suppress in that state. The hook must return
+an iterable and accept `undefined` before initialization. The query engine can
+then update those entities and their attachments between snapshots. A provider
+with only `pose` uses the per-snapshot index.
 Load custom factories through the CLI's existing `ink-studio.config.js`
 `load` hook when reading their checkpoints in a separate process.
 
@@ -205,3 +210,5 @@ Rill's revision and spatial lookup contracts inspired the query snapshots and
 stable selectors. Frontier's path edits and Ink's state/action/query separation
 inform the authoring and simulation interfaces. The implementation uses Ink
 Studio's own data and solver primitives with the JavaScript standard library.
+
+See [live world scaling](world-scaling.md) for the benchmark commands and results.
