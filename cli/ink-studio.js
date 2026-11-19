@@ -80,9 +80,9 @@ function meshScene(file) {
   };
 }
 /* a diorama written as data (see lab/data-shrine.json). --style puts it in another style; meshes it names are looked for beside the file */
-function dataScene(file) {
+function dataScene(file, override) {
   const K = lib().KIT,
-    spec = JSON.parse(fs.readFileSync(path.resolve(file), 'utf8')),
+    spec = override ? { ...override } : JSON.parse(fs.readFileSync(path.resolve(file), 'utf8')),
     dir = path.dirname(path.resolve(file)),
     assets = {};
   if (opt.style) spec.style = opt.style;
@@ -271,11 +271,20 @@ function die(m) {
   console.error(m);
   process.exit(1);
 }
+const worldCLI = () => require('./world.js')({kit:lib(),build,pose,dataScene,opt});
+const worldCommands = new Set(['inspect','probe','trace','field','scene','sim']);
 const CMD = {
   help() {
     console.log(
       [
         'ink-studio <command> <diorama id | lab/file.js> [options]',
+        '',
+        '  inspect <scene|run>         discover fields, actions, ports and entities',
+        '  probe <scene|run> --field name [--at x,y,z | --entity id]  sample world state',
+        '  trace <scene|run> <name>    trace a route, signal or other exposed query',
+        '  field <scene|run> <name> --spec file.json  export a line, grid or time series',
+        '  scene apply|stamp|remix|capture|history|promote <world> ...  edit or derive a world manifest',
+        '  sim run|resume|fork|reset|replay|diff|sweep|render ...  run or compare fixed-tick simulations',
         '',
         '  scenes                      list every diorama',
         '  catalog [words]             what the toolkit can do, searchable',
@@ -796,6 +805,7 @@ const CMD = {
     );
   },
   validate() {
+    if (lib().KIT.world && worldCLI().validate(pos[0])) return;
     if (!pos[0]) die('validate which file?');
     const s = dataScene(pos[0]);
     console.log(pos[0] + ': sound (' + s.id + ', "' + s.name + '")');
@@ -1487,6 +1497,7 @@ const CMD = {
   }
 };
 async function run() {
+  if (worldCommands.has(cmd)) return worldCLI().execute(cmd,pos);
   if (/\.glb$/i.test(pos[0] || '') && opt.uv !== 'off') {
     try {
       importedAssets.set(path.resolve(pos[0]), await require('../index.js').readAsset(path.resolve(pos[0]), { size: 3 }));

@@ -20,6 +20,7 @@ The package includes geometry, materials, lighting, animation, character control
 - [Importing depth maps](#importing-depth-maps)
 - [Procedural worlds](#procedural-worlds)
 - [Retained authoring](#retained-authoring)
+- [Headless world simulation](docs/headless-worlds.md)
 - [Rendering and command reference](#rendering-and-command-reference)
 - [View-dependent surface materials](#view-dependent-surface-materials)
 - [Projected and procedural effects](#projected-and-procedural-effects)
@@ -625,6 +626,10 @@ cached simulation, attribute transfer, mesh paths, layered artwork, animation
 state graphs and the retained Flooded Shrine recipe. The [procedural API guide](docs/procedural.md)
 also covers chart batching, blind recesses, incremental visibility, and retained
 sample withdrawal.
+
+[Headless worlds](docs/headless-worlds.md) adds declarative simulation scenes,
+shared world queries, timed actions, checkpoints, replay and branch comparison.
+The watershed and quarry examples run entirely from the CLI.
 
 ## Rendering and command reference
 

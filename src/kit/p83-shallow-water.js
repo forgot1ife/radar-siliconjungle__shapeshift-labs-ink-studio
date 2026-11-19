@@ -14,9 +14,10 @@
       !integer(maxSteps,1,12000)||!integer(maxWork,1,240000000)||
       !number(maxDepth,1e-4,1e5)||!number(maxSpeed,0.001,1e5)||!number(dry,1e-10,0.01))
       throw new Error('Shallow water needs bounded terrain, CFL and physical controls');
-    const bed=new Float64Array(size), initialDepth=new Float64Array(size),
+    let bed=new Float64Array(size);
+    const initialDepth=new Float64Array(size),
       initialX=new Float64Array(size),initialZ=new Float64Array(size),cellArea=dx*dz;
-    let time=0,added=0,drained=0;
+    let time=0,added=0,drained=0,moved=0;
     for(let i=0;i<size;i++){
       const p=center(i), y=terrain(...p,i);
       if(!number(y,-1e7,1e7))throw new Error('Shallow water terrain heights must be finite');
@@ -30,29 +31,58 @@
       initialZ[i]=depth>dry?depth*velocity[1]:0;
     }
     const volume=data=>data.reduce((sum,v)=>sum+v,0)*cellArea,
-      startVolume=volume(initialDepth);
+      initialVolume=volume(initialDepth);
+    let startVolume=initialVolume;
     let layer={depth:initialDepth,x:initialX,z:initialZ};
     function snapshot(substeps=0){
       const depth=layer.depth.slice(),bedCopy=bed.slice(),level=bed.map((v,i)=>v+depth[i]),
         vx=layer.x.map((v,i)=>depth[i]>dry?v/depth[i]:0),vz=layer.z.map((v,i)=>depth[i]>dry?v/depth[i]:0),
         water=volume(depth);
       return Object.freeze({time,width,height,bounds:domain.bounds,depth,level,bed:bedCopy,vx,vz,substeps,
-        mass:Object.freeze({initial:startVolume,added,drained,volume:water,error:water-startVolume-added+drained}),
+        mass:Object.freeze({initial:startVolume,added,drained,transferred:moved,volume:water,error:water-startVolume-added+drained}),
         sample(x,z){return inside(x,z)?{
           depth:domain.sample(depth,x,z),level:domain.sample(level,x,z),
           bed:domain.sample(bedCopy,x,z),velocity:[domain.sample(vx,x,z),domain.sample(vz,x,z)]
         }:null;}});
     }
-    function step(duration,{rain,drain,friction=0.13}={}){
+    function checkpoint(){
+      return {time,added,drained,moved,startVolume,bed:Array.from(bed),depth:Array.from(layer.depth),
+        mx:Array.from(layer.x),mz:Array.from(layer.z)};
+    }
+    function restore(state){
+      if(!state||![state.time,state.added,state.drained,state.moved,state.startVolume].every(v=>number(v,0,1e15))||
+        ![state.bed,state.depth,state.mx,state.mz].every(values=>Array.isArray(values)&&values.length===size)||
+        !state.bed.every(v=>number(v,-1e7,1e7))||!state.depth.every((v,i)=>number(v,0,maxDepth)&&(open[i]||v===0))||
+        !state.mx.every((v,i)=>Number.isFinite(v)&&Number.isFinite(state.mz[i])&&
+          Math.hypot(v,state.mz[i])<=maxSpeed*state.depth[i]+1e-7))
+        throw new Error('Invalid shallow-water checkpoint');
+      bed=Float64Array.from(state.bed);
+      layer={depth:Float64Array.from(state.depth),x:Float64Array.from(state.mx),z:Float64Array.from(state.mz)};
+      ({time,added,drained,moved,startVolume}=state);
+    }
+    function setTerrain(height){
+      if(typeof height!=='function')throw new Error('Terrain update needs a height sampler');
+      const changed=bed.map((old,i)=>{
+        const value=height(...center(i),i,old);
+        if(!number(value,-1e7,1e7))throw new Error('Shallow water terrain heights must be finite');
+        return value;
+      });
+      bed=changed;
+    }
+    function step(duration,{rain,drain,friction=0.13,opening,transfers=[]}={}){
+
       if(!number(duration,0,120)||!number(friction,0,1e6)||
+        (opening!==undefined&&typeof opening!=='function')||!Array.isArray(transfers)||transfers.length>4096||
+        transfers.some(p=>!p||!integer(p.from,0,size-1)||!integer(p.to,0,size-1)||p.from===p.to||
+          !open[p.from]||!open[p.to]||!number(p.rate,0,1e9))||
         [rain,drain].some(v=>v!==undefined&&typeof v!=='function'&&!number(v,0,1e4)))
         throw new Error('Water steps need bounded time, friction and nonnegative source rates');
       if(!duration)return snapshot();
       const depth=layer.depth.slice(),mx=layer.x.slice(),mz=layer.z.slice(),
         dh=new Float64Array(size),du=new Float64Array(size),dv=new Float64Array(size);
-      let elapsed=0,substeps=0,totalRain=0,totalDrain=0;
-      function interfaceFlux(left,right,axis){
-        if(left<0&&right<0)return;
+      let elapsed=0,substeps=0,totalRain=0,totalDrain=0,totalMoved=0;
+      function faceFlux(left,right,axis,fraction){
+        if(!fraction||left<0&&right<0)return;
         const li=left<0?right:left,ri=right<0?left:right,
           a=depth[li],b=depth[ri],az=bed[li],bz=bed[ri],
           surface=Math.max(az,bz),al=Math.max(0,a+az-surface),br=Math.max(0,b+bz-surface);
@@ -67,7 +97,7 @@
           fluxU=0.5*(alU*au+brU*bu+g0*(al*al+br*br)-speed*(brU-alU)),
           fluxV=0.5*(alU*av+brU*bv-speed*(brV-alV)),
           correctedL=fluxU+g0*(a*a-al*al),correctedR=fluxU+g0*(b*b-br*br),
-          measure=axis===0?1/dx:1/dz;
+          measure=fraction/(axis===0?dx:dz);
         if(left>=0){
           dh[left]-=measure*fluxH;
           du[left]-=measure*(axis===0?correctedL:fluxV);
@@ -77,6 +107,17 @@
           dh[right]+=measure*fluxH;
           du[right]+=measure*(axis===0?correctedR:fluxV);
           dv[right]+=measure*(axis===0?fluxV:correctedR);
+        }
+      }
+      function interfaceFlux(left,right,axis){
+        if(!opening||left<0||right<0){faceFlux(left,right,axis,1);return;}
+        const [x,z]=center(left).map((v,i)=>(v+center(right)[i])*.5);
+        const fraction=opening(x,z,axis,left,right,{time:time+elapsed,bed:[bed[left],bed[right]],level:[bed[left]+depth[left],bed[right]+depth[right]]});
+        if(!number(fraction,0,1))throw new Error('Water face opening must be in [0, 1]');
+        faceFlux(left,right,axis,fraction);
+        if(fraction<1){
+          faceFlux(left,-1,axis,1-fraction);
+          faceFlux(-1,right,axis,1-fraction);
         }
       }
       while(elapsed<duration-1e-13){
@@ -124,13 +165,21 @@
           totalRain+=inFlow*cellArea;
           totalDrain+=outFlow*cellArea;
         }
+        for(const {from,to,rate} of transfers){
+          const take=Math.min(depth[from],maxDepth-depth[to],rate*dt/cellArea);
+          if(!take)continue;
+          const remaining=(depth[from]-take)/depth[from];
+          depth[from]-=take;depth[to]+=take;
+          mx[from]*=remaining;mz[from]*=remaining;
+          totalMoved+=take*cellArea;
+        }
         elapsed+=dt;substeps++;
       }
       layer={depth,x:mx,z:mz};
-      time+=duration;added+=totalRain;drained+=totalDrain;
+      time+=duration;added+=totalRain;drained+=totalDrain;moved+=totalMoved;
       return snapshot(substeps);
     }
-    return Object.freeze({step,snapshot});
+    return Object.freeze({step,snapshot,checkpoint,restore,setTerrain});
   }
   M.shallowWater=shallowWater;
 })(KIT);

@@ -1,0 +1,255 @@
+/* Immutable world records, checked edits and reusable assemblies. */
+(function (K) {
+  const data = K.procedural.data;
+  const format = 'ink-studio/world';
+  const own = (obj, key) => obj != null && Object.hasOwn(obj, key);
+  const record = obj => obj !== null && typeof obj === 'object' && !Array.isArray(obj);
+  const safeKey = key => typeof key === 'string' && key.length > 0 &&
+    !['__proto__', 'prototype', 'constructor'].includes(key);
+  const id = key => safeKey(key) && /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,95}$/.test(key);
+  const vector = (value, size = 3) => Array.isArray(value) && value.length === size && value.every(Number.isFinite);
+  function check(condition, message) {
+    if (!condition) throw Error(message);
+  }
+  function copy(value) {
+    if (value === undefined) throw Error('A world value must be JSON data');
+    return data.clone(value);
+  }
+  function equal(a, b) {
+    if (a === b) return true;
+    if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b))
+      return false;
+    const keys = Object.keys(a);
+    return keys.length === Object.keys(b).length && keys.every(key => own(b, key) && equal(a[key], b[key]));
+  }
+  function manifest(input) {
+    check(record(input) && (input.format ?? format) === format && (input.version ?? 1) === 1, 'Expected an Ink Studio world manifest');
+    const result = {id:'world', seed:1, dt:1/60, systems:{}, entities:{}, connections:[], prefabs:{},
+      commands:[], metadata:{}, assetPacks:[], ...(data.isImmutable(input)?input:copy(input)), format, version:1};
+    check(id(result.id) && Number.isSafeInteger(result.seed) && Number.isFinite(result.dt) && result.dt > 0 && result.dt <= 1,
+      'World needs an ID, integer seed and tick duration in (0, 1]');
+    for (const section of ['systems','entities','prefabs']) {
+      check(record(result[section]) && Object.keys(result[section]).length <= 10000, 'Invalid world section ' + section);
+      for (const [key, item] of Object.entries(result[section]))
+        check(id(key) && record(item), 'Invalid record ' + section + '/' + key);
+    }
+    for (const [key, item] of Object.entries(result.entities)) {
+      if (item.position !== undefined) check(vector(item.position), 'Invalid position for ' + key);
+      if (item.parent !== undefined && item.parent !== null) check(own(result.entities, item.parent), 'Missing parent for ' + key);
+      if (item.anchor !== undefined) check(record(item.anchor) && own(result.entities, item.anchor.entity) &&
+        (item.anchor.socket === undefined || own(result.entities[item.anchor.entity].sockets, item.anchor.socket)),
+        'Unresolved anchor on ' + key);
+      if (item.sockets !== undefined) check(record(item.sockets) && Object.entries(item.sockets).every(([name, p]) => id(name) && vector(p)),
+        'Invalid sockets for ' + key);
+    }
+    const checked = new Set();
+    for (const key of Object.keys(result.entities)) {
+      let current = key;
+      const seen = new Set();
+      while (current && !checked.has(current)) {
+        check(!seen.has(current), 'Entity attachment cycle at ' + current);
+        seen.add(current);
+        const item = result.entities[current];
+        current = item.anchor?.entity ?? item.parent;
+      }
+      for (const visited of seen) checked.add(visited);
+    }
+    check(record(result.metadata) && Array.isArray(result.assetPacks) && result.assetPacks.length <= 128,
+      'Invalid metadata or asset packs');
+    check(Array.isArray(result.connections) && result.connections.length <= 50000 && Array.isArray(result.commands),
+      'World connections and commands must be arrays');
+    for (const [key, prefab] of Object.entries(result.prefabs)) {
+      check(Object.keys(prefab).every(name => ['entities','systems','connections','ports','params','revision','source','packs'].includes(name)),
+        'Unknown prefab property in ' + key);
+      check(Number.isSafeInteger(prefab.revision ?? 1) && (prefab.revision ?? 1) > 0, 'Invalid prefab revision for ' + key);
+      check(record(prefab.entities ?? {}) && record(prefab.systems ?? {}) && Array.isArray(prefab.connections ?? []) &&
+        record(prefab.ports ?? {}) && record(prefab.params ?? {}) && Array.isArray(prefab.packs ?? []),
+        'Invalid prefab ' + key);
+    }
+    return data.freeze(result);
+  }
+  function selector(path) {
+    if (typeof path === 'string') {
+      check(path.startsWith('/') && !/~(?![01])/u.test(path), 'Expected a JSON Pointer or path array');
+      path = path.slice(1).split('/').map(p => p.replace(/~1/g, '/').replace(/~0/g, '~'));
+    }
+    check(Array.isArray(path) && path.length > 0 && path.length <= 64 &&
+      path.every(p => safeKey(p) || Number.isSafeInteger(p) && p >= 0), 'Invalid edit path');
+    return path;
+  }
+  function read(root, path) {
+    for (const key of path) {
+      if (!own(root, key)) return undefined;
+      root = root[key];
+    }
+    return root;
+  }
+  function write(root, path, value, remove, index = 0) {
+    check(record(root) || Array.isArray(root), 'Edit parent is not a collection at ' + path.slice(0,index).join('/'));
+    const key = path[index];
+    if (Array.isArray(root))
+      check(/^(0|[1-9][0-9]*)$/.test(key) && Number(key) <= root.length, 'Invalid array index ' + key);
+    if (index + 1 === path.length) {
+      if (remove) check(own(root,key), 'Cannot remove missing path ' + path.join('/'));
+      if (!remove && equal(root[key],value)) return root;
+      const next = Array.isArray(root) ? root.slice() : {...root};
+      if (!remove) next[key] = value;
+      else if (Array.isArray(next)) next.splice(Number(key),1);
+      else delete next[key];
+      return data.freeze(next);
+    }
+    const child = write(root[key],path,value,remove,index+1);
+    if (child === root[key]) return root;
+    const next = Array.isArray(root) ? root.slice() : {...root};
+    next[key] = child;
+    return data.freeze(next);
+  }
+  function apply(source, operations, {validate = manifest} = {}) {
+    check(Array.isArray(operations) && operations.length <= 10000, 'Expected a bounded array of world edits');
+    let next = source;
+    const paths = [];
+    for (const [index, edit] of operations.entries()) {
+      try {
+        check(record(edit), 'Expected an edit record');
+        const path = selector(edit.path), before = read(next,path);
+        if (edit.op === 'test') {
+          check(own(edit,'value') && equal(before, edit.value), 'Test failed at ' + path.join('/'));
+          continue;
+        }
+        check(['set','remove','merge'].includes(edit.op), 'Unknown edit operation ' + edit.op);
+        if (edit.op === 'merge') check(record(before) && record(edit.value), 'Merge needs two records');
+        const value = edit.op === 'remove' ? undefined : edit.op === 'merge' ? {...before,...copy(edit.value)} : copy(edit.value);
+        const changed = write(next,path,value,edit.op === 'remove');
+        if (changed !== next) paths.push(path);
+        next = changed;
+      } catch (error) {
+        throw Error('Edit ' + (index + 1) + ': ' + error.message);
+      }
+    }
+    if (next !== source && validate) validate(next);
+    return data.freeze({world:next, paths});
+  }
+  function endpoint(value) {
+    const parts = typeof value === 'string' ? value.split('/') : [];
+    check(parts.length === 2 && parts.every(id), 'Expected system/port, got ' + value);
+    return parts;
+  }
+  function portOf(source,value) {
+    const [key,pin] = endpoint(value);
+    const ports=source.entities[key]?.ports;
+    return own(ports,pin)?ports[pin]:value;
+  }
+  function stamp(source, name, as, {params = {}, position = [0,0,0], overrides = []} = {}) {
+    const definition = source.prefabs[name];
+    check(own(source.prefabs,name) && id(as) && vector(position) && record(params), 'Unknown or invalid prefab instance ' + name);
+    check(!own(source.entities,as), 'Prefab instance already exists: ' + as);
+    for (const key of Object.keys(params)) check(own(definition.params,key), 'Unknown prefab parameter ' + key);
+    const values = {...definition.params,...params};
+    const dependencies=definition.packs??[];
+    const packs=dependencies.length?K.authoring.assetPacks.create({packs:source.assetPacks}).packs:[];
+    for(const item of dependencies){
+      const name=typeof item==='string'?item:item.id, revision=typeof item==='string'?undefined:item.revision;
+      check(packs.some(pack=>pack.id===name&&(revision===undefined||pack.revision===revision)),'Missing prefab asset pack '+name);
+    }
+    function resolve(value) {
+      if (Array.isArray(value)) return value.map(resolve);
+      if (!record(value)) return value;
+      if (own(value,'$param')) {
+        check(Object.keys(value).length === 1 && own(values,value.$param), 'Unknown prefab parameter ' + value.$param);
+        return values[value.$param];
+      }
+      if (own(value,'$port')) {
+        check(Object.keys(value).length===1,'Invalid local prefab port');
+        return port(value.$port);
+      }
+      if (own(value,'$local')) {
+        check(Object.keys(value).length === 1 && (own(definition.entities,value.$local) || own(definition.systems,value.$local)),
+          'Unknown local prefab reference ' + value.$local);
+        return as + '.' + value.$local;
+      }
+      return Object.fromEntries(Object.entries(value).map(([k,v]) => [k,resolve(v)]));
+    }
+    const nameOf = key => as + '.' + key;
+    function port(value) {
+      const [system, pin] = endpoint(value);
+      check(own(definition.systems,system), 'Unknown internal prefab system ' + system);
+      return nameOf(system) + '/' + pin;
+    }
+    const ports = Object.fromEntries(Object.entries(definition.ports ?? {}).map(([key,value]) => [key,port(value)]));
+    const entities = {[as]:{kind:'assembly',position,prefab:name,revision:definition.revision ?? 1,ports,packs:dependencies}};
+    const systems = {};
+    for (const [key, item] of Object.entries(definition.entities ?? {})) {
+      const entity = resolve(item);
+      if (!entity.anchor) entity.parent = entity.parent ? (typeof item.parent==='string'?nameOf(item.parent):entity.parent) : as;
+      else entity.anchor = {...entity.anchor, entity:typeof item.anchor.entity==='string'?nameOf(item.anchor.entity):entity.anchor.entity};
+      entities[nameOf(key)] = entity;
+    }
+    for (const [key,item] of Object.entries(definition.systems ?? {})) systems[nameOf(key)] = resolve(item);
+    const connections = (definition.connections ?? []).map(edge => ({...edge,from:port(edge.from),to:port(edge.to)}));
+    const instance = apply({entities,systems,connections},overrides,{validate:null}).world;
+    for (const [section, entries] of [['entities',instance.entities],['systems',instance.systems]]) {
+      for (const key of Object.keys(entries))
+        check((key === as && section === 'entities' || key.startsWith(as + '.')) && !own(source[section],key),
+          'Prefab override changes ownership or reuses ID ' + key);
+    }
+    return apply(source,[
+      {op:'merge',path:['entities'],value:instance.entities},
+      {op:'merge',path:['systems'],value:instance.systems},
+      {op:'set',path:['connections'],value:[...source.connections,...instance.connections]}
+    ]);
+  }
+  function remix(source, original, name, operations = []) {
+    check(own(source.prefabs,original) && id(name) && !own(source.prefabs,name), 'Invalid prefab remix ' + name);
+    const definition = apply(source.prefabs[original], operations, {validate:null}).world;
+    return apply(source,[{op:'set',path:['prefabs',name],value:{...definition,revision:1,source:original}}]);
+  }
+  function capture(source, instance, name) {
+    const root=source.entities[instance];
+    check(own(source.entities,instance)&&root.kind==='assembly'&&id(name)&&!own(source.prefabs,name),
+      'Expected a placed assembly and an unused prefab ID');
+    const prefix=instance+'.';
+    const entityKeys=Object.keys(source.entities).filter(key=>key.startsWith(prefix));
+    const systemKeys=Object.keys(source.systems).filter(key=>key.startsWith(prefix));
+    const ids=new Set([...entityKeys,...systemKeys]);
+    const local=key=>key.slice(prefix.length);
+    function refs(value) {
+      if (typeof value==='string'&&ids.has(value))return {$local:local(value)};
+      if (typeof value==='string'&&value.startsWith(prefix)&&value.includes('/')){
+        const parts=value.split('/');
+        if(parts.length===2&&systemKeys.includes(parts[0]))return {$port:local(parts[0])+'/'+parts[1]};
+      }
+      if (Array.isArray(value))return value.map(refs);
+      if (!record(value))return value;
+      return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,refs(item)]));
+    }
+    const entities={}, systems={}, ports={};
+    for(const key of entityKeys){
+      const entity=refs(source.entities[key]);
+      const parent=source.entities[key].parent, host=source.entities[key].anchor?.entity;
+      check((!parent||parent===instance||entityKeys.includes(parent))&&(!host||entityKeys.includes(host)),
+        'Cannot capture an assembly with an external attachment: '+key);
+      if(parent&&parent!==instance)entity.parent=local(parent);
+      else delete entity.parent;
+      if(host)entity.anchor.entity=local(host);
+      entities[local(key)]=entity;
+    }
+    for(const key of systemKeys) systems[local(key)]=refs(source.systems[key]);
+    const localPort=value=>{
+      const [system,pin]=endpoint(value);
+      return systemKeys.includes(system)?local(system)+'/'+pin:null;
+    };
+    const connections=source.connections.flatMap(edge=>{
+      const from=localPort(edge.from),to=localPort(edge.to);
+      return from&&to?[{...edge,from,to}]:[];
+    });
+    for(const [key,value] of Object.entries(root.ports??{})){
+      const port=localPort(value);
+      check(port,'Cannot capture a port outside the assembly: '+key);
+      ports[key]=port;
+    }
+    const prefab={entities,systems,connections,ports,packs:root.packs??[],revision:1,...(root.prefab?{source:root.prefab}:{})};
+    return apply(source,[{op:'set',path:['prefabs',name],value:prefab}]);
+  }
+  K.world = {format, manifest, apply, stamp, remix, capture};
+  K.world.data = Object.freeze({own,record,id,vector,check,copy,equal,read,selector,endpoint,portOf});
+})(KIT);
