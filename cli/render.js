@@ -13,6 +13,7 @@ const ArtInk = require('../src/art-ink.js');
 const ArtDirection = require('../src/art-direction.js');
 const SilhouetteProtection = require('../src/silhouette-protection.js');
 const DetailBudgets = require('../src/detail-budgets.js');
+const ShadowArt = require('../src/shadow-art.js');
 const MaterialPixelStyle = require('../src/material-pixel-style.js');
 const EffectPalettes = require('../src/effect-palettes.js');
 const ArtEffects = require('../src/art-effects.js');
@@ -321,6 +322,9 @@ function render(world, o, preparedPalettes) {
   const effectRules = EffectPalettes.activate(effectPaletteSettings, environment?.parameters);
   const windState = resolveWind(world,o,climate);
   const { windConfig,flow,wind,localWind,airAt,windAt } = windState;
+  const { celestial,sun,flash,clouds } = resolveLighting(world,o,climate,windState,direction);
+  const shadowFootprint = 2 * dist * tangent * (o.artGridScale || 1) / H;
+  if (!sun && o.shadowArt !== false) world = ShadowArt.frame(world, shadowFootprint);
   const travel = (at, birth, time) => {
     const age = time - birth;
     return flow ? flow.travel(...at, skyTime - age, skyTime) : airAt(...at).velocity.map(v => v * age);
@@ -368,7 +372,6 @@ function render(world, o, preparedPalettes) {
   const reflectPass = environmentPasses?.passes.reflections;
   const centerReflection = reflectPass && new Float64Array(3), fragmentReflection = reflectPass && new Float64Array(3);
   const rayAt = cameraRays(V, eye, W, H, focal, ortho);
-  const { celestial,sun,flash,clouds } = resolveLighting(world,o,climate,windState,direction);
   const baseSky = SkyEnvironment.withCelestials(environment?.sky, celestial, celestial && hex(0));
   const sky = baseSky && direction?.bands ? { ...baseSky, bands:direction.bands } : baseSky;
   const aerial = o.atmosphere !== false && !o.captureCoverage ?
@@ -665,7 +668,8 @@ function render(world, o, preparedPalettes) {
   if (sun) {
     const frames = sampleFrames(world, t), normals = [];
     const normalAt = i => normals[i] ?? (normals[i] = frames(i).normal ?? false);
-    live = LiveSun.create(sun, world, { x: X, y: Y, z: Z, alpha: AL, scale: SC }, normalAt, cloudShadow, exposure?.light);
+    live = LiveSun.create(sun, world, { x: X, y: Y, z: Z, alpha: AL, scale: SC }, normalAt, cloudShadow, exposure?.light,
+      { shadowArt: o.shadowArt, footprint: shadowFootprint });
   }
   let mn = Infinity;
   for (let i = 0; i < N; i++) if ((i < baseCount || AL[i] > 0) && depth[i] < mn) mn = depth[i];

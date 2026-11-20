@@ -8,6 +8,20 @@
 function makeSculpt(B, rest) {
   const { P, n3, fbm, disc, stick, fib, TAU, clamp, norm, R } = B;
   const detailBudget = B.detailBudget;
+  const shadowArt = B.shadowArt;
+  const shadowTarget = (owner, mat) => ({
+    object: owner?.renderOwner, entity: owner?.renderOwner, ...owner?.renderTarget,
+    material: mat.materialId, surface: owner?.renderTarget?.surface ?? mat.surfaceId ?? mat.surface?.id
+  });
+  const receives = new WeakMap();
+  function receivesShadow(owner, material) {
+    if (!shadowArt?.receive) return true;
+    if (!owner) return ShadowArt.allows(shadowArt.receive, shadowTarget(owner, material));
+    if (!receives.has(owner)) receives.set(owner, new WeakMap());
+    const cached = receives.get(owner);
+    if (!cached.has(material)) cached.set(material, ShadowArt.allows(shadowArt.receive, shadowTarget(owner, material)));
+    return cached.get(material);
+  }
   const pixelStyles = new WeakMap();
   function materialStyle(value) {
     if (value === undefined || value === false) return null;
@@ -92,6 +106,7 @@ function makeSculpt(B, rest) {
     p.tag = o.tag || null;
     p.renderOwner = o.objectId ?? p.tag;
     p.renderTarget = o.surfaceId !== undefined ? { surface: o.surfaceId, ...o.target } : o.target;
+    if (shadowArt?.cast) p.shadowCaster = ShadowArt.allows(shadowArt.cast, shadowTarget(p, p.mat));
     if (budgetFor) p.detailBudget = budgetFor(p);
     p.model = o.model;
     if (p.bump) p.br += p.bump[0];
@@ -545,7 +560,7 @@ function makeSculpt(B, rest) {
           }
     }
   }
-  function field(x, y, z, exclude, proxyOnly) {
+  function field(x, y, z, exclude, proxyOnly, castOnly) {
     let d = 1e9,
       gd = 1e9,
       cur = -1,
@@ -560,7 +575,7 @@ function makeSculpt(B, rest) {
       list = grid[(ix * gdim[1] + iy) * gdim[2] + iz] || always;
     for (let i = 0; i < list.length; i++) {
       const p = list[i];
-      if (p === exclude || proxyOnly && p.mat.omitFromProxy) continue;
+      if (p === exclude || proxyOnly && p.mat.omitFromProxy || castOnly && p.shadowCaster === false) continue;
       if (p.g !== cur) {
         if (gd < d) {
           d = gd;
@@ -756,19 +771,21 @@ function makeSculpt(B, rest) {
     return RR;
   }
   const RR = [null, 0];
-  function light(m, res, x, y, z, nx, ny, nz, full, selected, fine) {
-    if (S.clip && !S.clip(x, y, z)) return;
+  function light(m, res, x, y, z, nx, ny, nz, full, selected, fine, coarse = false) {
+    if (!coarse && S.clip && !S.clip(x, y, z)) return;
     /* born: when this dab appears (growth you can watch). A material's or a solid's o.born: seconds, or (x, y, z, along) -> seconds */
     const bn = m.born !== undefined ? m.born : curP && curP.born !== undefined ? curP.born : null;
-    B.born(
+    if (!coarse) B.born(
       bn === null ? null : typeof bn === 'function' ? bn(x, y, z, curP && curP.along ? curP.along(x, y, z) : 0) : bn
     );
     /* wet: when the rain has soaked this dab, so that it darkens from then on. m.wet, or S.wet for everything: seconds, or
        (x, y, z, ny) -> seconds (null: it stays dry). S.open(x, y, z) says how open to the sky a place is, for deciding */
     const wt = m.wet !== undefined ? m.wet : S.wet;
-    B.wet(wt === undefined || wt === null ? null : typeof wt === 'function' ? wt(x, y, z, ny) : wt);
+    if (!coarse) B.wet(wt === undefined || wt === null ? null : typeof wt === 'function' ? wt(x, y, z, ny) : wt);
     let AA = null;
-    if (!PRB) LLS.length = 0;
+    const probe = PRB || coarse, receive = receivesShadow(curP, m);
+    let hadShadow = false;
+    if (!probe) LLS.length = 0;
     /* form: the shape this is lit as, not the one it has (a crown lit as the few balls it is made of, a rock as its flat faces):
        m.form(x, y, z, nx, ny, nz) -> [nx, ny, nz], or nothing to keep its own */
     const gx = nx,
@@ -789,7 +806,7 @@ function makeSculpt(B, rest) {
     else {
       let sun = nx * L[0] + ny * L[1] + nz * L[2];
       if (full) {
-        if (PRB) ao = LAO;
+        if (probe) ao = LAO;
         else {
           let occ = 0,
             w = 1;
@@ -803,22 +820,25 @@ function makeSculpt(B, rest) {
           LSH = -1;
         }
         if (sun > 0 && S.sunK > 0 && m.leaf) sun *= 0.8;
-        else if (sun > 0 && S.sunK > 0) {
+        else if (receive && sun > 0 && S.sunK > 0) {
           let tt = 0.07,
             sh = 1;
-          if (PRB && (LSH === 0 || LSH === 1)) sh = LSH;
+          if (coarse || PRB && (LSH === 0 || LSH === 1)) sh = LSH;
           else
             for (let i = 0; i < 20 && tt < S.shLen; i++) {
-              const h = field(x + nx * 0.05 + L[0] * tt, y + ny * 0.05 + L[1] * tt, z + nz * 0.05 + L[2] * tt);
+              const h = shadowDistance(x + nx * 0.05 + L[0] * tt, y + ny * 0.05 + L[1] * tt, z + nz * 0.05 + L[2] * tt);
               if (h < 0.004) {
                 sh = 0;
                 break;
               }
-              const q = (S.shK * h) / tt;
-              if (q < sh) sh = q;
+              // The field's outside distance is capped. It represents empty
+              // space, which should not create a distant penumbra.
+              if (!shadowArt || h < MARG) sh = Math.min(sh, (S.shK * h) / tt);
               tt += h < 0.05 ? 0.05 : h > 0.9 ? 0.9 : h;
             }
-          if (!PRB) LSH = sh;
+          if (!probe) LSH = sh;
+          hadShadow = sh < 1;
+          sh = ShadowArt.transfer(shadowArt, sh, coarse);
           sun *= sh;
           shd = 1 - sh;
         }
@@ -837,13 +857,13 @@ function makeSculpt(B, rest) {
         const nd = (nx * lx + ny * ly + nz * lz) / (dist || 1),
           fa = 1 - dist / li.r;
         let c = fa * fa * li.s * (0.2 + 0.8 * Math.max(nd, 0));
-        if (full && li.sh && c > 0.03 && nd > 0) {
-          if (PRB && LLS[i] !== undefined) c *= LLS[i];
+        if (full && receive && li.sh && c > 0.03 && nd > 0) {
+          let k2 = 1;
+          if (probe && LLS[i] !== undefined) k2 = LLS[i];
           else {
-            let tt = 0.08,
-              k2 = 1;
+            let tt = 0.08;
             for (let k = 0; k < 20 && tt < dist - 0.12; k++) {
-              const h = field(
+              const h = shadowDistance(
                 x + nx * 0.05 + (lx / dist) * tt,
                 y + ny * 0.05 + (ly / dist) * tt,
                 z + nz * 0.05 + (lz / dist) * tt
@@ -854,10 +874,11 @@ function makeSculpt(B, rest) {
               }
               tt += h < 0.06 ? 0.06 : h;
             }
-            c *= k2;
-            if (!PRB) LLS[i] = k2;
+            if (!probe) LLS[i] = k2;
           }
-        } else if (!PRB) LLS[i] = undefined;
+          hadShadow ||= k2 < 1;
+          c *= ShadowArt.transfer(shadowArt, k2, coarse);
+        } else if (!probe) LLS[i] = undefined;
         pl += c * (0.4 + 0.6 * ao);
         if (c > lbc) {
           lbc = c;
@@ -962,14 +983,14 @@ function makeSculpt(B, rest) {
       ramp = r[0];
       t = r[1];
     }
-    if (AA && S.keepAttrs) B.attrNext(AA.curv * res, AA.cav, AA.up, AA.along);
+    if (!coarse && AA && S.keepAttrs) B.attrNext(AA.curv * res, AA.cav, AA.up, AA.along);
     const style = materialStyle(m.pixelStyle ?? m0.pixelStyle);
     if (style?.highlight && !m.em && !m.glass)
       t = MaterialPixelStyle.lighting(t, style.highlight, nx, ny, nz, L, S.view || VIEW0);
     const shade = style && (style.mode || style.steps) ? MaterialPixelStyle.rampPair(t, style.steps, ramp) : null;
     let ci = shade ? shade[shade[2] < .5 ? 0 : 1] : ramp[clamp(Math.floor(t * ramp.length), 0, ramp.length - 1)],
       flat = false;
-    if (RLOG && !PRB)
+    if (RLOG && !probe)
       RLOG.set(ramp, (RLOG.get(ramp) || 0) + 1); /* which ramps a diorama is shaded on, for `ink-studio ramps` */
     if (m.tex) {
       const q = m.tex(x, y, z, ny, t, nx, nz, AA);
@@ -998,6 +1019,8 @@ function makeSculpt(B, rest) {
         flat = true;
       }
     }
+    if (coarse) return { ci, ramp: flat && !m.pat ? undefined : ramp, t, noLine: m0.line === false || m.line === false,
+      visibility: 1 - shd };
     if (PRB) return ci;
     selected?.(m, style, style?.mode && !flat && !m.glass && shade?.[0] !== shade?.[1] ? shade : null);
     const fl =
@@ -1193,6 +1216,8 @@ function makeSculpt(B, rest) {
       }
       return;
     }
+    const alternate = shadowArt?.small && hadShadow && !m.glass && !flat ?
+      light(m0, res, x, y, z, gx, gy, gz, full, undefined, undefined, true) : null;
     if ((fine ?? (S.fine || m0.fine)) && !m.glass && (m.a === undefined || m.a >= 1 || glint))
       fineTile(m0, res, x, y, z, nx, ny, nz, full, ci);
     if (S.bounce && !flat && !m.em)
@@ -1216,6 +1241,7 @@ function makeSculpt(B, rest) {
       );
     // (a: how solid it is, 1 and over is solid, under 1 lets what is behind show through; glass also bends what is behind it)
     if (surface) B.surfaceNext(surface, nx, ny, nz, L, 1 - shd);
+    if (alternate) B.shadowNext(ci, alternate);
     if (S.follow && !m.glass) {
       formDab(res, x, y, z, nx, ny, nz, P[ci], m.a === undefined || glint ? 3 : m.a, fl);
       return;
@@ -1431,8 +1457,8 @@ function makeSculpt(B, rest) {
   // ---------------- baking ----------------
   // the first surface below (x, y0, z): 1e9 if that point is inside something, -1e9 if nothing is found
   const negAll = []; // carved shapes are kept after baking so openings (arches, doorways) stay open to anything walking the scene
-  const fieldAll = (x, y, z, proxyOnly) => {
-    let d = field(x, y, z, undefined, proxyOnly);
+  const fieldAll = (x, y, z, proxyOnly, castOnly) => {
+    let d = field(x, y, z, undefined, proxyOnly, castOnly);
     for (let i = 0; i < negAll.length; i++) {
       const p = negAll[i],
         dx = x - p.bc[0],
@@ -1449,6 +1475,9 @@ function makeSculpt(B, rest) {
     return d;
   };
   S.sdf = (x, y, z) => fieldAll(x, y, z);
+  S.shadowSdf = shadowArt?.cast ? (x, y, z) => fieldAll(x, y, z, false, true) : S.sdf;
+  if (shadowArt?.cast) S.sdf.forShadow = S.shadowSdf;
+  const shadowDistance = shadowArt?.cast ? S.shadowSdf : field;
   S.proxySdf = () => hasOptionalProxy ? (x, y, z) => fieldAll(x, y, z, true) : S.sdf;
   /* Material and part ownership at a rest-pose surface. The distance field
      is retained even when the renderer samples it at a different resolution. */

@@ -90,6 +90,8 @@ function dataScene(file, override, { installedPacks = false } = {}) {
     dir = path.dirname(path.resolve(file)),
     assets = {};
   if (opt.style) spec.style = opt.style;
+  if (opt['shadow-art'] !== undefined)
+    spec.finish = { ...spec.finish, look: { ...K.diorama.sceneLook(spec), shadowArt: shadowArtOption() } };
   if (!installedPacks && opt['asset-pack'] !== undefined)
     spec.assetPacks = require('./asset-pack.js').install(K.authoring.assetPacks, spec.assetPacks, opt['asset-pack']);
   for (const s of spec.solids || [])
@@ -249,6 +251,15 @@ function skyTransitionsOption() {
   if (typeof value !== 'string') die('--sky-transitions needs a JSON array file or off');
   return skyTransitionsOverride ??= JSON.parse(fs.readFileSync(path.resolve(value),'utf8'));
 }
+let shadowArtOverride;
+function shadowArtOption() {
+  const value = opt['shadow-art'];
+  if (value === undefined) return;
+  if (value === 'off') return false;
+  if (typeof value !== 'string') die('--shadow-art needs a JSON file or off');
+  return shadowArtOverride ??= JSON.parse(fs.readFileSync(path.resolve(value), 'utf8'));
+}
+
 function liveSunOption() {
   const value = opt['live-sun'];
   if (value === 'off') return false;
@@ -553,6 +564,7 @@ const view = extra =>
       rainImpacts: rainImpactOption(),
       skyTransitions: skyTransitionsOption(),
       liveSun: liveSunOption(),
+      shadowArt: shadowArtOption(),
       atmosphere: opt.atmosphere === 'off' ? false : undefined,
       shapedAtmosphere: shapedAtmosphereOption(),
       volumeCutouts: volumeCutoutsOption(),
@@ -715,6 +727,7 @@ const CMD = {
         '',
         'any command that plays a diorama takes --poke 2:x,y,z (tap it at 2 seconds, toward that point; several with ;)',
         'sun options: --live-sun on|off --sun-direction x,y,z --sun-ambient n --sun-intensity n --shadow-map-size n --shadow-bias n --sun-shadows off',
+        'shadow art: --shadow-art file.json|off for baked JSON scenes and live sun',
         'bounce options: --sky-bounce color|preset|off --ground-bounce color|preset|off --sky-bounce-intensity n --ground-bounce-intensity n',
         'cloud options: --cloud-field cirrus|coastal-stratus|cumulus|storm-front|file.json|off --cloud-representation auto|card|impostor|volume|off --cloud-shadows on|off --cloud-shadow-strength 0..1 --cloud-shadow-softness units',
         'celestial options: --celestial-tracks on|off|file.json',

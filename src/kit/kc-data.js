@@ -416,6 +416,11 @@
       bad('finish.look.detailBudgets', error.message);
     }
     try {
+      ShadowArt.prepare(look?.shadowArt);
+    } catch (error) {
+      bad('finish.look.shadowArt', error.message);
+    }
+    try {
       HorizonBands.compile(look?.horizonBands);
     } catch (error) {
       bad('finish.look.horizonBands', error.message);
@@ -888,15 +893,16 @@
         const mesh = K.mesh.fit(env.assets[s.asset], { size: s.size || 4, at: s.at, turn: s.spin, up: s.up });
         meshLooks[s.asset] = { mesh, look: K.mesh.look(mesh, { hues: s.hues || 5, pal }) };
       }
-    const detailBudgets = st0.finish.look?.detailBudgets;
-    const B = (env.makeBuilder || makeBuilder)(seed, pal, detailBudgets === undefined ? undefined : { detailBudgets });
+    const { detailBudgets, shadowArt } = st0.finish.look ?? {};
+    const B = (env.makeBuilder || makeBuilder)(seed, pal, detailBudgets === undefined && shadowArt === undefined ?
+      undefined : { detailBudgets, shadowArt });
     let S, grp;
     function startSculpt() {
       S = K.sculpt((env.makeSculpt || makeSculpt)(B));
       S.sun = B.norm(st0.sun);
       if (st0.finish.look?.pixel) S.pixel = true;
-      S.captureAlbedo = Array.isArray(st0.finish.look?.renderStages) &&
-        st0.finish.look.renderStages.some(rule => rule.stage === 'material');
+      S.captureAlbedo = Boolean(st0.finish.liveSun) ||
+        Array.isArray(st0.finish.look?.renderStages) && st0.finish.look.renderStages.some(rule => rule.stage === 'material');
       if (st0.amb !== undefined) S.amb = st0.amb;
       if (st0.sky !== undefined) S.sky = st0.sky;
       if (st0.finish.res) S.res = st0.finish.res;

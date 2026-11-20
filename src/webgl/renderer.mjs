@@ -487,6 +487,9 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
     }
 
     function render(world, frame, width, height, output, cameraOverride, plane = zero, cover) {
+      const camera = cameraOverride ?? makeCamera(world, frame, width, height);
+      if (world.shadowLod && frame.shadowArt !== false)
+        world = toolkit.KIT?.shadowArt?.frame(world, camera.shadowFootprint) ?? world;
       const { raw = false, outline = true, dither = 0.35, scale = 1 } = frame;
       const look = world.look ?? {};
       const budget = raw ? null : detailAPI?.prepare(look.detailBudgets);
@@ -587,7 +590,6 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         history.forEach(buffer => buffer.resize(width, height));
       }
 
-      const camera = cameraOverride ?? makeCamera(world, frame, width, height);
       const paint = world.paintCorrections;
       let geometryData = world.data, paintActive = false;
       if (paint && frame.paintCorrections !== false) {

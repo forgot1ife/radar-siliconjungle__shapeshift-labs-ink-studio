@@ -163,6 +163,8 @@ The package entry point exposes:
 
 Bake static scenery before adding moving objects when scenery should not contain holes or baked shadows from those moving objects. The puppet example uses this pattern.
 
+Use [art-directed shadows](docs/live-sun.md#art-directed-shadows) to step shadow ramps, select casters and receivers, and simplify shadows at small sizes.
+
 A world includes `data`, `count`, `pal`, `seed`, rendering metadata, and optionally `anim`. `data` is a `Float32Array` with **16 floats per splat**:
 
 ```text

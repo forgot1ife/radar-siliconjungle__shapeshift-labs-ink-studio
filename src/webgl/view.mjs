@@ -38,6 +38,7 @@ export function makeCamera(world, frame, width, height) {
     view, projection, eye, aspect, ortho, radius, distance, setback:distance-zoomedDistance,
     tangent: ortho ? viewHeight : tanFov,
     footprint: dist * 2 * tanFov / height,
+    shadowFootprint: 2 * viewHeight / height,
     clipNear: Math.max(0.4, 0.15 * dist),
     clipFar: far,
     depthRange: [depthCenter - radius, depthCenter + radius]

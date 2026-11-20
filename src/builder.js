@@ -82,8 +82,10 @@ function makeNoise(seed) {
 }
 
 // ---------------- shared builder: splat storage plus shape helpers ----------------
-function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 15, detailBudgets } = {}) {
+function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 15, detailBudgets, shadowArt: shadowSettings } = {}) {
   const detailBudget = DetailBudgets.prepare(detailBudgets);
+  const shadowArt = ShadowArt.prepare(shadowSettings);
+  if (shadowArt?.cast || shadowArt?.receive) renderMetadata = true;
   if (detailBudget?.affectsCleanup || detailBudget?.fineOn || detailBudget?.fineOff) renderMetadata = true;
   if (!Number.isSafeInteger(initialCapacity) || initialCapacity < 1 || initialCapacity > Number.MAX_SAFE_INTEGER / 16)
     throw new RangeError('Initial splat capacity must be a positive integer');
@@ -249,7 +251,8 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     pix = null,
     pixHas = false,
     surfaceData = null,
-    surfacePending = false;
+    surfacePending = false,
+    shadowLod;
   const surfaces = [],
     surfaceIds = new Map(),
     surfaceRow = new Float32Array(SurfaceLook.STRIDE);
@@ -279,7 +282,7 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
   /* (fx, fy, fz: the way the shape it is lit as faces, if that is not its own: folded into two numbers; 9, 9 when there is none.
       noLine: the material draws no outline, as clouds and water. Ramps with the same colours are one ramp, so an outline is drawn
       only where one material meets another) */
-  const pixNext = (ramp, t, pat, nx, ny, nz, fx, fy, fz, noLine) => {
+  function pixelRamp(ramp, noLine) {
     const ix = noLine ? rampNoIx : rampIx;
     let r = ix.get(ramp);
     if (r === undefined) {
@@ -292,6 +295,9 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
       }
       ix.set(ramp, r);
     }
+    return r + 1;
+  }
+  const pixNext = (ramp, t, pat, nx, ny, nz, fx, fy, fz, noLine) => {
     let pi = 0;
     if (pat) {
       pi = patIx.get(pat);
@@ -300,7 +306,7 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
         patIx.set(pat, pi);
       }
     }
-    pixN[0] = r + 1;
+    pixN[0] = pixelRamp(ramp, noLine);
     pixN[1] = t;
     pixN[2] = pi;
     pixN[3] = nx;
@@ -322,6 +328,22 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     }
     pixHas = true;
   };
+  function shadowNext(base, alternate) {
+    if (!alternate || !P[alternate.ci]) return;
+    const slot = pixHas && alternate.ramp ? pixelRamp(alternate.ramp, alternate.noLine) : 0;
+    if (base === alternate.ci && (!pixHas || slot === pixN[0] && Math.fround(alternate.t) === pixN[1]) &&
+        (!surfacePending || Math.fround(alternate.visibility) === surfaceRow[4])) return;
+    const stride = ShadowArt.stride;
+    if (!shadowLod || shadowLod.length < cap * stride) {
+      const next = new Float32Array(cap * stride);
+      if (shadowLod) next.set(shadowLod);
+      shadowLod = next;
+    }
+    const pack = ([r, g, b]) => r + 256 * g + 65536 * b;
+    const { referenceSize, belowPixels } = shadowArt.small;
+    shadowLod.set([referenceSize / belowPixels, pack(P[base]), pack(P[alternate.ci]), slot,
+      alternate.t, alternate.visibility], n * stride);
+  }
   /* attributes (see the sculptor's S.keepAttrs): four numbers a dab, for the dabs laid next */
   const attrNext = (a, b, c, d) => {
     attrN = attrN || new Float32Array(4);
@@ -1016,6 +1038,8 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
         ...(fallingSnowRanges.length && { fallingSnowRanges: fallingSnowRanges.slice() }),
         ...(materialAlbedo && { materialAlbedo: materialAlbedo.slice(0, n) }),
         ...(materialPixelStyles && { materialPixelStyles: materialPixelStyles.slice(0, n * 4) }),
+        ...(shadowLod && { shadowLod: shadowLod.length >= n * ShadowArt.stride ? shadowLod.slice(0, n * ShadowArt.stride) :
+          Float32Array.from({ length: n * ShadowArt.stride }, (_, i) => shadowLod[i] || 0) }),
         attr: attr ? Float32Array.from({ length: n * 4 }, (_, i) => attr[i] || 0) : undefined,
         pix: pix ? Float32Array.from({ length: n * 8 }, (_, i) => pix[i] || 0) : undefined,
         ramps: pix ? ramps.map(r => r.slice()) : undefined,
@@ -1042,6 +1066,8 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     );
     if (detailBudgets !== undefined)
       world.look = { ...world.look, detailBudgets: detailBudget?.rules ?? false };
+    if (shadowSettings !== undefined)
+      world.look = { ...world.look, shadowArt: shadowArt?.settings ?? false };
     if (world.environmentPreset !== undefined && world.environmentPreset !== false) {
       const catalog = KIT.authoring.assetPacks.create({ packs:world.assetPacks ?? [] });
       Object.assign(world,KIT.authoring.environments.apply(world,world.environmentPreset,catalog,world.pal));
@@ -1067,6 +1093,7 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     pixHas = false;
     surfaceData = null;
     surfacePending = false;
+    shadowLod = undefined;
     surfaces.length = 0;
     surfaceIds.clear();
     bounced = 0;
@@ -1107,6 +1134,8 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
   };
   return {
     detailBudget,
+    shadowArt,
+    shadowNext,
     count: () => n,
     describeSplats: renderMetadata ? describeSplats : undefined,
     describeAlbedo,
