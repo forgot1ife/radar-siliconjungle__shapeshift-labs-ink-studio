@@ -162,3 +162,15 @@ test('destruction contact events can feed ecology through an explicit applicatio
   destruction.launch({p:[-1,2,.5],v:[300,0,0],radius:.1,mass:3});destruction.update(.02);bridge.update();sim.update(.2);
   assert(sim.read('burning',1)>0);assert(sim.read('char',1)>0);
 });
+
+test('deposited fuel can burn on initially bare material without changing neighbouring firebreak cells',()=>{
+  const sim=fire({width:5,height:1,materials:{stone:{fuel:0}}});
+  sim.contact({type:'ignite',p:[2.5,0,.5],radius:0,values:{fuel:.7}});advance(sim,1);
+  assert(sim.read('char',2)>0);assert(sim.read('fuel',2)<.7);near(sim.read('char',1),0);near(sim.read('char',3),0);
+  const saved=JSON.parse(JSON.stringify(sim.snapshot()));advance(sim,2);const expected=sim.snapshot();sim.restore(saved);advance(sim,2);assert.deepEqual(sim.snapshot().fields,expected.fields);
+});
+
+test('contact order is respected when ignition and water arrive on the same tick',()=>{
+  const sim=fire();sim.contact({type:'ignite',p:[2.5,0,2.5],radius:0});sim.contact({type:'water',p:[2.5,0,2.5],radius:0,values:{heat:0,moisture:1}});sim.update(.1);
+  near(sim.sample([2.5,0,2.5]).values.burning,0);near(sim.sample([2.5,0,2.5]).values.heat,0);
+});

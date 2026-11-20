@@ -138,14 +138,16 @@ with these shared channels:
 | `fuel` | Remaining combustible material, initialized by the habitat. |
 | `heat` | Normalized heat, including cooling after flames end. |
 | `burning` | Active combustion, separate from residual warmth. |
-| `char` | Persistent visible damage, normalized by initial fuel. |
+| `char` | Persistent visible damage, normalized by material fuel capacity. |
 | `moisture` | Shared wetness that inhibits ignition and spread. |
 
 Consumption cannot exceed remaining fuel. Stone and water patches with zero
 fuel cannot ignite. Saturated material resists combustion. Fire contributes
 heat and damage; a separate recovery process decides when new fuel and cover
 return. Existing solver recovery does not silently erase the shared scar.
-Adding new fuel permits another combustion cycle.
+Adding new fuel permits another combustion cycle. Deposits can also introduce
+combustible material to an initially bare patch without changing neighbouring
+materials. The adapter checkpoints this local fuel capacity alongside its solver.
 
 Fire reads finite `rain`, `winter`, `wx` and `wz` environment values. Rain and
 winter are clamped to [0,1]; wind cannot create negative heat. Other processes

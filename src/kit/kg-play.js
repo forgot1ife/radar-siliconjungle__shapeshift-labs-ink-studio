@@ -735,8 +735,9 @@
       },
       setCell(i, values) {
         if (!Number.isSafeInteger(i) || i < 0 || i >= NN || !values ||
-          Object.keys(values).some(k => !['heat', 'burn'].includes(k) || !Number.isFinite(values[k]) || values[k] < 0 || values[k] > 1))
+          Object.keys(values).some(k => !['heat', 'burn', 'fuel'].includes(k) || !Number.isFinite(values[k]) || values[k] < 0 || values[k] > 1))
           throw new RangeError('Invalid fire cell edit');
+        if (values.fuel !== undefined) fuel[i] = values.fuel;
         if (values.burn !== undefined) { burn[i] = values.burn; if (burn[i] > 0) scar.add(i); else scar.delete(i); }
         if (values.heat !== undefined) {
           heat[i] = values.heat;
