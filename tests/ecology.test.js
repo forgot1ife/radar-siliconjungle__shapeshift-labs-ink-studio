@@ -174,3 +174,11 @@ test('contact order is respected when ignition and water arrive on the same tick
   const sim=fire();sim.contact({type:'ignite',p:[2.5,0,2.5],radius:0});sim.contact({type:'water',p:[2.5,0,2.5],radius:0,values:{heat:0,moisture:1}});sim.update(.1);
   near(sim.sample([2.5,0,2.5]).values.burning,0);near(sim.sample([2.5,0,2.5]).values.heat,0);
 });
+
+test('scheduled contacts in one tick run in timestamp order with stable submission order for ties',()=>{
+  const sim=E.create({width:1,height:1,channels:{wet:{}},materials:{soil:{}}});
+  sim.contact({type:'late',time:.09,p:[.5,0,.5],values:{wet:.9}});
+  sim.contact({type:'early',time:.01,p:[.5,0,.5],values:{wet:.1}});
+  sim.contact({type:'late-tie',time:.09,p:[.5,0,.5],values:{wet:.7}});
+  sim.update(.1);near(sim.read('wet',0),.7);assert.deepEqual(sim.drainEvents().map(e=>e.type),['early','late','late-tie']);
+});

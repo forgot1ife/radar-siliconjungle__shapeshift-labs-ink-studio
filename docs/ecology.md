@@ -167,7 +167,8 @@ isolated random stream.
 `contact({ type, p, radius: 0, values?, id?, time? })` schedules an application
 interaction for a tick. `values` sets named channels in its footprint; process
 contact handlers can interpret any `type`. IDs deduplicate repeated delivery
-within a bounded 4,096-ID history. Future contacts apply at tick boundaries.
+within a bounded 4,096-ID history. Future contacts apply at tick boundaries, ordered by their timestamps; equal
+timestamps preserve submission order.
 
 `E.contacts(sim, { read, map, max: 1024 })` creates a stage system that maps
 another simulation's event batch into these inputs. Register it before the

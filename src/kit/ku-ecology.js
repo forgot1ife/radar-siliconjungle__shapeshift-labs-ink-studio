@@ -102,7 +102,7 @@
     }
     function run(){
       const saved=runtimes.map(p=>p.runtime.save()),rng=randomState,work=Object.fromEntries(channels.map(k=>[k,fields[k].slice()])),output=[];
-      const ready=contacts.filter(c=>c.time<=time+step+1e-9);
+      const ready=contacts.filter(c=>c.time<=time+step+1e-9).sort((a,b)=>a.time-b.time);
       busy=true;
       try{
         for(const contact of ready){
