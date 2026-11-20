@@ -54,14 +54,16 @@
       material:args.material??'earth',width:args.width??.35
     }}]);
   }
-  function wear(config) {
+  function wear(config,{id:system}) {
     check(config.contactEvents===undefined || typeof config.contactEvents==='boolean','contactEvents must be boolean');
     const region=bounds(config.bounds), cell=config.cell??.25, recovery=config.recovery??.01, gain=config.gain??.12;
-    const sources=config.sources??[], spread=config.spread??.18;
+    const sources=config.sources??[], spread=config.spread??.18, maxRut=config.rutDepth??0;
     check(Number.isFinite(cell)&&cell>=.03&&Number.isFinite(recovery)&&recovery>=0&&Number.isFinite(gain)&&gain>=0&&
       Number.isFinite(spread)&&spread>=0&&spread<=1&&Array.isArray(sources)&&sources.length<=64&&sources.every(id)&&
       Number.isFinite(config.threshold??.1)&&(config.threshold??.1)>=0&&(config.threshold??.1)<=1,
       'Invalid wear settings');
+    check(Number.isFinite(maxRut)&&maxRut>=0&&maxRut<=10&&Number.isFinite(config.ground??0)&&
+      (config.bed===undefined||typeof config.bed==='string'),'Invalid rut bed settings');
     const keyFor=(x,z)=>Math.floor((x-region.min[0])/cell)+','+Math.floor((z-region.min[2])/cell);
     const entered=Object.keys(config.materials??{});
     check(entered.every(key=>Number.isFinite(config.materials[key])&&config.materials[key]>=0),'Invalid material wear');
@@ -71,12 +73,24 @@
     function at({state,target}){
       return target.point?Q.ok(amount(state,target.point)):Q.missing('point required');
     }
-    function contact(state,items,dt) {
+    function rut(state,point){
+      const x=(point[0]-region.min[0])/cell-.5,z=(point[2]-region.min[2])/cell-.5;
+      const cx=Math.floor(x),cz=Math.floor(z),fx=x-cx,fz=z-cz;
+      const value=(x,z)=>state.cells[x+','+z]?.value??0;
+      return maxRut*K.mix(K.mix(value(cx,cz),value(cx+1,cz),fx),K.mix(value(cx,cz+1),value(cx+1,cz+1),fx),fz);
+    }
+    function contact(state,items,ctx) {
+      if(!items.length&&!Object.keys(state.cells).length)return state.cells;
       const cells={};
-      const retain=Math.exp(-recovery*dt);
+      const retain=Math.exp(-recovery*ctx.dt);
+      let x0=Infinity,z0=Infinity,x1=-Infinity,z1=-Infinity;
+      function changed(point){
+        x0=Math.min(x0,point[0]);z0=Math.min(z0,point[2]);x1=Math.max(x1,point[0]);z1=Math.max(z1,point[2]);
+      }
       for(const [key,row] of Object.entries(state.cells)){
         const value=row.value*retain;
         if(value>.0001)cells[key]={point:row.point,value};
+        if(maxRut&&(value!==row.value||!cells[key]))changed(row.point);
       }
       for(const raw of items){
         check(record(raw)&&vector(raw.point)&&Number.isFinite(raw.weight??1)&&(raw.weight??1)>=0,
@@ -92,10 +106,16 @@
           if(!zone(point,region))continue;
           const key=(cx+dx)+','+(cz+dz), old=cells[key];
           const multiplier=dx||dz?spread/(Math.abs(dx)+Math.abs(dz)):1;
-          cells[key]={point:old?.point??point,value:clamp((old?.value??0)+gain*weight*response*multiplier,0,1)};
+          const value=clamp((old?.value??0)+gain*weight*response*multiplier,0,1);
+          cells[key]={point:old?.point??point,value};
+          if(maxRut&&value!==(old?.value??0))changed(point);
         }
       }
       check(Object.keys(cells).length<=100000,'Wear cell budget exceeded');
+      if(maxRut&&x0<=x1){
+        const area={axes:'xz',min:[x0-cell,z0-cell],max:[x1+cell,z1+cell]};
+        for(const field of ['rutDepth','ruttedBed'])ctx.spatial?.write(field,area,'contact-ruts');
+      }
       return cells;
     }
     function trace({state,target,args,query}) {
@@ -118,8 +138,22 @@
         sampleStep:cell*.35,minClearance:0});
       return Q.ok({status:result.status,points:result.route?.points??[]});
     }
+    const bedFields=maxRut?{
+      rutDepth:{type:'number',units:'world',read:({state,target})=>target.point?Q.ok(rut(state,target.point)):Q.missing('point required')},
+      ruttedBed:{type:'number',units:'world',role:'rutted-bed',read:({state,target,query})=>{
+        if(!target.point)return Q.missing('point required');
+        const base=config.bed?query.probe(config.bed,target):Q.ok(config.ground??0);
+        return base.status==='ok'?Q.ok(base.value-rut(state,target.point)):base;
+      }}
+    }:{};
     return {inputs:{enabled:{type:'bool',default:config.enabled??true},
         ...(config.contactEvents && {contacts:'event'})},initial:()=>({cells:{},pending:[],enabled:config.enabled??true}),
+      ...(maxRut&&{dependencies:{writes:['rutDepth','ruttedBed'],reads:config.bed?[config.bed]:[]},
+        checkFields(query){
+          const base=config.bed&&query.field(config.bed);
+          check(!config.bed||base?.type==='number'&&base.units==='world'&&
+            base.name!==system+'/rutDepth'&&base.name!==system+'/ruttedBed', 'Rut bed needs a base height field in world units');
+        }}),
       validateState(state){
         check(record(state?.cells)&&Array.isArray(state.pending)&&typeof state.enabled==='boolean'&&
           Object.keys(state.cells).length<=100000&&Object.values(state.cells).every(row=>vector(row.point)&&
@@ -130,15 +164,21 @@
         for(const raw of contacts)check(record(raw)&&vector(raw.point)&&Number.isFinite(raw.weight??1)&&(raw.weight??1)>=0,
           'Invalid ground contact');
         return {...state,pending:[...state.pending,...contacts]};
-      },clear(state){return {...state,cells:{},pending:[]};}},
+      },clear(state,args,ctx){
+        if(maxRut&&Object.keys(state.cells).length){
+          const area={axes:'xz',min:[region.min[0]-cell,region.min[2]-cell],max:[region.max[0]+cell,region.max[2]+cell]};
+          for(const field of ['rutDepth','ruttedBed'])ctx.spatial?.write(field,area,'clear-contact-ruts');
+        }
+        return {...state,cells:{},pending:[]};
+      }},
       step(state,ctx){
         const enabled=ctx.input.enabled;
         if(!enabled)return {...state,pending:[],enabled};
         const contacts=[...state.pending,...(ctx.input.contacts??[]),...sources.flatMap(name=>ctx.states[name]?.contacts??[])];
-        return {cells:contact(state,contacts,ctx.dt),pending:[],enabled};
+        return {cells:contact(state,contacts,ctx),pending:[],enabled};
       },
       fields:{wear:{type:'number',units:'fraction',read:at},
-        wornCells:{type:'records',read:({state})=>Q.ok(state.cells)}},
+        wornCells:{type:'records',read:({state})=>Q.ok(state.cells)},...bedFields},
       traces:{trail:{run:trace}}
     };
   }

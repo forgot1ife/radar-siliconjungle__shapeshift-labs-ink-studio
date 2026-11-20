@@ -104,23 +104,29 @@ const SkyEnvironment = (() => {
       if (!Number.isFinite(at) || (i === 0 ? at !== 0 : at <= keys[i - 1].at) || at >= duration)
         throw new RangeError('Sequence keys must start at zero and increase before the duration');
       if (!profiles.has(profile) || !own(easings, ease)) throw new RangeError('Unknown profile or easing in ' + id);
-      return { at, profile: profiles.get(profile), ease: easings[ease] };
+      return { at, name:profile, profile: profiles.get(profile), ease: easings[ease], easing:ease };
     });
     if (!entries.length || entries.some(key => !compatible(key.profile, entries[0].profile)))
       throw new TypeError('Profiles in ' + id + ' must define the same parameter names and types');
     const start = entries[0].profile;
-    if (loop) entries.push({ at: duration, profile: start });
-    function sample(seconds) {
+    if (loop) entries.push({ at: duration, name:entries[0].name, profile: start });
+    function sample(seconds, trace) {
       const t = loop ? mod(seconds, duration) : clamp(seconds, 0, duration);
       let lo = 0, hi = entries.length - 1;
-      if (t >= entries[hi].at) return entries[hi].profile;
+      if (trace) Object.assign(trace,{ sequenceTime:t,duration,loop });
+      if (t >= entries[hi].at) {
+        const key = entries[hi];
+        if (trace) Object.assign(trace,{ keys:[{at:key.at,profile:key.name}],weight:0 });
+        return key.profile;
+      }
       while (hi - lo > 1) {
         const i = (lo + hi) >>> 1;
         if (t < entries[i].at) hi = i;
         else lo = i;
       }
-      const a = entries[lo], b = entries[hi];
-      return blend(a.profile, b.profile, a.ease((t - a.at) / (b.at - a.at)));
+      const a = entries[lo], b = entries[hi], progress = (t-a.at)/(b.at-a.at), weight = a.ease(progress);
+      if (trace) Object.assign(trace,{keys:[{at:a.at,profile:a.name},{at:b.at,profile:b.name}],ease:a.easing,progress,weight});
+      return blend(a.profile,b.profile,weight);
     }
     return { start, sample };
   }
@@ -143,7 +149,7 @@ const SkyEnvironment = (() => {
           throw new TypeError(key + ' changes type across tracks');
         channelTypes[key] = channel;
       }
-      return { id, clip, offset: bounded(offset, -1e9, 1e9, 'Track offset'), speed: bounded(speed, -1e6, 1e6, 'Track speed') };
+      return { id, name, clip, offset: bounded(offset, -1e9, 1e9, 'Track offset'), speed: bounded(speed, -1e6, 1e6, 'Track speed') };
     });
     function binding(name, type) {
       if (name === undefined) return;
@@ -183,15 +189,24 @@ const SkyEnvironment = (() => {
             size: widths(raw, .45), color: rgb(raw.color ?? '#ffffff') };
         }) };
     }
-    function trackSample(seconds, pins) {
+    const external = value => Array.isArray(value) ? encode(value) : value;
+    const surface = values => Object.fromEntries(Object.entries(values).map(([key,value]) => [key,external(value)]));
+    function trackSample(seconds, pins, trace) {
       const params = Object.assign(Object.create(null), initial);
-      for (const { id, clip, offset, speed } of schedule) {
+      for (const { id, name, clip, offset, speed } of schedule) {
         const time = seconds * speed - offset;
         if (!Number.isFinite(time)) throw new RangeError('Track time is out of range');
-        const pin = pins.get(id), profile = pins.has(id) ? looks.get(pin) : clip.sample(time);
-        if (!profile || pins.has(id) && !compatible(profile, clip.start))
+        const pinned = pins.has(id), pin = pins.get(id);
+        const row = trace && {id,sequence:name,speed,offset,trackTime:time,...(pinned && {pinnedProfile:pin})};
+        const profile = pinned ? looks.get(pin) : clip.sample(time,row);
+        if (!profile || pinned && !compatible(profile, clip.start))
           throw new RangeError('Incompatible profile ' + pin + ' for ' + id);
         Object.assign(params, profile);
+        if (row) {
+          row.values = surface(profile);
+          trace.tracks.push(row);
+          for (const key of Object.keys(profile)) trace.source[key] = {kind:'track',id};
+        }
       }
       return params;
     }
@@ -217,14 +232,14 @@ const SkyEnvironment = (() => {
 
     function indexTransitions(events, pins) {
       const byChannel = new Map();
-      for (const event of events) {
+      for (const [index,event] of events.entries()) {
         const authored = trackSample(event.at,pins);
         for (const [key,to] of Object.entries(looks.get(event.profile))) {
           if (!byChannel.has(key)) byChannel.set(key,[]);
           const segments = byChannel.get(key), last = segments.at(-1);
           // Capture in the same linear-light space used by the track sampler.
           const from = last ? atTransition(key,last,event.at) : authored[key];
-          segments.push({ at:event.at,end:event.at+event.duration,duration:event.duration,ease:easings[event.ease],from,to });
+          segments.push({ index,at:event.at,end:event.at+event.duration,duration:event.duration,ease:easings[event.ease],from,to,previous:last });
         }
       }
       return byChannel;
@@ -232,11 +247,11 @@ const SkyEnvironment = (() => {
 
     function playback(events) {
       const indexed = new Map();
-      function sample(seconds, overrides = {}) {
+      function evaluate(seconds, overrides = {}, trace) {
         if (!Number.isFinite(seconds)) throw new TypeError('Sky time must be finite seconds');
         const pins = new Map(Object.entries(record(overrides, 'Profile overrides')));
         for (const id of pins.keys()) if (!ids.has(id)) throw new RangeError('Unknown profile track ' + id);
-        const params = trackSample(seconds,pins);
+        const params = trackSample(seconds,pins,trace);
         if (events.length && seconds >= events[0].at) {
           const pinKey = pins.size ? JSON.stringify([...pins].sort(([a],[b]) => a.localeCompare(b))) : '';
           if (!indexed.has(pinKey)) {
@@ -245,16 +260,54 @@ const SkyEnvironment = (() => {
           }
           for (const [key,segments] of indexed.get(pinKey)) {
             const segment = previous(segments,seconds);
-            if (segment) params[key] = atTransition(key,segment,seconds);
+            if (!segment) continue;
+            params[key] = atTransition(key,segment,seconds);
+            if (trace) {
+              const row = trace.transitions[segment.index];
+              if (row) {
+                let fromSource;
+                if (segment.previous) fromSource = {kind:'transition',index:segment.previous.index};
+                else {
+                  let capture = trace.captures.get(segment.at);
+                  if (!capture) {
+                    capture = {tracks:[],source:Object.create(null)};
+                    trackSample(segment.at,pins,capture);
+                    trace.captures.set(segment.at,capture);
+                  }
+                  const prior = capture.source[key];
+                  if (prior) {
+                    const { values, ...track } = capture.tracks.find(item=>item.id===prior.id);
+                    fromSource = {kind:'track',...track};
+                  } else fromSource = {kind:'default'};
+                }
+                row.channels[key] = {from:external(segment.from),fromSource,to:external(segment.to),value:external(params[key])};
+              }
+              trace.source[key] = {kind:'transition',index:segment.index};
+            }
           }
         }
-        return Object.fromEntries(Object.entries(params).map(([key, v]) => [key, Array.isArray(v) ? encode(v) : v]));
+        return surface(params);
       }
 
+      function sample(seconds, overrides) { return evaluate(seconds,overrides); }
+      function inspect(seconds, overrides) {
+        const started = events.map((event,index) => {
+          if (event.at > seconds) return null;
+          const progress = seconds >= event.at+event.duration ? 1 : clamp((seconds-event.at)/event.duration);
+          return { index,...event,progress,weight:easings[event.ease](progress),channels:Object.create(null) };
+        });
+        const trace = { defaults:surface(initial),tracks:[],transitions:started,source:Object.create(null),captures:new Map() };
+        for (const key of Object.keys(initial)) trace.source[key] = {kind:'default'};
+        const values = evaluate(seconds,overrides,trace);
+        const { captures, ...report } = trace;
+        return { ...report,transitions:started.filter(Boolean).map(row => ({ ...row,
+          state:Object.keys(row.channels).length ? (row.progress === 1 ? 'holding' : 'blending') : 'superseded'
+        })),values };
+      }
       function frame(seconds, overrides) {
         return skyFrame(sample(seconds,overrides));
       }
-      return Object.freeze({ [compiled]:true, sample, frame, profile, transitions:events,
+      return Object.freeze({ [compiled]:true, sample, frame, inspect, profile, transitions:events,
         interrupt(event) { return playback(transitionList([...events,event])); },
         withTransitions(source) { return playback(transitionList(source === false ? [] : source)); }
       });

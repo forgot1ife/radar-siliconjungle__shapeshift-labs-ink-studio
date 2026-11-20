@@ -116,6 +116,58 @@ hardware WebGL backend. The benchmark reports readback-fenced frame times,
 texture storage, submitted splats, edit uploads, and framebuffer parity. Use
 `--software` to run the same comparison on SwiftShader.
 
+## Scoped looks and transparent contributions
+
+Palette targets use the same object, material, and surface selectors in
+WebGL and in headless renders. WebGL supports axis masks and planar raster
+masks on palette policies. Masks can read world coordinates or baked local
+coordinates, with stepped, linear, or smooth transitions. Raster masks can
+select a color or alpha channel and use animated frames. Query-backed
+masks, projected simulation fields, and custom projections use the
+headless renderer.
+
+Set `look.coverageAware: true` or pass `{ coverageAware: true }` to grade each
+splat before blending. Each glass pane can have its own target palette or
+color stack. A mask blends the pane's own color over the mask range.
+With refraction enabled, the displacement samples the already graded
+backdrop and leaves the glass and foreground contributions at their original
+pixel. This pass needs four color attachments, or five when native water
+is also active. Plain scenes and scenes with refraction off use the usual
+color pass.
+
+### Contribution picking
+
+Use `renderer.pick(world, ray, frame)` in a WebGL host. In Node, create a
+reusable picker with `ink.createSplatPicker(world, { time })` and call
+`picker.ray(ray)`. Both use the same indexed geometric ray query.
+
+```js
+const result = renderer.pick(world, {
+  origin: [0, 1, 6],
+  direction: [0, 0, -1],
+  maxDistance: 20,
+  limit: 32
+});
+```
+
+Results list front-to-back splats, glass, and water intervals. Each reports
+its distance, opacity, and surviving contribution weight, with object,
+material, and stable splat IDs when available. The result also names the
+dominant contribution and the first solid receiver. Water reports spectral
+transmission in the `media` list, including fully clear intervals. The query
+follows the supplied straight ray in world space, so its distances describe
+the underlying geometry.
+
+For packed geometry edits, recreate a standalone picker after updating
+its input. The WebGL picker follows the draw's data and instance revisions.
+Use `changedRows: []` on draws with unchanged geometry to retain the index.
+
+```sh
+ink-studio trace examples/coverage-aware-glass.js world/contributions --at -1,1,6 --args '{"direction":[0,0,-1],"maxDistance":12}'
+ink-studio look parity --strict
+node scripts/benchmark-contributions.js
+```
+
 ## Water optics
 
 Attach a [water scene](procedural.md#water-bodies) as `world.water`.

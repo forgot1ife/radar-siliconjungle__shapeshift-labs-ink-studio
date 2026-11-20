@@ -147,6 +147,7 @@
       },
       // write one splat: a round one (s) or a long one (axis, half-length sl, half-width sw); col is a packed colour (B.P[i]); alpha 0 hides it
       put(st, i, x, y, z, s, col, alpha, ax, sl) {
+        if (st.physicsOwned?.[i]) return;
         const D = st.D,
           o = i * 16;
         D[o] = x;
@@ -154,6 +155,7 @@
         D[o + 2] = z;
         D[o + 3] = alpha;
         D[o + 7] = col;
+        if (st.base) { st.base[o + 3] = alpha; st.base[o + 7] = col; }
         if (ax) {
           const p = s * s,
             d = sl * sl - p;
@@ -175,7 +177,9 @@
         st.rows[i >> 9] = 1;
       },
       hide(st, i) {
+        if (st.physicsOwned?.[i]) return;
         st.D[i * 16 + 3] = 0;
+        if (st.base) st.base[i * 16 + 3] = 0;
         st.D[i * 16 + 1] = -99;
         st.rows[i >> 9] = 1;
       }
@@ -286,7 +290,7 @@
             tz = Mx[k + 11];
           for (let n = 0; n < L.length; n++) {
             const i = L[n];
-            if (fr[i]) continue;
+            if (fr[i] || st.physicsOwned?.[i]) continue;
             const o = i * 16,
               x = R[o],
               y = R[o + 1],

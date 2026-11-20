@@ -45,4 +45,6 @@ Put any of these 0–1 values under `thresholds` in the plan. The metrics descri
 
 For a camera cut, the first row shows the actual framing change and its screen measurements. The matched row shows the preceding and event frame from the outgoing camera, then the same pair from the incoming camera. Flags at the cut come from those locked comparisons. The actual incoming shot starts with fresh temporal history.
 
+Save a [shot recipe](shot-recipes.md) with `--recipe <shot.json>` to replay and verify the sheet and metrics.
+
 Use `--fail-on-flags` to return exit status 2 after writing both files when a threshold is exceeded. Node hosts can call `ink.transitionReview(world, { plan, width, height, view, pose })` to get `{ image, report }`. Supply the host's `pose(world, seconds)` callback for stateful or rigged scenes.

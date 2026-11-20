@@ -67,6 +67,29 @@
           return Object.fromEntries(Object.entries(data).map(([key,value])=>[key,d.sample(value,x,z)]));
         }});
     }
+    function checkpoint(){
+      return {format:'ink-studio/surface-weather',version:1,time,width,height,bounds:{min:d.bounds.min.slice(),max:d.bounds.max.slice()},
+        ...(options.mask && {open:Array.from(open)}),
+        fields:Object.fromEntries(Object.entries(fields).map(([key,value])=>[key,Array.from(value)]))};
+    }
+    function restore(state){
+      if(state?.format!=='ink-studio/surface-weather'||state.version!==1||
+        state.width!==width||state.height!==height||!Number.isFinite(state.time)||state.time<0||
+        !state.bounds||['min','max'].some(key=>!vector(state.bounds[key],2)||
+          state.bounds[key].some((v,i)=>v!==d.bounds[key][i]))||
+        (state.open===undefined ? open.some(v=>v!==1) :
+          !vector(state.open,size)||open.some((v,i)=>v!==state.open[i]))||
+        !state.fields||Object.keys(state.fields).length!==Object.keys(fields).length)
+        throw new TypeError('Invalid surface weather checkpoint for this grid');
+      const restored={};
+      for(const key of Object.keys(fields)){
+        if(!vector(state.fields[key],size))throw new TypeError('Invalid surface weather checkpoint field '+key);
+        restored[key]=Float64Array.from(state.fields[key]);
+      }
+      Object.assign(fields,restored);
+      time=state.time;
+      return snapshot();
+    }
     function step(duration,{forcing=()=>({})}={}){
       if(!between(duration,0,120)||typeof forcing!=='function')throw new Error('Surface weather needs a bounded interval and forcing field');
       if(!duration)return snapshot();
@@ -145,7 +168,7 @@
       time+=duration;
       return snapshot(steps);
     }
-    return Object.freeze({step,snapshot});
+    return Object.freeze({step,snapshot,checkpoint,restore});
   }
   M.surfaceWeather=surfaceWeather;
 })(KIT);

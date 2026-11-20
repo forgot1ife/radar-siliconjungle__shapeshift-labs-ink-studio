@@ -421,10 +421,11 @@
     if (!world || !integer(world.count, 0, 250000) || !(world.data instanceof Float32Array) || world.data.length < world.count * 16 ||
         world.anim || world.rest || world.pixAnchors || world.effectParticles?.length || world.sortRanges?.length)
       throw new TypeError('Native LOD needs a baked world without external per-splat animation or draw ranges');
-    const { data, count, renderMetadata: meta, materialAlbedo, surfaceData, pix, fine, attr } = world;
+    const { data, count, renderMetadata: meta, materialAlbedo, materialPixelStyles, surfaceData, pix, fine, attr } = world;
     const index = TargetSelectors.index(world);
     const samples = Array.from({ length: count }, (_, i) => {
       const q = i * 16, color = Math.round(data[q + 7]), metadata = index.row(i);
+      const styleCode = materialPixelStyles?.[i * 4 + 1] || 0, shadeSteps = styleCode >> 3 & 127;
       const normal = Array.from(meta?.normals?.subarray(i * 3, i * 3 + 3) ?? []);
       const validNormal = normal.length === 3 && V.len(normal) > EPS;
       return { id: String(i), position: Array.from(data.subarray(q, q + 3)), normal: validNormal ? normal : [0, 1, 0],
@@ -433,9 +434,10 @@
         color: [color & 255, color >> 8 & 255, color >> 16].map(value => value / 255),
         owner: metadata.object ?? '', material: metadata.material ?? '', surface: metadata.surface ?? '',
         [nativePartition]: [meta?.objectIds?.[i] || 0, meta?.materialIds?.[i] || 0, meta?.targetIds?.[i] || 0,
-          materialAlbedo?.[i] || 0].join('/'),
+          materialAlbedo?.[i] || 0, materialPixelStyles?.[i * 4] || 0, shadeSteps, shadeSteps ? color : 0].join('/'),
         protect: !validNormal || data[q + 3] < 1 || Boolean(data[q + 11] || surfaceData?.[i * 8] ||
-          pix?.[i * 8] || fine?.[i * 12 + 11] || attr?.subarray(i * 4, i * 4 + 4).some(Boolean)) };
+          pix?.[i * 8] || fine?.[i * 12 + 11] || (styleCode & MaterialPixelStyle.PAIR) ||
+          attr?.subarray(i * 4, i * 4 + 4).some(Boolean)) };
     });
     const reduced = mergeSplats(samples, options);
     const result = SplatProvenance.subset(world, reduced.splats.map(row => Number(row.id)));

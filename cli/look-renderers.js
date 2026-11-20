@@ -11,8 +11,10 @@ function runFixtures(kit, build, open, { fixtures, width, height, points, frames
     const backend = open(width, height, view);
     try {
       const cases = fixtures.map(fixture => {
-        backend.draw(build(kit, fixture));
-        return { id: fixture.id, colors: backend.sample(points) };
+        const world=build(kit,fixture);
+        backend.draw(world);
+        const ray={origin:[-.8,0,5],direction:[0,0,-1],maxDistance:10};
+        return { id:fixture.id,colors:backend.sample(points),...(fixture.glass&&{pick:backend.pick(world,ray)}) };
       });
       return { driver: backend.driver, cases };
     } finally {
@@ -32,13 +34,16 @@ function runFixtures(kit, build, open, { fixtures, width, height, points, frames
     try {
       const beforeFirst = performance.now();
       backend.draw(world);
+      backend.fence?.();
       const firstFrameMs = ms(performance.now() - beforeFirst);
       for (let i = 0; i < warmup; i++) backend.draw(world);
+      backend.fence?.();
       const times = [];
       let measured = 0;
       for (let done = 0; done < frames; done += batch) {
         const count = Math.min(batch, frames - done), before = performance.now();
         for (let i = 0; i < count; i++) backend.draw(world);
+        backend.fence?.();
         const elapsed = performance.now() - before;
         measured += elapsed;
         times.push(elapsed / count);
@@ -72,6 +77,7 @@ function headlessBackend(width, height, view) {
   let frame;
   return {
     draw(world) { frame = core.render(world, { ...view, w: width, h: height, px: 1 }); },
+    pick(world,ray) { return core.createSplatPicker(world).ray(ray); },
     sample(points) {
       return Object.fromEntries(Object.entries(points).map(([name, [x, y]]) => {
         const i = (y * frame.w + x) * 3;
@@ -114,7 +120,13 @@ function checkParity(options) {
       else if (check.maxChannelError <= tolerance) status = 'passed';
       else status = webglChange <= tolerance ? 'known-gap' : 'failed';
     }
-    return { id, status, tolerance, ...(expected && { expected }), ...(limitation && { limitation }), samples: checks };
+    let pick;
+    if (cpu.cases[i].pick) {
+      const headless=cpu.cases[i].pick,webgl=gpu.cases[i].pick;
+      pick={headless,webgl,matched:JSON.stringify(headless)===JSON.stringify(webgl)};
+      if(!pick.matched)status='failed';
+    }
+    return { id, status, tolerance, ...(expected && { expected }), ...(limitation && { limitation }), samples:checks, ...(pick&&{pick}) };
   });
   const summary = { passed: 0, knownGaps: 0, failed: 0 };
   for (const { status } of cases) summary[status === 'known-gap' ? 'knownGaps' : status]++;

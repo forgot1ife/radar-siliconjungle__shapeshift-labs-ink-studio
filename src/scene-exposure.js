@@ -22,24 +22,26 @@ const SceneExposure = (() => {
   function compile(value) {
     if (value?.[brand]) return value;
     if (!Array.isArray(value?.zones)) throw new TypeError('Scene exposure needs a zones array');
-    const zones = Array.from(value.zones, zone => {
+    const zones = Array.from(value.zones, (zone,index) => {
       const { min, max, fade = 1 } = zone ?? {};
       if (![min,max].every(p => Array.isArray(p) && p.length === 3 && Array.from(p).every(Number.isFinite)) ||
           min.some((n,i) => n >= max[i] || !Number.isFinite(max[i] - n)))
         throw new RangeError('Exposure zones need finite XYZ bounds with positive extent');
       number(fade, 0, Infinity, 'Exposure fade');
-      return { min:min.slice(), max:max.slice(), fade, ...Object.fromEntries(Object.entries(channelDefaults)
+      return { index, id:typeof zone.id === 'string' ? zone.id : null, min:min.slice(), max:max.slice(), fade, ...Object.fromEntries(Object.entries(channelDefaults)
         .map(([key, fallback]) => [key, number(zone[key] ?? fallback, 0, 1, 'Exposure ' + key)])) };
     });
     const channels = {};
+    function zoneGain(zone,key,x,y,z) {
+      const {min,max,fade} = zone;
+      const edge = Math.min(x-min[0],max[0]-x,y-min[1],max[1]-y,z-min[2],max[2]-z);
+      if (edge < 0) return null;
+      const u = key === 'rain' || !fade ? 1 : Math.min(1, edge / fade);
+      return 1-(1-zone[key])*(u*u*(3-2*u));
+    }
     const get = (key, candidates) => (x,y,z) => {
       let gain = 1;
-      for (const { min, max, fade, [key]: retained } of candidates) {
-        const edge = Math.min(x-min[0], max[0]-x, y-min[1], max[1]-y, z-min[2], max[2]-z);
-        if (edge < 0) continue;
-        const u = key === 'rain' || !fade ? 1 : Math.min(1, edge / fade);
-        gain = Math.min(gain, 1 - (1 - retained) * (u*u*(3-2*u)));
-      }
+      for (const zone of candidates) gain = Math.min(gain,zoneGain(zone,key,x,y,z) ?? 1);
       return gain;
     };
     const fogZones = zones.filter(zone => zone.fog < 1), dryZones = zones.filter(zone => zone.rain === 0);
@@ -83,7 +85,14 @@ const SceneExposure = (() => {
     function sample(x,y,z) {
       return Object.fromEntries(Object.keys(channelDefaults).map(key => [key, channels[key]?.(x,y,z) ?? 1]));
     }
-    return Object.freeze({ [brand]:true, ...channels, sample, rainBlocked,
+    function inspect(x,y,z) {
+      const local = zones.flatMap(zone => {
+        const gains = Object.fromEntries(Object.keys(channelDefaults).map(key=>[key,zoneGain(zone,key,x,y,z)]));
+        return gains.rain === null ? [] : [{index:zone.index,id:zone.id,min:zone.min.slice(),max:zone.max.slice(),fade:zone.fade,gains}];
+      });
+      return { gains:sample(x,y,z),zones:local };
+    }
+    return Object.freeze({ [brand]:true, ...channels, sample, inspect, rainBlocked,
       fogDistance: channels.fog ? fogDistance : null });
   }
 

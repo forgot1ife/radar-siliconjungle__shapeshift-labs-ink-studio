@@ -81,7 +81,7 @@
     }
     const openings=table(config.openings??{},256,'air opening',(raw,key)=>{
       const from=endpoint(raw.from), to=endpoint(raw.to);
-      const {conductance=1,opening=1,mixing=.1,fan=0,wind,gate}=raw;
+      const {conductance=1,opening=1,mixing=.1,fan=0,wind,gate,at}=raw;
       check(from!==to&&(from<size||to<size)&&ranges(conductance,.001,maxRate)&&ranges(opening,0,1)&&
         ranges(mixing,0,maxRate)&&ranges(fan,-maxRate,maxRate),'Invalid air opening '+key);
       if(wind!==undefined)check(record(wind)&&point(wind.at)&&point(wind.direction)&&V.len(wind.direction)>1e-6&&
@@ -89,7 +89,8 @@
       if(gate!==undefined)check(record(gate)&&typeof gate.field==='string'&&Array.isArray(gate.points)&&
         gate.points.length>0&&gate.points.length<=8&&gate.points.every(point)&&ranges(gate.radius??0,0,maxRate),
       'Invalid air opening clearance gate '+key);
-      return {from,to,conductance,opening,mixing,fan,wind,normal:wind?V.norm(wind.direction):null,gate};
+      check(at===undefined||point(at),'Invalid air opening location '+key);
+      return {from,to,conductance,opening,mixing,fan,wind,normal:wind?V.norm(wind.direction):null,gate,at};
     });
     const sources=table(config.sources??{},128,'air source',(raw,key)=>{
       const room=endpoint(raw.room), {rates,enabled=1}=raw;
@@ -169,6 +170,16 @@
       });
     }
     const roomFields=['air-quality','temperature',...species.map(row=>row.key)];
+    let acousticGeometry;
+    function acoustics({state}){
+      if(!state?.settings)return Q.missing('air openings are unavailable');
+      acousticGeometry??={rooms:rooms.map(({key,bounds})=>({id:key,bounds})),exterior:outside.map(row=>row.key),
+        openings:openings.map(row=>{
+          const at=row.at??row.wind?.at??row.gate?.points[0];
+          return {id:row.key,from:names[row.from],to:names[row.to],...(at&&{at})};
+        })};
+      return Q.ok({geometry:acousticGeometry,fractions:state.settings.map(row=>row.open)});
+    }
     return {inputs,outputs,initial:()=>({stock,ledger:tracers.map(()=>Object.fromEntries(counters.map(key=>[key,0])))}),
       settleInitial(state,ctx){
         const settings=control(ctx);
@@ -237,6 +248,7 @@
         return result;
       },
       fields:{
+        'acoustic-layout':{type:'record',role:'acoustic-layout',openingIds:openings.map(row=>row.key),read:acoustics},
         rooms:{...indexed(rooms,'room',describe,'ventilation-rooms'),tracers:species.map(row=>row.key)},
         openings:indexed(openings,'opening',(state,i)=>{
           const row=openings[i], {open,fan,wind,windDrive}=state.settings[i];

@@ -322,7 +322,7 @@ const PixelLook = (() => {
     }
     const effects = mask !== undefined && mask !== false ?
       (typeof SplatEffects === 'undefined' ? require('./splat-effects.js') : SplatEffects) : null;
-    return Object.assign(plan, { grade, mapOnly, assetId, stackName: active?.name,
+    return Object.assign(plan, { grade, mapOnly, assetId, stackName: active?.name, maskSource: mask || undefined,
       sourceSwatches: grade ? Array.from(options.palette, unpack) : undefined,
       mask: effects?.prepareMask(mask, options.context, { validateOnly: options.validateOnly }) });
   }
@@ -335,7 +335,9 @@ const PixelLook = (() => {
     if (!Array.isArray(targets) || targets.length > 63)
       throw new RangeError('Palette constraints accept up to 63 targets');
     const rules = [], palettes = [];
-    const defaultPolicy = fallback === undefined || (options?.skipMasks && fallback?.mask) ? null :
+    const skipMask = policy => Boolean(policy?.mask && (options?.skipMasks ||
+      options?.maskSupported && !options.maskSupported(policy.mask)));
+    const defaultPolicy = fallback === undefined || skipMask(fallback) ? null :
       prepareLookPolicy(fallback, options);
     const defaultSlot = defaultPolicy ? palettes.push(defaultPolicy) : 0;
     for (const target of targets) {
@@ -344,7 +346,7 @@ const PixelLook = (() => {
       if (select !== undefined && (object !== undefined || material !== undefined))
         throw new TypeError('Use select or legacy object and material fields on a target');
       const filter = selectors.prepare(select ?? { ...(object !== undefined && { object }), ...(material !== undefined && { material }) });
-      const prepared = options?.skipMasks && policy.mask ? null : prepareLookPolicy(policy, options);
+      const prepared = skipMask(policy) ? null : prepareLookPolicy(policy, options);
       if (prepared) rules.push({ select: filter, slot: palettes.push(Object.assign(prepared, { select: filter })) });
     }
     if (!palettes.length) return null;

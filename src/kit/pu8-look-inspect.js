@@ -96,7 +96,8 @@
         if (renderer === 'webgl') {
           if (explicit) unsupported(path, 'does not evaluate explicit ' + stage + ' stages');
           else if (mode === 'surface') unsupported(path, 'does not evaluate surface look layers');
-          else if (definition.mask) unsupported(path, 'does not evaluate spatial look masks');
+          else if (definition.mask && !ContributionRules.supportsMask(definition.mask))
+            unsupported(path, 'evaluates axis masks and planar raster masks');
           else if (matched.some(row => (mode === 'optics' || row.target.kind === 'medium') && !waterGroup(row)))
             unsupported(path, 'only applies medium look bindings to native water');
         }
@@ -118,8 +119,6 @@
 
     if (look.coverageAware !== undefined && typeof look.coverageAware !== 'boolean')
       issue('look.coverageAware', 'invalid-look', 'coverageAware must be a boolean');
-    if (renderer === 'webgl' && look.coverageAware === true)
-      unsupported('look.coverageAware', 'does not grade per-splat contributions before compositing');
     for (const [key, compile, describe] of [
       ['tone', value => PixelLook.prepareTone(value, context.blueNoise), tone => ({ tone })],
       ['paletteRemap', value => PixelLook.prepareRemap(value, world.pal, world.paletteRoles), remap => ({ remap })],

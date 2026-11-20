@@ -8,9 +8,12 @@ const LookInputs = require('../src/look-inputs.js');
 const TargetSelectors = require('../src/target-selectors.js');
 const { createArtPasses, sampleFrames } = require('./art-passes.js');
 const ArtPasses = require('../src/art-passes.js');
+const { createEnvironmentPasses } = require('./environment-passes.js');
 const ArtInk = require('../src/art-ink.js');
 const ArtDirection = require('../src/art-direction.js');
 const SilhouetteProtection = require('../src/silhouette-protection.js');
+const DetailBudgets = require('../src/detail-budgets.js');
+const MaterialPixelStyle = require('../src/material-pixel-style.js');
 const EffectPalettes = require('../src/effect-palettes.js');
 const ArtEffects = require('../src/art-effects.js');
 const ArtStability = require('../src/art-stability.js');
@@ -31,6 +34,7 @@ function blueNoise(world, { seed }) {
   return tiles.get(seed);
 }
 const SampleCoverage = require('../src/sample-coverage.js');
+const ContributionRules = require('../src/contribution-rules.js');
 const Airflow = require('../src/airflow.js');
 const LightSchedule = require('../src/light-schedule.js');
 const LiveSun = require('./live-sun.js');
@@ -38,12 +42,9 @@ const surfaceShading = require('./surface-shading.js');
 const SceneOptics = require('../src/scene-optics.js');
 const SkyEnvironment = require('../src/sky-environment.js');
 const HorizonBands = require('../src/horizon-bands.js');
-const CelestialTracks = require('../src/celestial-tracks.js');
 const CloudField = require('../src/cloud-field.js');
 const Lightning = require('../src/lightning.js');
-const SceneExposure = require('../src/scene-exposure.js');
-const VolumeCutouts = require('../src/volume-cutouts.js');
-const weatherFrame = require('./weather.js');
+const { resolveEnvironment, resolveWind, resolveLighting, atmosphereSources } = require('./environment.js');
 const WindField = require('../src/wind-field.js');
 const Precipitation = require('./precipitation.js');
 const RainImpacts = require('./rain-impacts.js');
@@ -103,6 +104,7 @@ function render(world, o, preparedPalettes) {
   if (!Number.isFinite(lensScale) || lensScale <= 0) throw new RangeError('Lens scale must be finite and positive');
   const tangent = Math.tan(FOV / 2) / lensScale;
   const look = world.look || {};
+  const detailBudget = !o.raw && DetailBudgets.prepare(look.detailBudgets);
   const direction = ArtDirection.prepare(look.artDirection,o.artDirection);
   const protection = SilhouetteProtection.prepare(look.silhouetteProtection,o.silhouetteProtection);
   const subject = protection?.bind(world);
@@ -224,6 +226,10 @@ function render(world, o, preparedPalettes) {
     px = o.px || frameBudget.artScale(cw, ch, preferred, o.raw || o.samples || o.captureCoverage ? null : look.pixelBudget),
     W = Math.ceil(cw / px),
     H = Math.ceil(ch / px);
+  if (!o.samples && !o.captureCoverage) o.shotFrame?.({
+    time:sceneTime, skyTime:ArtDirection.time(direction,o.skyTime ?? sceneTime,'environment'), camera:{ target:Array.from(T), yaw, pitch, distance:dist, lensScale, orthographic:!!o.ortho },
+    art:{ width:W, height:H, pixelSize:px }
+  });
   const historyFrames = effects?.smear && o.artHistory ? o.artHistory.previous(t, W, H, world) : [];
   const motionFrame = historyFrames[Math.max(0, historyFrames.length - (effects?.smear?.frames || 1))];
   const motionFrom = o.motionFrom ?? motionFrame?.motionReference;
@@ -233,7 +239,7 @@ function render(world, o, preparedPalettes) {
       captureMotion, motionFrom, maskGrade: !tone && grade, reflectionTint: effects?.reflection,
       previewPalette: globalPaletteMark, lookAudit: audit,
       effectPaletteCapture: effectPaletteSettings,
-      captureFog: o.captureFog || ink?.ramps.has('fog') }), paletteRules);
+      captureFog: o.captureFog || ink?.ramps.has('fog'), resolveDetailCleanup: !!detailBudget?.affectsCleanup }), paletteRules);
     const samples = render(
       world,
       Object.assign({}, o, {
@@ -268,6 +274,7 @@ function render(world, o, preparedPalettes) {
         palette, local, contour: !ink, grade, interiorColor: native.color, dither: amount,
         ditherAt: anchoring ? (x, y) => ArtStability.ditherCoordinates(stable, native.passes, (H - 1 - y) * W + x, x, y) : null
       }));
+    native.cleanDetail?.(img.rgb, !!(o.clean || (look.clean && !tone?.preserveDots)));
     applyMasks(img.rgb, native.masked);
     return finishLook(Object.assign(img, { px, drawn: samples.drawn },
       evaluatedPalette && !local && { palette: evaluatedPalette },
@@ -308,38 +315,11 @@ function render(world, o, preparedPalettes) {
     -(V[4] * V[12] + V[5] * V[13] + V[6] * V[14]),
     -(V[8] * V[12] + V[9] * V[13] + V[10] * V[14])
   ];
-  const skySource = o.skyEnvironment ?? world.skyEnvironment;
-  const skyTime = ArtDirection.time(direction,o.skyTime ?? sceneTime,'environment');
-  let clock = skySource ? SkyEnvironment.compile(skySource) : null;
-  if (clock && o.skyTransitions !== undefined) clock = clock.withTransitions(o.skyTransitions);
-  if (!clock && o.skyTransitions !== undefined && o.skyTransitions !== false && skySource !== false)
-    throw new TypeError('Sky transitions need a sky environment');
-  if (skySource !== false && o.weatherTracks !== false && world.weatherTracks !== undefined && world.weatherTracks !== false) {
-    const { KIT } = require('../index.js').load();
-    const track = KIT.weather.tracks.compile(clock,world.weatherTracks);
-    const cues = world.weatherTrackState ? track.transitions(world.weatherTrackState)
-      : track.sceneTransitions(world.animationTimeline?.cues?.());
-    if (cues.length) clock = clock.withTransitions([...clock.transitions,...cues]);
-  }
-  const environment = clock?.frame(skyTime, o.skyProfiles);
+  const climate = resolveEnvironment(world,o,sceneTime,direction);
+  const { skyTime,environment,weather,exposure,cutouts } = climate;
   const effectRules = EffectPalettes.activate(effectPaletteSettings, environment?.parameters);
-  const weather = weatherFrame(world, o, skySource, clock, environment?.parameters, skyTime);
-  const exposure = SceneExposure.settings(world.sceneExposure, o.sceneExposure);
-  const cutouts = VolumeCutouts.settings(world.volumeCutouts,o.volumeCutouts)?.frame(t);
-  const windConfig = WindField.settings(world.windField, o.windField);
-  const fallbackWind = o.wind ?? weather?.wind ?? windConfig?.fallback ?? an.wind ?? (windConfig && world.volumeWind) ?? undefined;
-  const weatherWindAt = o.wind == null ? weather?.windAt : undefined;
-  const weatherWindHere = o.wind == null ? weather?.windHere : undefined;
-  const flow = (windConfig || exposure?.wind) && WindField.create(windConfig ?? WindField.settings(true),{
-    ambient: time => weatherWindAt?.(time) ?? fallbackWind,
-    local:weatherWindHere,
-    gust:windConfig ? weather?.gustAt : undefined, localGust:windConfig ? weather?.gustHere : undefined, exposure
-  });
-  const wind = Airflow.frame(flow ? flow.open(skyTime) : fallbackWind);
-  const localWind = flow && (windConfig?.cover || weatherWindHere || (windConfig && weather?.gustHere) || exposure?.wind)
-    ? (time,x,z,_fallback,y=0) => flow.sample(x,y,z,time) : weatherWindHere;
-  const airAt = (x,y,z) => localWind ? Airflow.frame(localWind(skyTime,x,z,wind.velocity,y)) : wind;
-  const windAt = flow ? flow.open : weatherWindAt;
+  const windState = resolveWind(world,o,climate);
+  const { windConfig,flow,wind,localWind,airAt,windAt } = windState;
   const travel = (at, birth, time) => {
     const age = time - birth;
     return flow ? flow.travel(...at, skyTime - age, skyTime) : airAt(...at).velocity.map(v => v * age);
@@ -367,10 +347,7 @@ function render(world, o, preparedPalettes) {
   }
   const mediumLook = medium => optics?.transform(medium) ?? PixelLook.mediumTransform(paletteRules, medium);
   const colorForVolume = volume => mediumLook(TargetSelectors.medium(volume.id, volume.mediumKind ?? volume.type, volume.tags));
-  const atmosphereSources = o.atmosphere === false ? [] : [
-    ...(world.atmosphere||[]), ...SceneOptics.shapedVolumes(world.shapedAtmosphere,o.shapedAtmosphere)
-  ];
-  const volumes = SceneOptics.prepareVolumes(atmosphereSources, world.pal, colorForVolume, weather?.fogGain);
+  const volumes = SceneOptics.prepareVolumes(atmosphereSources(world,o), world.pal, colorForVolume, weather?.fogGain);
   if (emitted?.volumes.length) volumes.push(...SceneOptics.prepareVolumes(emitted.volumes, world.pal, colorForVolume));
   const sourceWater = o.water !== false && world.water?.count && world.water.raySegments ? world.water : null;
   const water = sourceWater && (optics || paletteRules) ?
@@ -379,24 +356,18 @@ function render(world, o, preparedPalettes) {
   const glassLooks = glassIndex && new Map();
   const centers = captureMotion ? new Float32Array(N * 2).fill(NaN) : null;
   const motionReference = centers && { w: W, h: H, centers, ...(birthIds && { birthIds, baseCount, splatSource, emitterSource }) };
-  const art = createArtPasses([...passSelection].filter(name => name !== 'target' && name !== 'mask'), W, H);
+  const art = createArtPasses([...passSelection].filter(name => name !== 'target' && name !== 'mask' &&
+    !ArtPasses.environment.includes(name)), W, H);
+  const environmentPasses = createEnvironmentPasses(passSelection, W, H, world);
+  const skyPass = environmentPasses?.passes.sky, fogPass = environmentPasses?.passes.fogTransmittance;
+  const reflectPass = environmentPasses?.passes.reflections;
+  const centerReflection = reflectPass && new Float64Array(3), fragmentReflection = reflectPass && new Float64Array(3);
   const rayAt = cameraRays(V, eye, W, H, focal, ortho);
-  const celestial = CelestialTracks.settings(world.celestialTracks, o.celestialTracks)?.frame(skyTime);
+  const { celestial,sun,flash,clouds } = resolveLighting(world,o,climate,windState,direction);
   const baseSky = SkyEnvironment.withCelestials(environment?.sky, celestial, celestial && hex(0));
   const sky = baseSky && direction?.bands ? { ...baseSky, bands:direction.bands } : baseSky;
   const aerial = o.atmosphere !== false && !o.captureCoverage ?
     SkyEnvironment.aerial(world.aerialPerspective, o.aerialPerspective, environment?.parameters) : null;
-  const sun = LiveSun.prepare(world.liveSun, o.liveSun, t, celestial?.sun);
-  const cloudSource = o.cloudField ?? world.cloudField;
-  const cloudSettings = cloudSource === false ? null :
-    CloudField.shadowSettings(world.cloudShadows, o.cloudShadows, environment?.parameters);
-  if (cloudSettings && !cloudSource) throw new TypeError('Cloud shadows need a cloud field');
-  const cloudDisplacement = cloudSource && windConfig && windConfig.clouds !== false
-    ? flow.cloudTravel(0,skyTime).map(n => n*windConfig.clouds) : undefined;
-  const flash = Lightning.settings(world.lightning, o.lightning)?.frame(t);
-  const clouds = cloudSource ? CloudField.compile(cloudSource).frame(skyTime, cloudSettings,
-    sun?.direction ?? celestial?.sun?.direction ?? environment?.sky?.sun ?? (o.volumeLighting ?? world.volumeLighting)?.sun?.direction,
-    cloudDisplacement, o.cloudRepresentation ?? world.cloudRepresentation, flash?.light, cutouts?.cloud, direction?.cloudEdge) : null;
   const cloudShadow = clouds?.shadow;
   const spriteAtlases=AtlasSprites.placements(world.spriteAtlases,o.spriteAtlases);
   const surfaceFragments=o.spriteSurfaces===false?[]:SurfaceRaster.rasterize(world.spriteSurfaces,{V,W,H,focal,ortho,near,
@@ -422,7 +393,7 @@ function render(world, o, preparedPalettes) {
     if (silhouetteMask) silhouetteMask[(H-1-Math.floor(pixel/W))*W+pixel%W] = rule?.slot ?? 0;
   }
   // The bands use the nominal eye and sky rays. The foreground still uses its original camera and depth.
-  const horizonArt = !transparent && !o.captureCoverage &&
+  const horizonArt = (!transparent || skyPass) && !o.captureCoverage &&
     HorizonBands.prepare(look.horizonBands, o.horizonBands)?.frame({ eye:cloudEye, yaw, pitch, distance:dist, parameters:environment?.parameters });
   const backdropClouds = clouds?.visible && !cloudView;
   const skyBase = backdropClouds && !sky ? hex(0) : bg;
@@ -439,11 +410,12 @@ function render(world, o, preparedPalettes) {
     return out;
   });
   const showSky = (sky || backdropClouds || flash || horizonArt) && !transparent && !o.captureCoverage;
-  const skyRay = showSky || aerial && ortho && sky ?
+  const captureSky = skyPass && skySample;
+  const skyRay = showSky || captureSky || aerial && ortho && sky ?
     cameraRays(V, eye, W, H, ortho ? H * .5 / Math.tan((sky?.orthoFov ?? Math.PI / 3) * .5) : focal, false) : null;
   const skyRayAt = pixel => skyRay(pixel % W + .5, Math.floor(pixel / W) + .5);
   const skyDirection = pixel => skyRayAt(pixel).direction;
-  const skyColor = showSky && [0, 0, 0];
+  const skyColor = (showSky || captureSky) && [0, 0, 0];
   const trackMedia = effectRules && ['fog', 'clouds', 'sky'].some(kind => effectRules.ramps.has(kind));
   const backdropCloud = trackMedia && showSky && backdropClouds ? new Float32Array(W * H) : null;
   const cloudSignal = backdropCloud && [0];
@@ -483,7 +455,7 @@ function render(world, o, preparedPalettes) {
     if (volumeFlow) quality.windOffset = volumeFlow.windOffset;
     const media = volumes.some(volume => volume.type === 'field') ? prepareVolumeLight() : undefined;
     return { ...quality, time: t, cloudShadow, flash, media, exposure, cutouts, cloud:cloudView, effectCoverage: trackMedia,
-      cloudStart:cloudView && eyeD-dist, bands:direction?.bands };
+      cloudStart:cloudView && eyeD-dist, fogTransmittance:!!fogPass, bands:direction?.bands };
   };
   const geometrySample = probe || sortedSurfaces || aerial || cloudShadow || flash || cloudView ? sampleFrames(world, t) : null;
   const captured = o.captureCoverage || transparent ? new Float32Array(W * H) : null;
@@ -710,8 +682,18 @@ function render(world, o, preparedPalettes) {
   const col = new Float32Array(W * H * 3),
     dep = new Float32Array(W * H),
     gls = new Float32Array(W * H);
+  const skyCloud = skyPass && cloudView && [0, 0, 0, 1];
   for (let i = 0; i < W * H; i++) {
-    const background = showSky ? skySample(skyDirection(i), skyColor, cloudEye, false, cloudSignal) : bg;
+    const sampled = (showSky || captureSky) ? skySample(skyDirection(i), skyColor, cloudEye, false, cloudSignal) : null;
+    const background = showSky ? sampled : bg;
+    if (skyPass) {
+      const q = environmentPasses.top(i) * 3, color = sampled ?? hex(0);
+      if (skyCloud) {
+        const { origin, direction, axial } = rayAt(i % W + .5, Math.floor(i / W) + .5);
+        cloudView.trace(origin, direction, Math.max(0,eyeD-dist), horizon/axial, skyCloud);
+        for (let c = 0; c < 3; c++) skyPass[q + c] = skyCloud[c] + skyCloud[3] * color[c];
+      } else skyPass.set(color,q);
+    }
     if (backdropCloud) backdropCloud[i] = cloudSignal[0];
     const backdrop = rayMedia ? rayMedia.shade(i, horizon, background, false) : background;
     col[i * 3] = backdrop[0];
@@ -727,6 +709,8 @@ function render(world, o, preparedPalettes) {
         ? world.pix
         : null,
     win = PIX ? new Int32Array(W * H).fill(-1) : null;
+  const materialStyles = o.raw ? null : world.materialPixelStyles;
+  const artScale = o.artGridScale || 1;
   // Keep later translucent coats when the opaque receiver is recoloured per pixel.
   let surfaceOverlay = null;
   const bend = world.refract === undefined ? 6 : world.refract;
@@ -759,8 +743,15 @@ function render(world, o, preparedPalettes) {
   }
   let pixed = null,
     sprM = null;
+  const defaultFine = o.fine || !!look.fine;
+  const defaultCleanup = !!(o.clean || (look.clean && !tone?.preserveDots));
+  const needsCleanupFlags = (styled || o.resolveDetailCleanup) && detailBudget?.affectsCleanup &&
+    (defaultCleanup || detailBudget.enablesCleanup);
+  const budgetAt = (needsCleanupFlags || detailBudget?.fineOn || detailBudget?.fineOff) ? detailBudget.bind(world) : null;
+  const cleanupFlags = needsCleanupFlags && Uint8Array.from({length:baseCount}, (_, i) => DetailBudgets.flags(budgetAt(i)));
+  const pixelBudgets = cleanupFlags && cleanupFlags.some(Boolean) ? new Uint8Array(W * H) : null;
   const FN =
-      (o.fine || (world.look && world.look.fine)) && world.fine && world.fine.length >= baseCount * 12 ? world.fine : null,
+      (defaultFine || detailBudget?.fineOn) && world.fine && world.fine.length >= baseCount * 12 ? world.fine : null,
     FPAL = FN ? world.pal.map((h, i) => hex(i)) : null;
   let deferred = sortedSurfaces ? new Map() : null, deferredCount = 0, orderFallback = false;
   const foreground = direction?.foreground;
@@ -771,13 +762,14 @@ function render(world, o, preparedPalettes) {
   }
   const foregroundDepth = z => z - (eyeD-dist);
   function composite(p, i, z, dn, a, pr, pg, pb, wd, emits, highlight, paletteId, detailParticle, projected, coat, glass, mark,
-    opticalDepth = z, sprite, haze = 0, rule) {
+    opticalDepth = z, sprite, haze = 0, rule, reflected) {
     if(surfaceDepth&&!sprite?.surface&&opticalDepth>surfaceDepth[p]+1e-5)return;
     const p3 = p * 3, ia = 1 - a;
     if (foreground && wd && (i < 0 ? !sprite?.emission : !(d[i*16+11] & 32)))
       [pr,pg,pb] = foreground(foregroundDepth(opticalDepth),pr,pg,pb,contrastColor);
     if (rule && rule.contrast !== 1 && (i < 0 ? !sprite?.emission : !(d[i*16+11] & 32)))
       [pr,pg,pb] = subjectColor(rule,pr,pg,pb);
+    environmentPasses?.fragment?.(p, i, a, pr, pg, pb, reflected, wd && a > .5);
     if (rayMedia) [pr, pg, pb] = rayMedia.shade(p, opticalDepth, [pr, pg, pb], true, rule?.fogScale);
     if (retainLayers && glass && bend && !contributions) contributions = contributionLayers(col, captured, W, H, false, bend);
     if (contributions) contributions.before(p, pr, pg, pb, a, wd && a > .5, glass && !wd, dn);
@@ -812,6 +804,7 @@ function render(world, o, preparedPalettes) {
       dep[p] = dn * a + dep[p] * ia;
       gls[p] *= ia;
       if (a > 0.5) {
+        if (pixelBudgets) pixelBudgets[p] = (cleanupFlags[i] ?? 0) | DetailBudgets.OWNED;
         if (win) win[p] = surface?.reveals(i) ? -1 : i;
         if (axialDepth) axialDepth[p] = opticalDepth;
         if (fogScales || silhouetteMask) subjectPixel(p,rule);
@@ -879,6 +872,8 @@ function render(world, o, preparedPalettes) {
       s2 = SC[i] * SC[i],
       pk = d[q + 7];
     const fieldParticle = i >= baseCount;
+    const jStyle = i * 4, edgeStyle = materialStyles?.[jStyle] || 0;
+    const styleKey = materialStyles?.[jStyle + 1] || 0;
     const staged = stages ? stages.at(fieldParticle ? -1 : i) : null;
     lookPass?.begin();
     const materialSample = staged?.material?.some(rule => rule.mask) ? stageSample(i, [x, y, z]) : undefined;
@@ -978,8 +973,10 @@ function render(world, o, preparedPalettes) {
     const fragmentSurface = !pixelSurface && (planar || projected || reflectedSky || liveNormal && hasSurface);
     const ditherRule = fragmentRule(i);
     const detailParticle = fieldParticle || world.effectParticles?.some(({ first, count }) => i >= first && i < first + count);
-    if (hasSurface && !pixelSurface && !fragmentSurface) {
-      [r, g, b, coverage, glint, centerPalette] = surface.shade(i, x, y, z, x, y, z, r, g, b, undefined, undefined, lookPass?.surface);
+    const centered = hasSurface && !pixelSurface && !fragmentSurface;
+    if (centered) {
+      [r, g, b, coverage, glint, centerPalette] = surface.shade(i, x, y, z, x, y, z, r, g, b, undefined, undefined,
+        lookPass?.surface, centerReflection);
     }
     const splatFlash = flash && !(flags & 6) ? flash.light(x, y, z, liveNormal || (!fieldParticle ? geometrySample(i).normal : null)) : null;
     if (pixelSurface && splatFlash) patternFlashes.set(i, splatFlash);
@@ -1022,7 +1019,8 @@ function render(world, o, preparedPalettes) {
       i01 = 0,
       i10 = 0,
       i11 = 0;
-    if (!liveNormal && FN && FN[i * 12 + 11] && FN[i * 12 + 7] === pk && !add[i] && kind !== 5 && kind !== 12 && kind !== 13) {
+    if (!liveNormal && FN && FN[i * 12 + 11] && (budgetAt?.(i)?.fine ?? defaultFine) &&
+        FN[i * 12 + 7] === pk && !add[i] && kind !== 5 && kind !== 12 && kind !== 13) {
       const f = i * 12,
         sc = SC[i],
         m00 = (a0 * FN[f + 4] + a1 * FN[f + 5] + a2 * FN[f + 6]) * sc,
@@ -1039,6 +1037,11 @@ function render(world, o, preparedPalettes) {
       }
     }
     const bakedCloud = cloudShadow && !liveNormal && !(flags & 6);
+    const lowStyle = materialStyles?.[jStyle + 2], highStyle = materialStyles?.[jStyle + 3];
+    const shadeMode = styleKey & 7;
+    const shadeFraction = (styleKey - Math.floor(styleKey)) * 2;
+    const shadeRaster = fi < 0 && (styleKey & MaterialPixelStyle.PAIR) && !pixelSurface &&
+      !liveNormal && !staged?.material && !add[i] && !wet[i] && pk === (shadeFraction >= .5 ? highStyle : lowStyle);
     const wantsDepth = probe || deferred || aerial || cloudView;
     const probeNormal = !fieldParticle && (wantsDepth || bakedCloud) ? geometrySample(i).normal : null;
     const probeCenter = wantsDepth && [x, y, z];
@@ -1050,13 +1053,9 @@ function render(world, o, preparedPalettes) {
         const dx = ix + 0.5 - sx,
           pw = -0.5 * (k0 * dx * dx + k2 * dy * dy) - k1 * dx * dy;
         let a;
-        if (integrateFootprint) a = footprint(dx, dy, k0, k1, k2, al, solid && !o.soft);
-        else {
-          if (pw > 0 || pw < -4.5) continue;
-          const gg = al * Math.exp(pw);
-          a = !o.soft && solid ? 0.99 * sstep(0.38, 0.62, gg) : Math.min(0.99, gg);
-        }
-        if (a < 0.004) continue;
+        if (integrateFootprint) a = footprint(dx, dy, k0, k1, k2, al, solid && !o.soft, edgeStyle);
+        else a = ContributionRules.alpha(pw, al, solid && !o.soft, edgeStyle);
+        if (a < ContributionRules.minimum) continue;
         lookPass?.begin(centerMark);
         let pr = r,
           pg = g,
@@ -1064,6 +1063,17 @@ function render(world, o, preparedPalettes) {
           alpha = coverage,
           highlight = glint,
           paletteId = centerPalette;
+        if (shadeRaster) {
+          const shade = shadeFraction > MaterialPixelStyle.thresholds(shadeMode,
+            Math.floor(ix / artScale), Math.floor(iy / artScale)) ? highStyle : lowStyle;
+          if (shade !== pk) {
+            const visibility = reflectInRaster || staged?.lit || splatFlash || coverGain < 1 ? 1 : 1 - fogMix;
+            const gain = visibility / 255;
+            pr += ((shade & 255) - (pk & 255)) * gain;
+            pg += ((shade >> 8 & 255) - (pk >> 8 & 255)) * gain;
+            pb += ((shade >> 16) - (pk >> 16)) * gain;
+          }
+        }
         if (fi >= 0) {
           const u = clamp(Math.floor((i00 * dx + i01 * dy) * 2 + 2), 0, 3),
             v = clamp(Math.floor((i10 * dx + i11 * dy) * 2 + 2), 0, 3),
@@ -1099,10 +1109,12 @@ function render(world, o, preparedPalettes) {
           pg = Math.min(1, pg * exposure + (tint?.[1] ?? 0));
           pb = Math.min(1, pb * exposure + (tint?.[2] ?? 0));
         }
-        let hit;
+        let hit, reflected = centered ? centerReflection : undefined;
         if (fragmentSurface) {
           hit = surfacePoint(rayAt(ix + 0.5, iy + 0.5), normal, x, y, z, -cz, R);
-          [pr, pg, pb, alpha, highlight, paletteId] = surface.shade(i, ...hit, x, y, z, pr, pg, pb, ix + 0.5, iy + 0.5, lookPass?.surface);
+          [pr, pg, pb, alpha, highlight, paletteId] = surface.shade(i, ...hit, x, y, z, pr, pg, pb, ix + 0.5, iy + 0.5,
+            lookPass?.surface, fragmentReflection);
+          reflected = fragmentReflection;
         }
         const scoped = contribution?.applies(i, paletteId);
         if (staged?.lit || scoped || glassLook) {
@@ -1154,12 +1166,12 @@ function render(world, o, preparedPalettes) {
           const entry = { sort: flags & 4 ? Infinity : surfaceZ, index: n, center: -cz,
             sample: [i, surfaceZ, clamp((surfaceZ - (eyeD - R)) / (2 * R), 0, 1), a, pr, pg, pb,
               wd, emits, highlight, paletteId, detailParticle, projected, coat, glass, lookPass && { ...lookPass.mark },
-              aerial || cloudView ? surfaceZ : undefined, undefined, fogMix, rule] };
+              aerial || cloudView ? surfaceZ : undefined, undefined, fogMix, rule, reflected?.slice()] };
           if (!deferred.has(p)) deferred.set(p, []);
           deferred.get(p).push(entry);
           deferredCount++;
         } else composite(p, i, -cz, dn, a, pr, pg, pb, wd, emits, highlight, paletteId, detailParticle, projected, coat, glass,
-          lookPass?.mark, aerial || cloudView ? surfaceZ : undefined, undefined, fogMix, rule);
+          lookPass?.mark, aerial || cloudView ? surfaceZ : undefined, undefined, fogMix, rule, reflected);
       }
     }
   }
@@ -1294,6 +1306,9 @@ function render(world, o, preparedPalettes) {
             bounceTints.set(sunGains, p * 3);
           } else lit[p] = live.level(i, px, py, pz);
         }
+        const styleKey = materialStyles?.[i * 4 + 1];
+        if (styleKey) lit[p] = MaterialPixelStyle.pixelShade(lit[p], styleKey,
+          Math.floor(x / artScale), Math.floor(y / artScale), ramp?.length || 1);
         if (ev && ev.cell) {
           key[p] = ev.cell(
             px,
@@ -1424,7 +1439,10 @@ function render(world, o, preparedPalettes) {
           if (gain < 1) base = base.map(value => value * gain);
         }
         if (bounceTints && live.normal(i)) base = base.map((value, channel) => value * bounceTints[p * 3 + channel]);
-        const c = surface?.has(i) ? surface.shade(i, HX[p], HY[p], HZ[p], X[i], Y[i], Z[i], ...base, x + 0.5, y + 0.5, lookPass?.surface) : base;
+        const finishedSurface = surface?.has(i);
+        const c = finishedSurface ? surface.shade(i, HX[p], HY[p], HZ[p], X[i], Y[i], Z[i], ...base, x + 0.5, y + 0.5,
+          lookPass?.surface, fragmentReflection) : base;
+        if (finishedSurface && reflectPass) environmentPasses.pattern(p,fragmentReflection);
         let rgb = c;
         if (contribution?.applies(i, c[5])) {
           const rule = fragmentRule(i);
@@ -1606,6 +1624,7 @@ function render(world, o, preparedPalettes) {
         if (transparent) captured[q] = 1;
         if (axialDepth) axialDepth[q] = eyeD - R + sprD[q] * 2 * R;
         if (art) art.sprite(q, sprOwner[q], eyeD - R + sprD[q] * 2 * R);
+        environmentPasses?.fragment?.(q, -1, 1, 0, 0, 0);
         if (hazeCoverage) hazeCoverage[q] = 0;
         lookPass?.fragment(q, 1);
         if (localAt) localAt[q] = 0;
@@ -1621,25 +1640,27 @@ function render(world, o, preparedPalettes) {
   let atmosphere, volumeStats = mediaOptions?.stats ? rayMedia.stats : undefined;
   const captureFog = ink?.ramps.has('fog') || o.captureFog;
   const effectMedia = trackMedia && axialDepth && new Float32Array(W * H * 3);
-  if (rayMedia && (captureFog || effectMedia)) {
+  if (rayMedia && (captureFog || effectMedia || fogPass)) {
     const fog = captureFog && new Float32Array(W * H);
     for (let p = 0; p < W*H; p++) {
       const depth = axialDepth[p], covered = Number.isFinite(depth);
       rayMedia.shade(p, covered ? depth : horizon, bg, covered, fogScales?.[p]);
       const q = (H - 1 - Math.floor(p / W)) * W + p % W;
       if (fog) fog[q] = rayMedia.opacity();
+      if (fogPass) fogPass[q] = rayMedia.fogThrough();
       if (effectMedia) rayMedia.contributions(effectMedia, q * 3);
     }
     atmosphere = { fog };
   } else if (axialDepth && !rayMedia) {
     const quality = atmosphereOptions();
     atmosphere = applyAtmosphere(volumes, col, axialDepth, rayAt, W, H, horizon, quality, t, quality.media,
-      captureFog || effectMedia || transparent, o.volumeHistory,
+      captureFog || effectMedia || transparent || fogPass, o.volumeHistory,
       o.volumeHistory && [W, H, focal, ortho, o.volumeLocalLights, o.volumeLocalShadows, ...V].join('/'), fogScales);
     if (effectMedia) for (let p = 0; p < W*H; p++) {
       effectMedia[p*3] = atmosphere.fog[p];
       effectMedia[p*3+2] = 1-atmosphere.fog[p];
     }
+    if (fogPass) for (let p = 0; p < W*H; p++) fogPass[p] = 1 - atmosphere.fog[p];
     if (quality.stats) volumeStats = atmosphere.stats;
   }
   const effectSignals = effectRules && { rules: effectRules, sky: showSky && !!sky, backdropCloud, media: effectMedia, haze: hazeCoverage };
@@ -1669,6 +1690,7 @@ function render(world, o, preparedPalettes) {
   }
   const masks = overlay && createMaskResolve(world, { w: W, h: H, time: t, x: X, y: Y, z: Z, depth, rayAt, span: R },
     overlay, localConstraints, o.maskGrade ?? (!tone && grade), lookPass?.local);
+  if (environmentPasses) passes = { w:W, h:H, ...passes, ...environmentPasses.passes };
   if (lookPass) passes = lookPass.finish(passes);
   if (o.samples) {
     // (the picture the contour look takes its insides from is worked on first, as the page does: glass bends it, contact shade darkens it)
@@ -1716,6 +1738,7 @@ function render(world, o, preparedPalettes) {
     }
     return {
       w: W, h: H, color: Uint8Array.from(c2, v => Math.round(clamp(v, 0, 1) * 255)), depth: dep, drawn,
+      ...(o.resolveDetailCleanup && pixelBudgets && { cleanDetail: cleanPixels }),
       ...(localAt && { localAt, localPalettes, localConstraints }), ...(detail && { detail }), ...(passes && { passes }), ...(motionReference && { motionReference }),
       ...(masks && { masked: masks.output }),
       ...(atmosphere?.fog && { fog: atmosphere.fog }), ...(silhouetteMask && {silhouetteMask}), ...(effectSignals && { effectSignals }), ...(volumeStats && { volumeStats }), ...(alpha && { alpha }), ...(orderFallback && { orderFallback })
@@ -1886,16 +1909,18 @@ function render(world, o, preparedPalettes) {
   /* pixel clean-up (an option, or a diorama's look.clean), as on the page: a speck (a pixel with no like neighbour of the eight round
      it, or one of a pair that has no other) takes the colour most of its eight neighbours share, if at least three share it, they are
      on the same surface, and it is not much brighter or darker than they are (a glint, an eye or a flower is kept). */
-  if ((o.clean || (look.clean && !tone?.preserveDots)) && !o.raw) {
+  if ((defaultCleanup || pixelBudgets) && !o.raw) cleanPixels(out);
+  function cleanPixels(out, globalCleanup = defaultCleanup) {
     const src = out.slice(),
       keep = look.clean && look.clean.keep !== undefined ? look.clean.keep : 0.3,
       at = (x, y) => (clamp(y, 0, H - 1) * W + clamp(x, 0, W - 1)) * 3,
       same = (a, b) => src[a] === src[b] && src[a + 1] === src[b + 1] && src[a + 2] === src[b + 2],
       lum = a => (src[a] * 0.3 + src[a + 1] * 0.55 + src[a + 2] * 0.15) / 255,
-      depA = a => {
+      atDepth = a => {
         const i = a / 3;
-        return dep[(H - 1 - Math.floor(i / W)) * W + (i % W)];
+        return (H - 1 - Math.floor(i / W)) * W + (i % W);
       },
+      depA = a => dep[atDepth(a)],
       N8 = [
         [-1, 0],
         [1, 0],
@@ -1917,17 +1942,24 @@ function render(world, o, preparedPalettes) {
       return [n, one];
     };
     const empty = (x, y) => depA(at(x, y)) >= 0.995,
+      N4 = N8.slice(0, 4),
       lineClean = o.lineClean === undefined ? !!(world.look && world.look.pixel) : !!o.lineClean;
     for (let y = 0; y < H; y++)
       for (let x = 0; x < W; x++) {
         const q = at(x, y);
         const pixel = (H - 1 - y) * W + x;
+        const flags = pixelBudgets?.[pixel] ?? 0;
+        if (pixelBudgets && !DetailBudgets.cleans(flags, globalCleanup)) continue;
         if (localConstraints?.[(localAt?.[pixel] || 0) - 1] || (alpha && alpha[q / 3] < 128) || sprM?.[pixel] ||
             surfaceGlint?.[pixel] || detail?.[q / 3] || ArtStability.protectedPixel(stable, passes, q / 3)) continue;
         // outlines, as on the page: a notch is filled from what is round it, a bump against the background taken off
         const e0 = empty(x, y),
-          N4 = N8.slice(0, 4),
           en = N4.filter(([dx, dy]) => empty(x + dx, y + dy)).length;
+        if (pixelBudgets) {
+          if ((e0 || !(flags & DetailBudgets.OWNED)) &&
+              N4.some(([dx, dy]) => DetailBudgets.protects(pixelBudgets[atDepth(at(x + dx, y + dy))]))) continue;
+          if (!e0 && en > 0 && DetailBudgets.protects(flags)) continue;
+        }
         if (e0 && en <= 1) {
           let kb = 0,
             best = -1;
@@ -2030,7 +2062,7 @@ function render(world, o, preparedPalettes) {
 function upscale(img, k) {
   const W = img.w * k,
     H = img.h * k,
-    out = new Uint8Array(W * H * 3);
+    out = new Uint8Array(W * H * 3), alpha = img.alpha && new Uint8Array(W * H);
   for (let y = 0; y < H; y++) {
     const sy = (y / k) | 0;
     for (let x = 0; x < W; x++) {
@@ -2039,9 +2071,10 @@ function upscale(img, k) {
       out[q] = img.rgb[s];
       out[q + 1] = img.rgb[s + 1];
       out[q + 2] = img.rgb[s + 2];
+      if (alpha) alpha[q / 3] = img.alpha[s / 3];
     }
   }
-  return { w: W, h: H, rgb: out };
+  return { w: W, h: H, rgb: out, ...(alpha && {alpha}) };
 }
 // several pictures in a grid, each with a small label in its corner
 const FONT = {
@@ -2077,6 +2110,7 @@ function label(img, x0, y0, text, k) {
               img.rgb[q] = 255;
               img.rgb[q + 1] = 255;
               img.rgb[q + 2] = 255;
+              if (img.alpha) img.alpha[q / 3] = 255;
             }
           }
   }
@@ -2086,10 +2120,16 @@ function grid(imgs, cols, labels) {
     h = imgs[0].h,
     rows = Math.ceil(imgs.length / cols),
     out = { w: w * cols, h: h * rows, rgb: new Uint8Array(w * cols * h * rows * 3) };
+  if (imgs.some(image => image.alpha)) out.alpha = new Uint8Array(out.w * out.h);
   imgs.forEach((im, n) => {
     const ox = (n % cols) * w,
       oy = ((n / cols) | 0) * h;
-    for (let y = 0; y < h; y++) out.rgb.set(im.rgb.subarray(y * w * 3, (y + 1) * w * 3), ((oy + y) * out.w + ox) * 3);
+    for (let y = 0; y < h; y++) {
+      const start = (oy + y) * out.w + ox;
+      out.rgb.set(im.rgb.subarray(y * w * 3, (y + 1) * w * 3), start * 3);
+      if (im.alpha) out.alpha.set(im.alpha.subarray(y * w, (y + 1) * w), start);
+      else out.alpha?.fill(255, start, start + w);
+    }
     if (labels) label(out, ox + 6, oy + 6, labels[n]);
   });
   return out;

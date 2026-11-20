@@ -18,13 +18,13 @@
     const hit=read(ctx,config.water,point);
     return hit?.status==='ok'&&hit.value.depth>0?hit.value:null;
   }
-  function supports(ctx,config,x,z,low,high) {
-    const output=read(ctx,config.support,[x,(low+high)*.5,z],{low,high});
+  function supports(ctx,config,x,z,low,high,includeMaterial=false) {
+    const output=read(ctx,config.support,[x,(low+high)*.5,z],{low,high,...(includeMaterial&&{includeMaterial})});
     if(output?.status==='ok'&&Array.isArray(output.value))return output.value;
     const y=heightAt(ctx,config,x,z);
     if(y<low||y>high)return [];
     const surface=W.materials.probe(ctx.query,config.surface,[x,y,z]);
-    return [{y,normal:up,id:'ground',material:surface?.id??'ground'}];
+    return [{y,normal:up,id:'ground',material:surface?.id??'ground',...(includeMaterial&&surface&&{surface})}];
   }
   function groundPlan(ctx,config,from,to,{radius=.13,maxWade=.16,maxSlope=.9,exclude}={}) {
     const region=config.bounds;
@@ -176,7 +176,9 @@
     return {initial:()=>null,fields:{suitability:{type:'record',read:suitability}}};
   }
   function agents(config,{catalog}) {
-    check(config.contactEvents===undefined||typeof config.contactEvents==='boolean','contactEvents must be boolean');
+    const materialContacts=config.contactEvents==='material';
+    check(config.contactEvents===undefined||typeof config.contactEvents==='boolean'||materialContacts,
+      'contactEvents must be boolean or material');
     bounds(config.bounds);
     const initial={}, profiles=config.species??{}, source=config.agents??{}, poseCache=new WeakMap();
     check(record(profiles)&&record(source)&&Object.keys(source).length<=512,'Invalid creature catalog');
@@ -189,6 +191,7 @@
         Number.isFinite(spec.seekRange??3)&&(spec.seekRange??3)>0&&
         Number.isFinite(spec.maxWade??.14)&&(spec.maxWade??.14)>=0&&
         Number.isFinite(spec.stride??.38)&&(spec.stride??.38)>0&&
+        (spec.contactLoad===undefined||Number.isFinite(spec.contactLoad)&&spec.contactLoad>=0&&spec.contactLoad<=1e12)&&
         Array.isArray(spec.limbs??[])&&(spec.limbs??[]).length<=16&&(spec.limbs??[]).every(p=>vector(p)),
         'Invalid movement profile '+key);
     }
@@ -199,6 +202,7 @@
         goal:spec.goal??spec.position,home:spec.position,direction:east,radius:profiles[spec.species].radius??.15,
         route:[],cursor:0,mode:'idle',retry:0,travel:0,footprints:0,limbs:[],look:profiles[spec.species].look??[4,5,6,24]};
     }
+    const policy = config.decisions === undefined ? null : W.agentDecisions.create(config.decisions, initial);
     const replan=config.replanTicks??24;
     check(Number.isSafeInteger(replan)&&replan>=1&&replan<=10000,'Invalid movement replanning interval');
     function fit(ctx,profile,p){
@@ -234,10 +238,14 @@
       }
       return null;
     }
-    function one(agent,ctx,contacts,dirty){
-      const raw=profiles[agent.species], profile={radius:.15,maxWade:.14,entity:agent.entity,...raw};
+    const profileFor = agent => ({radius:.15,maxWade:.14,entity:agent.entity,...profiles[agent.species]});
+    const plan = (ctx, profile, from, goal) => profile.mode==='walk' ? groundPlan(ctx,config,from,goal,profile) :
+      spatialPlan(ctx,config,from,goal,profile);
+    function one(agent,ctx,contacts,dirty,directed=false){
+      const profile=profileFor(agent);
       let position=fit(ctx,profile,agent.position), previous=agent;
       if(!position){
+        if(directed)return {...agent,mode:'blocked',route:[],cursor:0,limbs:[]};
         position=choose(ctx,{...agent,goal:agent.position},profile);
         if(!position){
           if(agent.mode!=='dormant')ctx.emit('habitat-lost',{entity:agent.entity,at:agent.position});
@@ -247,8 +255,8 @@
         ctx.emit('habitat-relocate',{entity:agent.entity,at:position});
       }
       let {route,cursor,retry,travel,footprints}=previous;
-      const goal=choose(ctx,agent,profile);
-      if(!goal)return {...previous,position,mode:'waiting',route:[],cursor:0};
+      const goal=directed ? fit(ctx,profile,agent.goal) : choose(ctx,agent,profile);
+      if(!goal || directed&&!suitable(ctx,agent,goal))return {...previous,position,mode:'waiting',route:[],cursor:0};
       if(V.dist(position,goal)<profile.radius*.65)return {...previous,position,mode:'rest',route:[],cursor:0};
       let corridor;
       if (dirty && route.length) {
@@ -259,8 +267,7 @@
         if (ctx.spatial.changes(area).length) corridor=area;
       }
       if(ctx.tick>=retry||!route.length||corridor){
-        const result=profile.mode==='walk'?groundPlan(ctx,config,position,goal,profile):
-          spatialPlan(ctx,config,position,goal,profile);
+        const result=plan(ctx,profile,position,goal);
         route=result.points??[];
         cursor=route.length>1?1:0;
         retry=ctx.tick+(route.length?replan:Math.min(6,replan));
@@ -276,7 +283,7 @@
         const stepUp=Math.min(requested,bodyHeight-profile.radius*2-.025);
         const body=P.traversal.create({radius:profile.radius,height:bodyHeight,
           stepUp,stepDown:profile.drop??.5,
-          supports:(x,z,low,high)=>supports(ctx,config,x,z,low,high).filter(s=>{
+          supports:(x,z,low,high)=>supports(ctx,config,x,z,low,high,materialContacts).filter(s=>{
             const liquid=wet(ctx,config,[x,s.y,z]);
             return !liquid||liquid.surface-s.y<=profile.maxWade;
           }),
@@ -298,9 +305,14 @@
             const accumulated=travel+stepDistance,count=Math.floor(accumulated/stride);
             for(let n=0;n<count;n++){
               const at=V.lerp(foot,sample.foot,W.fields.clamp((stride-travel+n*stride)/stepDistance,0,1));
-              const cue=catalog?.getMaterial(sample.material)?.material.sounds?.step;
-              contacts.push({entity:agent.entity,point:at,support:sample.support,material:sample.material??null,weight:profile.weight??1,
-                ...(cue&&{cue})});
+              const entry=catalog?.getMaterial(sample.material), cue=entry?.material.sounds?.step;
+              const row={entity:agent.entity,point:at,support:sample.support,material:sample.material??null,weight:profile.weight??1,
+                ...(cue&&{cue})};
+              if(materialContacts){
+                const surface=sample.surface??(entry&&W.materials.profile(entry));
+                contacts.push(W.contactEffects.capture(ctx,row,contacts.length,'step',{speed:movedBy/ctx.dt,
+                  load:profile.contactLoad??10,travel:stride,normal:sample.normal,heading:direction,profile:surface}));
+              }else contacts.push(row);
               footprints++;
             }
             travel=accumulated-count*stride;
@@ -318,24 +330,61 @@
       });
       return {...previous,position:moved,direction,route,cursor,retry,mode:profile.mode,travel,footprints,limbs};
     }
-    return {initial:()=>({agents:initial,contacts:[]}),dependencies:routeDependencies(config),
+    return {initial:()=>({agents:initial,contacts:[],...(policy&&{decisions:policy.initial})}),dependencies:routeDependencies(config),
     ...(config.contactEvents&&{outputs:{contacts:'event'},output:state=>({contacts:state.contacts})}),
-    ...(config.surface!==undefined&&{checkFields:query=>W.materials.checkSurface(query,config.surface)}),validateState(state){
+    ...((config.surface!==undefined||policy)&&{checkFields(query){
+      if(config.surface!==undefined)W.materials.checkSurface(query,config.surface);
+      policy?.checkFields(query);
+    }}),validateState(state){
       check(record(state?.agents)&&Array.isArray(state.contacts)&&Object.keys(state.agents).length===Object.keys(initial).length&&
         Object.entries(state.agents).every(([key,agent])=>own(initial,key)&&own(profiles,agent.species)&&vector(agent.position)&&
           vector(agent.goal)&&vector(agent.direction)&&Array.isArray(agent.route)&&agent.route.every(p=>vector(p))),
         'Invalid agent checkpoint');
+      policy?.validate(state.decisions);
     },checkAction(type,args){
       check(own(initial,args.agent)&&vector(args.to),'Invalid creature destination');
+      check(!policy?.managed(args.agent),'The activity policy owns this creature destination');
     },actions:{
       seek(state,{agent,to},ctx){
         ctx.emit('destination',{entity:state.agents[agent].entity,at:to});
         return {...state,agents:{...state.agents,[agent]:{...state.agents[agent],goal:to,route:[],cursor:0,retry:0}}};
       }
     },step(state,ctx){
-      const contacts=[], agents={}, dirty=ctx.spatial?.changes().length>0;
-      for(const key of Object.keys(state.agents).sort())agents[key]=one(state.agents[key],ctx,contacts,dirty);
-      return {agents,contacts};
+      const contacts=[], agents={}, decisions=policy?{}:null, dirty=ctx.spatial?.changes().length>0;
+      for(const key of Object.keys(state.agents).sort()){
+        const agent=state.agents[key];
+        if(!policy?.managed(key)){
+          agents[key]=one(agent,ctx,contacts,dirty);
+          continue;
+        }
+        const profile=profileFor(agent);
+        let origin;
+        const movement={
+          fit(point){
+            const fitted=fit(ctx,profile,point);
+            return fitted&&suitable(ctx,agent,fitted)?fitted:null;
+          },
+          plan(goal){
+            if(origin===undefined)origin=fit(ctx,profile,agent.position);
+            return origin?plan(ctx,profile,origin,goal):{status:'origin-unfit',points:[]};
+          }
+        };
+        const {next,route}=policy.select(state.decisions[key],agent,ctx,movement);
+        if(!next.choice){
+          agents[key]={...agent,goal:agent.position,route:[],cursor:0,mode:'rest'};
+          decisions[key]=next;
+          continue;
+        }
+        if(next.phase==='blocked'){
+          agents[key]=agent;
+          decisions[key]=next;
+          continue;
+        }
+        const directed=route?{...agent,goal:next.choice.point,route,cursor:route.length>1?1:0,retry:ctx.tick+replan}:agent;
+        agents[key]=one(directed,ctx,contacts,dirty,true);
+        decisions[key]=policy.observe(next,agents[key],ctx,movement);
+      }
+      return {agents,contacts,...(policy&&{decisions})};
     },*poseEntities(state){
       for(const agent of Object.values(state?.agents??{}))yield agent.entity;
     },pose(state,entity){
@@ -350,8 +399,14 @@
       return poses.get(entity);
     },fields:{
       agents:{type:'record',read:({state})=>Q.ok(state.agents)},
-      contacts:{type:'records',units:'world',read:({state})=>Q.ok(state.contacts)}
-    }};
+      contacts:{type:'records',units:'world',read:({state})=>Q.ok(state.contacts)},
+      ...(policy&&{decisions:{type:'record',read:({state})=>Q.ok(state.decisions)}})
+    },...(policy&&{traces:{why:{run({state,args,target}){
+      const name=args.agent??target.entity;
+      const key=own(state.decisions,name) ? name : Object.keys(state.decisions).find(key=>state.agents[key].entity===name);
+      const decision=own(state.decisions,key) ? state.decisions[key] : null;
+      return decision ? Q.ok(decision) : Q.missing('unknown managed agent','missing');
+    }}}})};
   }
   W.runtime.register('navigation',navigation);
   W.runtime.register('habitat',habitat);

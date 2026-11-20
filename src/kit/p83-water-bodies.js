@@ -356,7 +356,7 @@
       SceneOptics.slab(range, origin[axis], direction[axis], bounds.min[axis], bounds.max[axis])) ? range : null;
   }
 
-  function columnSegments(body, state, origin, direction, range, cuts, out) {
+  function columnSegments(body, state, origin, direction, range, cuts, out, mediumIds) {
     const { nx, nz, dx, dz, data, spans, style, spanProfiles, caps } = state;
     const { min } = body.bounds;
     const [start, stop] = range;
@@ -373,17 +373,18 @@
       }
     }
     times.sort((a, b) => a - b);
-    function wet(from, to, bed, top, profile, surface) {
+    function wet(from, to, bed, top, profile, surface, id) {
       const clipped = [from, to];
       if (top <= bed || !SceneOptics.slab(clipped, origin[1], direction[1], bed, top)) return;
+      const append=(a,b)=>out.push(mediumIds?[a,b,profile,surface,id]:[a,b,profile,surface]);
       let [enter, exit] = clipped;
       for (const [left, right] of cuts) {
         if (right <= enter || left >= exit) continue;
-        if (left > enter) out.push([enter, left, profile, surface]);
+        if (left > enter) append(enter,left);
         enter = right;
         if (enter >= exit) return;
       }
-      out.push([enter, exit, profile, surface]);
+      append(enter,exit);
     }
     for (let i = 1; i < times.length; i++) {
       const from = times[i - 1], to = times[i];
@@ -395,8 +396,8 @@
       if (spans) {
         const first = data[col], end = first + data[col + 1];
         for (let span = first; span < end; span++)
-          wet(from, to, spans[span * 4], spans[span * 4 + 1], spanProfiles[span] ?? style, caps[span * 2 + 1]);
-      } else wet(from, to, data[col], data[col + 1], style, data[col + 1]);
+          wet(from, to, spans[span * 4], spans[span * 4 + 1], spanProfiles[span] ?? style, caps[span * 2 + 1], state.spanMedia?.[span]??body.id);
+      } else wet(from, to, data[col], data[col + 1], style, data[col + 1], body.id);
     }
   }
 
@@ -511,13 +512,13 @@
       });
       return P.data.freeze(changed);
     }
-    function raySegments(origin, direction, stop) {
+    function raySegments(origin, direction, stop, { mediumIds = false } = {}) {
       const cuts = pockets.map(pocket => rayBox(pocket.bounds, origin, direction, stop))
         .filter(Boolean).sort((a, b) => a[0] - b[0]);
       const segments = [];
       for (const body of active) {
         const range = rayBox(body.bounds, origin, direction, stop);
-        if (range) columnSegments(body, states.get(body), origin, direction, range, cuts, segments);
+        if (range) columnSegments(body, states.get(body), origin, direction, range, cuts, segments, mediumIds);
       }
       return segments.sort((a, b) => a[0] - b[0]);
     }

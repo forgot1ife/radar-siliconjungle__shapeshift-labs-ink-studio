@@ -89,7 +89,7 @@ export function createTargets(gl, resources) {
         gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, full, width, 1, gl.RGBA, gl.FLOAT, tail);
       }
     }
-    return { bind: () => textureUnit(unit, texture), upload };
+    return { bind: (at = unit) => textureUnit(at, texture), upload };
   }
 
   return { target, table, textureUnit };

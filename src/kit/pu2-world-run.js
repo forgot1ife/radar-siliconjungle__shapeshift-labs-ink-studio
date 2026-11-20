@@ -61,9 +61,10 @@
     const visualPower=world.visual?.fields?.powerLines;
     const visualCharacters=world.visual?.fields?.characters;
     const visualIce=world.visual?.fields?.ice;
+    const visualContacts=world.visual?.fields?.contactEffects;
     if (consumers.length || world.visual?.fields?.surface!==undefined || visualFabric!==undefined ||
         visualLinks!==undefined || visualPipes!==undefined || visualPower!==undefined || visualCharacters!==undefined ||
-        visualIce!==undefined || world.visual?.air!==undefined) {
+        visualIce!==undefined || visualContacts!==undefined || world.visual?.air!==undefined) {
       const query = Q.create({world},systems);
       for (const system of consumers) system.checkFields(query);
       W.materials.checkSurface(query,world.visual?.fields?.surface);
@@ -78,6 +79,8 @@
         typeof field==='string'&&query.field(field)?.role==='power-lines'), 'Invalid visual power line field');
       if(visualCharacters!==undefined)check((Array.isArray(visualCharacters)?visualCharacters:[visualCharacters]).every(field=>
         typeof field==='string'&&query.field(field)?.role==='character-actors'), 'Invalid visual character field');
+      if(visualContacts!==undefined)check(typeof visualContacts==='string'&&query.field(visualContacts)?.role==='contact-effects-frame',
+        'Visual contact effects needs a contact-effects frame field');
       if(visualIce!==undefined){
         const field=typeof visualIce==='string'&&query.field(visualIce);
         check(field?.type==='number'&&field.units==='world','Visual ice needs a numeric thickness field in world units');
@@ -293,10 +296,12 @@
       return freeze(values);
     }
     function historyWith(events, policy) {
-      if (policy?.enabled === false) return {history,dropped};
+      if (!events.length || policy?.enabled === false) return {history,dropped};
       const entries = events.filter(event => Q.condition(policy?.where,event));
-      const all = [...history,...entries];
-      return {history:freeze(all.slice(-historyLimit)),dropped:dropped + Math.max(0,all.length-historyLimit)};
+      if (!entries.length) return {history,dropped};
+      const overflow=Math.max(0,history.length+entries.length-historyLimit);
+      return {history:freeze(history.slice(overflow).concat(entries.slice(Math.max(0,overflow-history.length)))),
+        dropped:dropped+overflow};
     }
     function save() {
       return freeze({format:checkpointFormat,version:1,tick,world,states,outputs,manual,delays,history,dropped,

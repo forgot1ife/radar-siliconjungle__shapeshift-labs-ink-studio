@@ -56,8 +56,9 @@
     const doors=table(config.openings??{},256,'water opening',(raw,key)=>{
       const from=room(raw.from), to=room(raw.to);
       check(from!==to,'Water opening needs distinct chambers: '+key);
+      check(raw.at===undefined||point(raw.at),'Invalid water opening location '+key);
       return {from,to,inlet:port(rooms[from],raw.fromSill??raw.sill,raw.fromCrown??raw.crown),
-        outlet:port(rooms[to],raw.toSill??raw.sill,raw.toCrown??raw.crown),...aperture(raw,key)};
+        outlet:port(rooms[to],raw.toSill??raw.sill,raw.toCrown??raw.crown),...aperture(raw,key),at:raw.at};
     });
     const vents=table(config.vents??{},96,'air vent',(raw,key)=>{
       const i=room(raw.chamber), {height=rooms[i].ceiling,open=true}=raw;
@@ -250,6 +251,14 @@
       cachedRender.set(state,frame);
       return frame;
     }
+    let acousticGeometry;
+    function acoustics({state}){
+      acousticGeometry??={rooms:rooms.map(({key,bounds})=>({id:key,bounds})),exterior:[],openings:doors.map(row=>{
+        const at=row.at??row.gate?.points[0];
+        return {id:row.key,from:rooms[row.from].key,to:rooms[row.to].key,fromPort:row.inlet,toPort:row.outlet,...(at&&{at})};
+      })};
+      return Q.ok({geometry:acousticGeometry,fractions:state.opening,levels:rooms.map((_,i)=>level(state,i))});
+    }
     return {initial:()=>initial,checkFields,validateState,inputs,outputs,accounts,waterFrame,
       ...(boundaries.length>0&&{requestTransfers,checkTransfers(validate){for(const row of boundaries)validate(order(row),true);}}),
       dependencies:{writes:['medium','water','depth','phase','head','pressure'],
@@ -276,6 +285,7 @@
         return values;
       },
       fields:{
+        'acoustic-layout':{type:'record',role:'acoustic-layout',medium:'water',openingIds:doors.map(row=>row.key),read:acoustics},
         chambers:names(rooms,'chamber',(state,row,i)=>show(state,i)),
         openings:names(doors,'opening',(state,row,i)=>({id:row.key,from:rooms[row.from].key,to:rooms[row.to].key,
           fromPort:row.inlet,toPort:row.outlet,opening:state.opening[i],flow:state.flow[i],

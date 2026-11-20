@@ -148,12 +148,13 @@ function preview(opt) {
   if (opt.passes === undefined) return null;
   const channels = ArtPasses.select(opt.passes === true ? ['target', 'mask', 'materialId'] : String(opt.passes).split(','));
   if (channels.some(channel => ['position', 'objectPosition'].includes(channel)))
-    throw new TypeError('PNG pass previews need color, scalar, ID, normal or motion channels');
+    throw new TypeError('Position passes need the floating-point Node render API');
   const frames = new Map(channels.map(channel => [channel, []]));
   const lookPassRegistry = registry();
   let first, last;
   return {
     settings: { passes: channels, lookPassRegistry },
+    suffixes: [...channels.map(channel => '-'+channel+'.png'), '-passes.json'],
     capture(frame, scale) {
       first ??= { width: frame.w, height: frame.h, scale };
       last = frame.passes;
@@ -169,14 +170,14 @@ function preview(opt) {
         if (fps !== undefined) PNG.animate(file, images, fps);
         else {
           const image = cols !== undefined ? R.grid(images, cols, times.map(t => t + 's')) : images[0];
-          PNG.write(file, image.w, image.h, image.rgb);
+          PNG.write(file, image.w, image.h, image.rgb, image.alpha);
         }
         files[channel] = path.basename(file);
       }
       const file = base + '-passes.json';
       fs.writeFileSync(file, JSON.stringify({ ...first, rows: 'top-down', files,
         ...(times && { times }), ...(fps !== undefined && { fps }),
-        ...Palette.labels(last)
+        ...Palette.labels(last), ...Palette.environmentEncoding(last)
       }, null, 2) + '\n');
       console.log('wrote', file);
     }

@@ -41,6 +41,8 @@ Each route key specifies scene seconds and a world XZ position. Set `ease` on a 
 - Add the [retained surface grid](retained-weather.md) to record the weather at each cell. Material finishes can show wet stone, puddles, snow, or frost after the front has moved past.
 - Hosts can call `K.weather.bind(skyEnvironment, weatherBinding).sample(time, x, z)` to inspect local conditions. Omitting XZ returns the background weather at that time.
 
+Use the [environment inspector](environment-inspector.md) to inspect a front’s route keys, weight, and channel changes at a world position.
+
 ## Compare a render
 
 ```sh

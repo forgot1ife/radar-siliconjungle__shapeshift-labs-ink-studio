@@ -94,7 +94,7 @@ function surfaceShading(world, options, camera) {
   }
 
   const sampleSky = sky && ((direction, out) => sky(direction, out, sample.worldPosition));
-  function shade(i, x, y, z, centerX, centerY, centerZ, r, g, b, sx, sy, visit) {
+  function shade(i, x, y, z, centerX, centerY, centerZ, r, g, b, sx, sy, visit, reflected) {
     const offset = i * STRIDE;
     const { position, normal, view } = sample;
     const prepared = materials[surfaceData[offset] - 1];
@@ -169,7 +169,7 @@ function surfaceShading(world, options, camera) {
     rgb[0] = r;
     rgb[1] = g;
     rgb[2] = b;
-    SurfaceLook.shade(prepared, sample, rgb, result, undefined, visit, camera.onSurfaceClip);
+    SurfaceLook.shade(prepared, sample, rgb, result, undefined, visit, camera.onSurfaceClip, reflected);
     if (ids.size) result[5] = ids.get(result[5]) || 0;
     return result;
   }

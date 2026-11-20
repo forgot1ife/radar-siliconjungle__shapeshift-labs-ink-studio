@@ -82,7 +82,9 @@ function makeNoise(seed) {
 }
 
 // ---------------- shared builder: splat storage plus shape helpers ----------------
-function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 15 } = {}) {
+function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 15, detailBudgets } = {}) {
+  const detailBudget = DetailBudgets.prepare(detailBudgets);
+  if (detailBudget?.affectsCleanup || detailBudget?.fineOn || detailBudget?.fineOff) renderMetadata = true;
   if (!Number.isSafeInteger(initialCapacity) || initialCapacity < 1 || initialCapacity > Number.MAX_SAFE_INTEGER / 16)
     throw new RangeError('Initial splat capacity must be a positive integer');
   seed = seed >>> 0;
@@ -131,7 +133,7 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     cidx = [],
     nrms = [];
   let curN = null;
-  let ownerRows, materialRows, targetRows, muteEmission, materialAlbedo;
+  let ownerRows, materialRows, targetRows, muteEmission, materialAlbedo, materialPixelStyles;
   let unnamedOwners = new WeakMap(), unnamedMaterials = new WeakMap();
   const ownerIds = new Map(), materialIds = new Map();
   const ownerNames = [null], materialNames = [null];
@@ -160,6 +162,27 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
       materialAlbedo = next;
     }
     materialAlbedo.fill(rgb + 1, first, end);
+  }
+  function describePixelStyle(first, end, style, pair) {
+    if (first === end || !style.edge && !style.mode && !style.steps) return;
+    if (!materialPixelStyles || materialPixelStyles.length < cap * 4) {
+      const next = new Float32Array(cap * 4);
+      if (materialPixelStyles) next.set(materialPixelStyles);
+      materialPixelStyles = next;
+    }
+    const pack = index => {
+      const [r, g, b] = P[index];
+      return r + 256 * g + 65536 * b;
+    };
+    const low = pair ? pack(pair[0]) : 0, high = pair ? pack(pair[1]) : 0;
+    const key = style.mode + style.steps * 8 + (pair ? MaterialPixelStyle.PAIR + pair[2] * .5 : 0);
+    for (let i = first; i < end; i++) {
+      const j = i * 4;
+      materialPixelStyles[j] = style.edge;
+      materialPixelStyles[j + 1] = key + (pix?.[i * 8] ? MaterialPixelStyle.PATTERN : 0);
+      materialPixelStyles[j + 2] = low;
+      materialPixelStyles[j + 3] = high;
+    }
   }
   // Labels can be shared across several solids or supplied for splats built directly.
   function describeSplats(first, end, { object, material, target } = {}) {
@@ -956,11 +979,14 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     stick(x, y, z, [1, 0, 0], s2, s2 * 0.12 + 0.012, P[c], 3, an);
     stick(x, y, z, UP, s2, s2 * 0.12 + 0.012, P[c], 3, an);
   }
-  const precipitationRanges = [];
-  function describePrecipitation(first, end, profile = false) {
-    if (![first, end].every(Number.isSafeInteger) || first < 0 || end < first || end > n || typeof profile !== 'boolean')
+  const precipitationRanges = [], fallingSnowRanges = [];
+  function describePrecipitation(first, end, profile = false, spatial = true) {
+    if (![first, end].every(Number.isSafeInteger) || first < 0 || end < first || end > n || typeof profile !== 'boolean' || typeof spatial !== 'boolean')
       throw new RangeError('Expected a valid precipitation row range');
-    if (end > first) precipitationRanges.push({ first, end, profile });
+    if (end > first) {
+      if (spatial) precipitationRanges.push({ first, end, profile });
+      else fallingSnowRanges.push({ first, end });
+    }
   }
   function finish(meta) {
     /* paint-over decals (ink-studio paint): pixels painted over a view of the diorama, each pinned where it fell on the surface, as a
@@ -980,7 +1006,9 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
         count: n,
         renderMetadata: renderRows(),
         ...(precipitationRanges.length && { precipitationRanges: precipitationRanges.slice() }),
+        ...(fallingSnowRanges.length && { fallingSnowRanges: fallingSnowRanges.slice() }),
         ...(materialAlbedo && { materialAlbedo: materialAlbedo.slice(0, n) }),
+        ...(materialPixelStyles && { materialPixelStyles: materialPixelStyles.slice(0, n * 4) }),
         attr: attr ? Float32Array.from({ length: n * 4 }, (_, i) => attr[i] || 0) : undefined,
         pix: pix ? Float32Array.from({ length: n * 8 }, (_, i) => pix[i] || 0) : undefined,
         ramps: pix ? ramps.map(r => r.slice()) : undefined,
@@ -1005,6 +1033,8 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
       },
       meta
     );
+    if (detailBudgets !== undefined)
+      world.look = { ...world.look, detailBudgets: detailBudget?.rules ?? false };
     if (world.environmentPreset !== undefined && world.environmentPreset !== false) {
       const catalog = KIT.authoring.assetPacks.create({ packs:world.assetPacks ?? [] });
       Object.assign(world,KIT.authoring.environments.apply(world,world.environmentPreset,catalog,world.pal));
@@ -1035,7 +1065,7 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     bounced = 0;
     cidx.length = 0;
     nrms.length = 0;
-    ownerRows = materialRows = muteEmission = materialAlbedo = undefined;
+    ownerRows = materialRows = muteEmission = materialAlbedo = materialPixelStyles = undefined;
     unnamedOwners = new WeakMap();
     unnamedMaterials = new WeakMap();
     ownerIds.clear();
@@ -1045,7 +1075,7 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     targetNames.length = 1;
     targetValues = new WeakMap();
     ownerNames.length = materialNames.length = 1;
-    precipitationRanges.length = 0;
+    precipitationRanges.length = fallingSnowRanges.length = 0;
     moving.length = 0;
     back.length = 0;
     return out;
@@ -1069,9 +1099,11 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     return out;
   };
   return {
+    detailBudget,
     count: () => n,
     describeSplats: renderMetadata ? describeSplats : undefined,
     describeAlbedo,
+    describePixelStyle,
     describePrecipitation,
     born: v => (bornV = v === undefined || v === null || !isFinite(v) ? null : v),
     wet: v => (wetV = v === undefined || v === null || !isFinite(v) ? null : v),

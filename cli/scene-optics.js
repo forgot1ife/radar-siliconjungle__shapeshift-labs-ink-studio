@@ -111,6 +111,8 @@ function traceMedia(volumes, segments, origin, direction, stop, result, sample, 
   result.fill(1, 3, 6);
   const trackCoverage = result.length > 6;
   if (trackCoverage) result.fill(0, 6);
+  const trackFog = result.length > 8;
+  if (trackFog) result[8] = 1;
   let cursor = 0, dryDistance = 0, aerialThrough = 1;
   const remaining = () => (result[3] + result[4] + result[5])/3;
   function composite(slot) {
@@ -126,6 +128,7 @@ function traceMedia(volumes, segments, origin, direction, stop, result, sample, 
       SceneOptics.trace(volumes, origin, direction, end, sample, { ...options, start: cursor });
       if (options?.bands) ArtDirection.remapOpacity(sample, options.bands);
       composite(6);
+      if (trackFog) result[8] *= sample[3];
     }
     if (options?.cloud) {
       options.cloud.trace(origin,direction,Math.max(cursor,options.cloudStart ?? 0),end,sample);
@@ -141,6 +144,7 @@ function traceMedia(volumes, segments, origin, direction, stop, result, sample, 
       result[channel] += result[channel + 3] * (1 - ratio) * aerial.color[channel];
       result[channel + 3] *= ratio;
     }
+    if (trackFog) result[8] *= ratio;
     aerialThrough = through;
   }
   for (const [start, exit, style, surface] of segments) {
@@ -167,13 +171,13 @@ function traceMedia(volumes, segments, origin, direction, stop, result, sample, 
 }
 
 function mediaSampler(volumes, water, rayAt, width, horizon, options, aerial) {
-  const size = options.effectCoverage ? 8 : 6;
+  const size = options.fogTransmittance ? 9 : options.effectCoverage ? 8 : 6;
   const rays = [], sample = [0, 0, 0, 1], result = new Float64Array(size);
   const fields = volumes.some(volume => volume.type === 'field' || volume.densityField);
   const tile = fields && options.jitter !== 'off' ? volumeNoise(options.seed) : null;
   const samples = fields ? options.samples : 1;
   const query = { ...options, jitter: .5 };
-  let opacity = 0, fogCoverage = 0, cloudCoverage = 0;
+  let opacity = 0, fogCoverage = 0, cloudCoverage = 0, fogThrough = 1;
   const stats = { rays: 0, fallbackRays: 0, depthSamples: 0 };
   function shade(pixel, depth, rgb, geometry = true, fogScale = 1) {
     let ray = rays[pixel];
@@ -189,6 +193,7 @@ function mediaSampler(volumes, water, rayAt, width, horizon, options, aerial) {
     const stop = Math.min(horizon, depth) / ray.axial;
     const useAerial = geometry && aerial && Number.isFinite(depth) && stop > aerial.start;
     fogCoverage = cloudCoverage = 0;
+    fogThrough = 1;
     if (!useAerial && !ray.segments.length && !volumes.length && !options.cloud) {
       opacity = 0;
       return rgb;
@@ -200,6 +205,7 @@ function mediaSampler(volumes, water, rayAt, width, horizon, options, aerial) {
       const raw = airTransmission(aerial, (stop-aerial.start)*fogScale);
       const remaining = options.bands ? 1-options.bands(1-raw) : raw;
       opacity = fogCoverage = 1 - remaining;
+      fogThrough = remaining;
       return [0, 1, 2].map(i => remaining * rgb[i] + opacity * ray.aerial.color[i]);
     }
     const { values } = ray;
@@ -222,6 +228,7 @@ function mediaSampler(volumes, water, rayAt, width, horizon, options, aerial) {
       fogCoverage = values[6];
       cloudCoverage = values[7];
     }
+    if (size > 8) fogThrough = values[8];
     return [0, 1, 2].map(i => values[i] + values[i + 3] * rgb[i]);
   }
   function contributions(out, p) {
@@ -229,7 +236,7 @@ function mediaSampler(volumes, water, rayAt, width, horizon, options, aerial) {
     out[p+1] = cloudCoverage;
     out[p+2] = 1-opacity;
   }
-  return { shade, opacity: () => opacity, contributions, stats };
+  return { shade, opacity: () => opacity, fogThrough: () => fogThrough, contributions, stats };
 }
 
 function applyAtmosphere(volumes, col, depths, rayAt, W, H, horizon, quality, time, media, capture, history, viewKey, fogScales) {

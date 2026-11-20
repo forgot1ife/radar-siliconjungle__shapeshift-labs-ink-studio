@@ -117,10 +117,11 @@
       check(firings.length + added.length + clock.transitions.length <= limit,'Conditional weather exceeds the sky transition budget');
       return freeze({time,active,firings:added.length ? firings.concat(added) : firings});
     }
-    function sceneTransitions(timeline = []) {
-      return transitions(step(undefined,{time:1e9,timeline}));
+    function sceneState(timeline = []) {
+      return step(undefined,{time:1e9,timeline});
     }
-    return Object.freeze({ step,validate,transitions,sceneTransitions });
+    function sceneTransitions(timeline) { return transitions(sceneState(timeline)); }
+    return Object.freeze({ step,validate,transitions,sceneState,sceneTransitions });
   }
 
   K.weather.tracks = Object.freeze({ compile });

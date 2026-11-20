@@ -3,7 +3,8 @@ const SplatProvenance = (() => {
   const tables = [['objectIds', 'objects'], ['materialIds', 'materials'], ['targetIds', 'targets']];
   const channels = [['normals', 3, Float32Array], ['muteEmission', 1, Uint8Array]];
   const perSplat = [['data', 16, Float32Array], ['attr', 4, Float32Array], ['fine', 12, Float32Array],
-    ['pix', 8, Float32Array], ['surfaceData', 8, Float32Array], ['materialAlbedo', 1, Uint32Array]];
+    ['pix', 8, Float32Array], ['surfaceData', 8, Float32Array], ['materialAlbedo', 1, Uint32Array],
+    ['materialPixelStyles', 4, Float32Array]];
   const targetKey = target => JSON.stringify([target.entity, target.surface, target.prefabs, target.tags, target.medium, target.mediumKind]);
 
   function dictionary(key = value => value) {

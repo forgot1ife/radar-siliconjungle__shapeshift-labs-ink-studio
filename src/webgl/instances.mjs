@@ -97,7 +97,11 @@ export function createSplatInstances(prototypes, instances) {
     let asset = unique.get(world);
     if (!asset) {
       const data = world.data.slice(0, world.count * 16);
-      asset = { offset:sharedCount, count:world.count, data, ...bounds(data,world.count) };
+      const sourceStyles = world.materialPixelStyles;
+      if (sourceStyles != null && (!(sourceStyles instanceof Float32Array) || sourceStyles.length < world.count * 4))
+        throw new TypeError('Instance material pixel styles are shorter than their prototype');
+      asset = { offset:sharedCount, count:world.count, data,
+        materialPixelStyles: sourceStyles?.slice(0, world.count * 4), ...bounds(data,world.count) };
       sharedCount += asset.count;
       if (sharedCount > maxCount) throw new RangeError('Too many shared splats');
       unique.set(world, asset);
@@ -115,7 +119,8 @@ export function createSplatInstances(prototypes, instances) {
     count += row.asset.count;
     if (count > maxCount) throw new RangeError('Too many logical splats');
   }
-  const plan = { rows, assets:[...unique.values()], count, sharedCount, revision:0, orderRevision:0 };
+  const plan = { rows, assets:[...unique.values()], count, sharedCount, revision:0, orderRevision:0,
+    hasMaterialPixelStyles: rows.some(row => row.asset.materialPixelStyles) };
   const api = Object.freeze({
     count:instances.length, splats:count, sharedSplats:sharedCount,
     get(id) { return rows[ids.get(id)]?.authored; },
@@ -182,6 +187,19 @@ function transformed(out, row, start) {
   }
 }
 
+function stampInstancePixelStyle(out, row, start) {
+  const styles = row.asset.materialPixelStyles;
+  if (!out || !styles) return;
+  start *= 4;
+  out.set(styles, start);
+  if (!row.swatches.length) return;
+  const remap = new Map(row.swatches);
+  for (let i = start + 2; i < start + styles.length; i += 4) {
+    out[i] = remap.get(out[i]) ?? out[i];
+    out[i + 1] = remap.get(out[i + 1]) ?? out[i + 1];
+  }
+}
+
 function flattened(base, plan) {
   validateSize(base.count, plan);
   const count = base.count + plan.count, data = new Float32Array(count * 16);
@@ -199,6 +217,11 @@ function flattened(base, plan) {
   }
   const renderMetadata = { ...metadata, objects, targets, objectIds, targetIds };
   const result = { ...base, count, data, renderMetadata };
+  if (base.materialPixelStyles || plan.hasMaterialPixelStyles) {
+    const styles = result.materialPixelStyles = new Float32Array(count * 4);
+    if (base.materialPixelStyles) styles.set(base.materialPixelStyles.subarray(0, base.count * 4));
+    for (const row of plan.rows) stampInstancePixelStyle(styles, row, base.count + row.start);
+  }
   for (const [key,stride] of [['fine',12],['pix',8]]) {
     if (!base[key]) continue;
     result[key] = new Float32Array(count * stride);
@@ -212,4 +235,4 @@ export function validateSize(baseCount, plan) {
     throw new RangeError('Instances exceed the 24-bit splat address space');
 }
 
-export { transformed };
+export { transformed, stampInstancePixelStyle };

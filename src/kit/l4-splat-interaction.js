@@ -4,7 +4,7 @@
   const indexBits = 25, indexLimit = 2 ** indexBits, scaleUnits = 16, maxCode = 31;
 
   function compile(world, cell, { preserveOwners = [] } = {}) {
-    const { count, data, renderMetadata: meta, fine, surfaceData, materialAlbedo } = world;
+    const { count, data, renderMetadata: meta, fine, surfaceData, materialAlbedo, materialPixelStyles } = world;
     const owners = world.owners ?? meta?.objectIds, materials = world.materialIds ?? meta?.materialIds;
     const surfaceNormals = world.surfaceNormals ?? meta?.normals;
     if (!(cell > 0) || !Number.isFinite(cell)) throw new Error('Invalid splat interaction cell');
@@ -23,12 +23,13 @@
       // Preserve transparent, animated, fine-tiled and explicitly ordered
       // samples. They can overlap nearby opaque samples with different roles.
       if ((flags & 15) || data[at + 3] < 1 || y < -30 ||
-          protectedSlots[owner] || fine?.[i * 12 + 11] > .5 || ordered[i] || back.has(i)) continue;
+          protectedSlots[owner] || fine?.[i * 12 + 11] > .5 ||
+          (materialPixelStyles?.[i * 4 + 1] & MaterialPixelStyle.PAIR) || ordered[i] || back.has(i)) continue;
       const nx = Math.round((surfaceNormals?.[normal] || 0) * 2),
         ny = Math.round((surfaceNormals?.[normal + 1] || 0) * 2),
         nz = Math.round((surfaceNormals?.[normal + 2] || 0) * 2);
       const key = [owner, materials?.[i] || 0, meta?.targetIds?.[i] || 0,
-        surfaceData?.[i * 8] || 0, materialAlbedo?.[i] || 0, flags,
+        surfaceData?.[i * 8] || 0, materialAlbedo?.[i] || 0, materialPixelStyles?.[i * 4] || 0, flags,
         Math.floor(x * unit), Math.floor(y * unit), Math.floor(z * unit), nx, ny, nz].join('/');
       const group = groups.get(key);
       if (group) {

@@ -17,8 +17,23 @@
     erosion:{threshold:[0,1e4],rate:[0,100]}
   };
   const cue=value=>typeof value==='string'&&/^[a-z][a-z0-9._/-]{0,127}$/.test(value);
+  const color=value=>typeof value==='string'&&/^#[0-9a-f]{6}$/i.test(value);
   const ramp=value=>Array.isArray(value)&&value.length>=1&&value.length<=16&&
-    value.every(color=>typeof color==='string'&&/^#[0-9a-f]{6}$/i.test(color));
+    value.every(color);
+  function checkContactEffects(value) {
+    check(hasKeys(value,['rut','spray','sound','shake']), 'Invalid material contact effects');
+    for (const [kind,spec] of Object.entries(value)) {
+      const valid=kind==='rut'?coefficient(spec,0,16):kind==='spray'?
+        hasKeys(spec,['count','speed','life','radius','color'])&&coefficient(spec.count,0,32)&&
+          number(spec.speed??2,.01,50)&&number(spec.life??.34,.02,3)&&number(spec.radius??.035,.001,1)&&
+          (spec.color===undefined||color(spec.color)):
+        kind==='sound'?hasKeys(spec,['gain','interval'])&&coefficient(spec.gain??1,0,4)&&
+          number(spec.interval??.15,0,10):
+        hasKeys(spec,['strength','life','frequency'])&&coefficient(spec.strength,0,1)&&
+          number(spec.life??.16,.02,2)&&number(spec.frequency??18,1,60);
+      check(valid,'Invalid material contact effects '+kind);
+    }
+  }
   function checkStructural(key,value,wet=true) {
     const rule=key==='fatigue'||key==='plastic'?rules[key]:undefined;
     check(rule&&hasKeys(value,Object.keys(rule))&&Object.entries(rule).every(([k,[min,max]])=>
@@ -26,7 +41,7 @@
   }
 
   function definition(input,pack) {
-    check(hasKeys(input,['id','label',...Object.keys(rules),'sounds','appearance'])&&
+    check(hasKeys(input,['id','label',...Object.keys(rules),'sounds','appearance','contactEffects'])&&
       typeof input.id==='string'&&assetId.test(input.id)&&input.id.startsWith(pack+'/')&&
       typeof input.label==='string'&&input.label.trim().length>0&&input.label.length<=100,
     'A physical material needs a name within its asset pack and a label');
@@ -46,6 +61,7 @@
     }
     if(Object.hasOwn(input,'sounds'))check(hasKeys(input.sounds,['step','roll','impact','fracture'])&&
       Object.values(input.sounds).every(cue),'Invalid physical material sound cue on '+input.id);
+    if(Object.hasOwn(input,'contactEffects'))checkContactEffects(input.contactEffects);
     if(Object.hasOwn(input,'appearance')) {
       const value=input.appearance;
       check(hasKeys(value,['dry','wet'])&&ramp(value.dry)&&
@@ -56,9 +72,10 @@
   }
   function profile(entry,wetness=0) {
     check(number(wetness,0,1),'Material wetness must be between 0 and 1');
-    const {material,pack,revision}=entry, {id,label,sounds,appearance}=material;
+    const {material,pack,revision}=entry, {id,label,sounds,appearance,contactEffects}=material;
     const blend=value=>typeof value==='number'?value:value.dry*(1-wetness)+value.wet*wetness;
-    const result={id,label,pack,revision,wetness,...(sounds&&{sounds}),...(appearance&&{appearance})};
+    const result={id,label,pack,revision,wetness,...(sounds&&{sounds}),...(appearance&&{appearance}),
+      ...(contactEffects&&{contactEffects})};
     for(const [key,range] of Object.entries(rules)) {
       if(!Object.hasOwn(material,key))continue;
       const value=material[key];
@@ -67,5 +84,5 @@
     }
     return result;
   }
-  A.physicalMaterials=Object.freeze({definition,profile,checkStructural});
+  A.physicalMaterials=Object.freeze({definition,profile,checkStructural,checkContactEffects});
 })(KIT);

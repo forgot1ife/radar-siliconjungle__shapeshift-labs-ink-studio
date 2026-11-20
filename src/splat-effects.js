@@ -10,6 +10,7 @@ const SplatEffects = (() => {
     luts = require('./color-lut.js');
     stacks = require('./color-stack.js');
   }
+  const contribution = typeof ContributionRules === 'undefined' ? require('./contribution-rules.js') : ContributionRules;
   const clamp = x => Math.min(1, Math.max(0, x));
   const fract = x => x - Math.floor(x);
   const vector = (value, n) => Array.isArray(value) && value.length === n && Array.from(value).every(Number.isFinite);
@@ -63,7 +64,7 @@ const SplatEffects = (() => {
     }
     const x = unit(along);
     if (type === 'plane') {
-      const z = unit(cross(cross(x, across), x));
+      const {z} = contribution.plane({along:x,across});
       return position => {
         const q = subtract(position, origin);
         return [dot(q, x), dot(q, z)];
@@ -183,14 +184,10 @@ const SplatEffects = (() => {
     let read;
     switch (type) {
       case 'axis': {
-        const { axis = 'y', origin = [0, 0, 0] } = definition;
-        const named = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] };
-        const direction = typeof axis === 'string' && Object.hasOwn(named, axis) ? named[axis] : axis;
-        if (!vector(direction, 3) || !vector(origin, 3)) throw new TypeError('An axis mask needs an XYZ axis and origin');
-        const normal = unit(direction);
+        const {direction,offset} = contribution.axis(definition);
         read = sample => {
           const point = pointFor(sample, space);
-          return point && dot(subtract(point, origin), normal);
+          return point && dot(point, direction) + offset;
         };
         break;
       }

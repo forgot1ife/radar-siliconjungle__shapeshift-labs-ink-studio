@@ -1,4 +1,4 @@
-// PNG output is 8-bit RGB. Import also handles non-interlaced grayscale, indexed and alpha PNGs.
+// PNG output is 8-bit RGB or RGBA. Import also handles non-interlaced grayscale and indexed PNGs.
 const zlib = require('zlib'),
   fs = require('fs');
 const CRC = new Uint32Array(256);
@@ -20,14 +20,26 @@ const chunk = (type, data) => {
   cr.writeUInt32BE(crc(td));
   return Buffer.concat([len, td, cr]);
 };
-function encode(w, h, pixels, channels = 3) {
+function scanlines(w, h, pixels, channels) {
   const stride = w * channels;
   if (![3, 4].includes(channels) || pixels.length !== stride * h) throw new Error('PNG pixel count does not match its shape');
   const raw = Buffer.alloc((stride + 1) * h);
-  for (let y = 0; y < h; y++) {
-    raw[y * (stride + 1)] = 0;
+  for (let y = 0; y < h; y++)
     Buffer.from(pixels.buffer, pixels.byteOffset + y * stride, stride).copy(raw, y * (stride + 1) + 1);
+  return zlib.deflateSync(raw, { level: 6 });
+}
+function withAlpha(rgb, alpha) {
+  if (rgb.length !== alpha.length * 3) throw new Error('PNG alpha count does not match its shape');
+  const rgba = new Uint8Array(alpha.length * 4);
+  for (let p = 0; p < alpha.length; p++) {
+    rgba[p*4] = rgb[p*3];
+    rgba[p*4+1] = rgb[p*3+1];
+    rgba[p*4+2] = rgb[p*3+2];
+    rgba[p*4+3] = alpha[p];
   }
+  return rgba;
+}
+function encode(w, h, pixels, channels = 3) {
   const hd = Buffer.alloc(13);
   hd.writeUInt32BE(w, 0);
   hd.writeUInt32BE(h, 4);
@@ -36,12 +48,12 @@ function encode(w, h, pixels, channels = 3) {
   return Buffer.concat([
       Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
       chunk('IHDR', hd),
-      chunk('IDAT', zlib.deflateSync(raw, { level: 6 })),
+      chunk('IDAT', scanlines(w, h, pixels, channels)),
       chunk('IEND', Buffer.alloc(0))
   ]);
 }
-function write(file, w, h, rgb) {
-  fs.writeFileSync(file, encode(w, h, rgb));
+function write(file, w, h, rgb, alpha) {
+  fs.writeFileSync(file, alpha ? encode(w, h, withAlpha(rgb, alpha), 4) : encode(w, h, rgb));
 }
 function raster(file) {
   const b = Buffer.isBuffer(file) ? file : fs.readFileSync(file);
@@ -145,19 +157,12 @@ function read(file) {
 function animate(file, frames, fps) {
   const w = frames[0].w,
     h = frames[0].h,
-    pack = f => {
-      const raw = Buffer.alloc((w * 3 + 1) * h);
-      for (let y = 0; y < h; y++) {
-        raw[y * (w * 3 + 1)] = 0;
-        Buffer.from(f.rgb.buffer, f.rgb.byteOffset + y * w * 3, w * 3).copy(raw, y * (w * 3 + 1) + 1);
-      }
-      return zlib.deflateSync(raw, { level: 6 });
-    };
+    channels = frames[0].alpha ? 4 : 3;
   const hd = Buffer.alloc(13);
   hd.writeUInt32BE(w, 0);
   hd.writeUInt32BE(h, 4);
   hd[8] = 8;
-  hd[9] = 2;
+  hd[9] = channels === 4 ? 6 : 2;
   const ac = Buffer.alloc(8);
   ac.writeUInt32BE(frames.length, 0);
   ac.writeUInt32BE(0, 4);
@@ -171,7 +176,9 @@ function animate(file, frames, fps) {
     fc.writeUInt16BE(1, 20);
     fc.writeUInt16BE(fps, 22);
     out.push(chunk('fcTL', fc));
-    const z = pack(f);
+    if (f.w !== w || f.h !== h || Boolean(f.alpha) !== (channels === 4))
+      throw new Error('Animated PNG frames need the same dimensions and channels');
+    const z = scanlines(w, h, f.alpha ? withAlpha(f.rgb, f.alpha) : f.rgb, channels);
     if (i === 0) out.push(chunk('IDAT', z));
     else {
       const sq = Buffer.alloc(4);

@@ -101,6 +101,7 @@
       looks.look.renderStages.some(rule => rule.stage === 'material');
     const mid=min.map((n,i)=>(n+max[i])/2);
     const fields=config.fields??{}, terrain=fields.bed, water=fields.water, wear=fields.wear, sediment=fields.sediment;
+    const showRuts=wear&&terrain&&query.field(terrain)?.role==='rutted-bed';
     const ramps=new Map();
     function finishFor(base,profile) {
       if (!profile) return base;
@@ -135,16 +136,29 @@
         const key=profile.id+'/'+Math.round(profile.wetness*32);
         if (!materialViews.has(key)) {
           const sampled=finishFor(earth,profile);
-          if (profile.appearance) sampled.rf=undefined;
+          if (profile.appearance) {
+            const worn=showRuts&&[1,2].map(shift=>sampled.r.map((_,i)=>sampled.r[Math.max(0,i-shift)]));
+            sampled.rf=worn?(x,y,z)=>{
+              const value=query.probe(wear,[x,y,z]).value;
+              return value>=.42?worn[1]:value>=.15?worn[0]:null;
+            }:undefined;
+          }
           materialViews.set(key,sampled);
         }
         return materialViews.get(key);
       };
     }
     let hasSurface=Boolean(earth.surface);
+    const heights=terrain&&new Map();
     const height=(x,z)=>{
-      const result=terrain&&query.probe(terrain,[x,0,z]);
-      return result?.status==='ok'?result.value:config.ground??0;
+      if(!heights)return config.ground??0;
+      let column=heights.get(x);
+      if(!column)heights.set(x,column=new Map());
+      if(column.has(z))return column.get(z);
+      const result=query.probe(terrain,[x,0,z]);
+      const y=result.status==='ok'?result.value:config.ground??0;
+      column.set(z,y);
+      return y;
     };
     function groundDistance(x,y,z) {
       return Math.max(y-height(x,z), min[1]-y, min[0]-x, x-max[0], min[2]-z, z-max[2]);
@@ -328,7 +342,22 @@
     const surfaceEffects = (hasSurface || config.surfaceEffects || looks.look?.paletteConstraints || looks.look?.renderStages) &&
       { ...config.surfaceEffects, query };
     const airborne=config.air&&W.ventilation.render(query,config.air);
-    const baked=B.finish({lookSnapshot: { time: view.time ?? view.tick * view.world.dt, tick: view.tick, query }, cam:config.camera??{target:[mid[0],.05,mid[2]],dist:span*1.48,yaw:.62,pitch:.8},
+    const cam=config.camera??{target:[mid[0],.05,mid[2]],dist:span*1.48,yaw:.62,pitch:.8};
+    const contacts=fields.contactEffects&&query.probe(fields.contactEffects,cam.target).value;
+    if(contacts?.particles.length){
+      const colors=new Map();
+      for(const row of contacts.particles){
+        if(!colors.has(row.color)){
+          const packed=parseInt(row.color.slice(1),16), rgb=[packed>>16,(packed>>8)&255,packed&255];
+          colors.set(row.color,B.P[PixelLook.nearest(rgb,B.P,true)]);
+        }
+        const start=B.count();
+        B.iso(...row.point,row.radius,colors.get(row.color),row.alpha,{nd:true});
+        B.describeSplats?.(start,B.count(),{object:row.entity,material:'contact-spray',target:{surface:'contact-spray'}});
+      }
+    }
+    const baked=B.finish({lookSnapshot: { time: view.time ?? view.tick * view.world.dt, tick: view.tick, query }, cam,
+      ...(contacts?.kick.some(Boolean)&&{anim:{kick:contacts.kick}}),
       radius:span,detail:30,dither:.22,look:looks.look,paletteRoles:config.paletteRoles,
       ...K.authoring.environments.rendererSettings(config),
       ...(config.environmentSource && {environmentSource:config.environmentSource}),

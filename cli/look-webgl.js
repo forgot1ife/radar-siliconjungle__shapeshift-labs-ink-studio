@@ -20,12 +20,12 @@ function runWebGL({ chrome, hardware }, buildFixture, runFixtures, inputs) {
 import { createRenderer } from ${JSON.stringify(renderer)};
 const result = document.querySelector('#result');
 try {
-  const kit = { KIT, PixelLook, makeBuilder };
+  const kit = { KIT, PixelLook, makeBuilder, makeSculpt, ContributionRules, RenderStages };
   const cases = (${runFixtures.toString()})(kit, ${buildFixture.toString()},
     (${browserBackend.toString()})(kit, createRenderer), ${JSON.stringify(inputs)});
   result.textContent = encodeURIComponent(JSON.stringify({ ...cases, browser: navigator.userAgent }));
 } catch (error) {
-  result.textContent = encodeURIComponent(JSON.stringify({ error: error.message }));
+  result.textContent = encodeURIComponent(JSON.stringify({ error: error.stack ?? error.message }));
 }
 </script>`);
     const software = hardware ? [] : ['--enable-unsafe-swiftshader', '--use-angle=swiftshader'];
@@ -55,19 +55,20 @@ function browserBackend(kit, createRenderer) {
     const gl = canvas.getContext('webgl2');
     const debug = gl.getExtension('WEBGL_debug_renderer_info');
     const driver = gl.getParameter(debug ? debug.UNMASKED_RENDERER_WEBGL : gl.RENDERER);
+    const pixel = new Uint8Array(4);
     return {
       driver,
-      draw(world) {
-        renderer.render(world, view);
-        gl.finish();
-      },
+      draw(world, overrides) { renderer.render(world, { changedRows:[], ...view,...overrides }); },
+      fence() { gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel); },
+      pick(world, ray, frame) { return renderer.pick(world,ray,frame); },
       sample(points) {
-        const pixel = new Uint8Array(4);
+        const pixels = new Uint8Array(width * height * 4);
+        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        const error = gl.getError();
+        if (error !== gl.NO_ERROR) throw new Error('WebGL readback failed with error ' + error);
         return Object.fromEntries(Object.entries(points).map(([name, [x, y]]) => {
-          gl.readPixels(x, height - 1 - y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
-          const error = gl.getError();
-          if (error !== gl.NO_ERROR) throw new Error('WebGL readback failed with error ' + error);
-          return [name, Array.from(pixel.slice(0, 3))];
+          const offset = ((height - 1 - y) * width + x) * 4;
+          return [name, Array.from(pixels.subarray(offset, offset + 3))];
         }));
       },
       close() {

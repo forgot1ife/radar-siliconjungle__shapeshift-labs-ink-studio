@@ -8,3 +8,4 @@ export { transitionShaders } from './src/webgl/transition-shaders.mjs';
 export { createSplatInstances } from './src/webgl/instances.mjs';
 
 export { createSurfacePipeline } from './src/webgl/surfaces.mjs';
+export { createDrawingInput } from './src/webgl/drawing-input.mjs';

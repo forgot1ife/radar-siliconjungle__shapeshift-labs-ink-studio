@@ -27,13 +27,17 @@ Use [Silhouette protection](silhouette-protection.md) to tune fog and contrast o
 
 Use [Layered horizon art](layered-horizon.md) to paint a distant vista with depth-dependent parallax, bounded tiling, and camera fades.
 
-Use [Transition review](transition-review.md) to compare native export frames through changes in weather, lighting, and camera.
+Use [Transition review](transition-review.md) to compare native export frames through changes in weather, lighting, and camera. Save a [shot recipe](shot-recipes.md) to replay a review from the same camera path and weather state.
 
 Use [Environment packs](environment-packs.md) to share versioned sky, weather, and atmosphere settings across scenes.
 
 Use [Interruptible transitions](interruptible-sky.md) to carry the current sky and weather values into a new transition.
 
 Use [Conditional weather tracks](conditional-weather.md) to drive sky transitions from cues and simulation state.
+
+Use the [environment inspector](environment-inspector.md) to report which keys, profiles, and regional overrides contribute at a world position.
+
+Export [environment passes](art-passes.md#environment-passes-for-compositing) for downstream compositing of sky, fog, precipitation, reflections, and foreground coverage.
 
 ## Planar reflections
 

@@ -449,6 +449,7 @@ for a specified wetness. Most numeric properties accept a constant or
 | `fatigue.endurance`, `fatigue.life`, `fatigue.exponent` | Stress amplitude threshold, reference life in cycles and the stress-to-life exponent for structural bodies and worn joints. |
 | `plastic.yield`, `plastic.creep`, `plastic.limit` | Yield stress, creep rate above yield and a cap on permanent curvature over the normalized beam span. |
 | `sounds` | Names the `step`, `roll`, `impact` and `fracture` cues. Foot and wheel contacts carry cue IDs. Impacts and fractures expose their cues in the event record for a host to play. |
+| `contactEffects` | Scales ruts, spray, positional sound and camera shake from one measured [material contact](contact-effects.md). |
 | `appearance.dry`, `appearance.wet` | Equal-length hex color ramps mapped to the scene palette. The ground renderer interpolates them from the same moisture field. |
 
 Bind `materialAsset` and optional `materialWetness` to an entity or
@@ -676,6 +677,7 @@ reaches the feeder.
 | `volume` | Editable 3D solid with material layers, collision and support queries, fixed-head water, retained splats, and optional local relighting. |
 | `construction` | Constraint-fitted points, sockets, blocks, spans, and passage clearance with live refits and conflict reports. |
 | `control` | Typed arithmetic, thresholds, selection, binary logic, pulses, latches, timers and hysteresis. |
+| [`puzzle`](puzzles.md) | Ordered switches, timed windows, reusable recipes, blocker traces and bounded solution witnesses. |
 | `store` | Bounded numeric, integer, or vector accounts with named resources and units. |
 | `exchange` | Enabled links that request a fixed amount per tick or a rate per second. |
 | `logistics` | Resource stocks, atomic recipes, scheduled shipments, conservative accounting, and upstream shortage traces. |
@@ -685,7 +687,7 @@ reaches the feeder.
 | `routed-links` | Socket-to-socket cables, hoses and belt loops with guide points, slack, tension, break limits, typed signals, torque transmission and conservative transfers. |
 | `navigation` | Bounded walking, swimming or flying route traces. Ground search can take depth, clearance and wear into account. Hosts can also expose the volumetric traversal graph. |
 | `habitat` | Authored species rules evaluate world fields and nearby or reachable resources. Probes return a score, suitability and the reasons behind the decision. |
-| `agents` | Ground, swim and flight movement with replanning, scene-aware destinations and optional limb contacts. Agents publish their real movement contacts for other systems. |
+| `agents` | Ground, swim and flight movement with replanning, scene-aware destinations and optional limb contacts. Agents publish their real movement contacts for other systems. Add [activity decisions](agent-decisions.md) for prioritized goals and confirmed arrivals. |
 | `wear` | Optional wear from contact-producing systems or submitted contact batches. Track local accumulation and recovery, and use `enabled` to control updates. Trace a durable route and promote it with `scene promote <run> <trace> --as id`, supplying its endpoints through `--at` and JSON `--args`. |
 
 Water handles one surface column per XZ cell. Keep a simulation's resolution
@@ -1166,6 +1168,10 @@ to thermal water's `ambientField`. Probe `rooms` or `openings` by
 name. `budget` shows current amount, emissions, imports, exports,
 removal, and balance error for each load, including heat in joules.
 `trace <system>/airflow` follows the net flow direction through openings.
+
+The same room and opening state powers [acoustic queries](acoustic-queries.md).
+Agents and audio hosts can read estimated gain, arrival direction, delay and
+muffling through the current apertures.
 
 For the splat view, set `visual.air` to an object with the `rooms`
 field, optional `tracer` (defaults to smoke), `scale`, `color`,

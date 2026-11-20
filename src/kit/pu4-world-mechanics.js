@@ -56,7 +56,9 @@
   }
   function extents(body) { return geometry(body).extent; }
   function mechanics(config,{catalog,world}) {
-    check(config.contactEvents===undefined || typeof config.contactEvents==='boolean','contactEvents must be boolean');
+    const materialContacts=config.contactEvents==='material';
+    check(config.contactEvents===undefined || typeof config.contactEvents==='boolean'||materialContacts,
+      'contactEvents must be boolean or material');
     const start=config.bodies??{}, jointSpecs=config.joints??{}, forceSpecs=config.forces??{};
     const fabricFields=config.deformables??[];
     const routeFields=config.routedLoads??[];
@@ -204,6 +206,7 @@
     check(vector(config.gravity??[0,-9.81,0])&&Number.isFinite(config.ground??0)&&
       [config.terrain,config.surface].every(field=>field===undefined||typeof field==='string')&&
       Number.isFinite(config.drag??.08)&&(config.drag??.08)>=0,'Invalid mechanical world');
+    const forces=Object.entries(forceSpecs), wheels=forces.filter(([,spec])=>spec.kind==='wheel');
     const sails = Object.values(forceSpecs).filter(spec => spec.kind==='sail');
     const windSampler = (query,spec) => query.sampler(spec.field,{type:'vec3',units:spec.units??'world/s'});
     const gravity=config.gravity??[0,-9.81,0];
@@ -431,12 +434,12 @@
             if(roots[body.id]===root)continue;
             for(const hit of W.colliders.ray(body,from,down,radius+.125)){
               if(V.dot(hit.normal,axis)>.4&&(!best||hit.distance-.045<best.gap))
-                best={gap:hit.distance-.045,at:hit.point,support:body};
+                best={gap:hit.distance-.045,at:hit.point,support:body,normal:hit.normal};
             }
           }
           return best;
         }
-        let y=ground(ctx,point), support=null;
+        let y=ground(ctx,point), support=null, normal=up;
         if(advanced){
           const [x,,z]=point, low=point[1]-radius-.09, high=point[1]+.04;
           for(const other of Object.values(bodies)){
@@ -444,18 +447,18 @@
             const {min,max}=boundsOf(other);
             if(x<min[0]||x>max[0]||z<min[2]||z>max[2]||min[1]>high||max[1]<low)continue;
             for(const hit of W.colliders.columns(other,x,z,low,high)){
-              if(hit.normal[1]>.4&&hit.y>y){y=hit.y;support=other;}
+              if(hit.normal[1]>.4&&hit.y>y){y=hit.y;support=other;normal=hit.normal;}
             }
           }
           for(const {surfaces} of fabric){
             const seat=W.fabricContact.columns(surfaces,x,z,low,high).find(seat=>seat.normal[1]>.4);
-            if(seat&&seat.y>y){y=seat.y;support=surfaces[seat.shape];}
+            if(seat&&seat.y>y){y=seat.y;support=surfaces[seat.shape];normal=seat.normal;}
           }
         }
         const at=[point[0],y,point[2]];
-        return {y,gap:point[1]-y,at,support};
+        return {y,gap:point[1]-y,at,support,normal};
       }
-      for(const [key,spec] of Object.entries(forceSpecs)){
+      for(const [key,spec] of forces){
         const body=bodies[spec.body], root=roots[spec.body];
         const dynamic=root&&!bodies[root].fixed;
         if(!body||!dynamic&&!own(structures,spec.body))continue;
@@ -682,22 +685,30 @@
           }
         }
       }
-      const contacts=[];
-      for(const [key,spec] of Object.entries(forceSpecs)){
-        if(spec.kind!=='wheel')continue;
+      const contacts=[], grounded=materialContacts&&wheels.length?new Map():null, track=grounded?[]:null;
+      for(const [key,spec] of wheels){
         const body=bodies[spec.body], old=state.bodies[spec.body];
         if(!body||!old)continue;
         const at=spec.at??zero, point=V.add(body.position,M.app(body.rotation,at));
-        const axis=gravityAt(ctx,point).up, prev=V.add(old.position,M.app(old.rotation,at));
-        const seat=wheelSupport(point,spec.radius??.3,roots[body.id],axis);
-        const traveled=V.len(W.gravity.tangent(V.sub(point,prev),axis));
-        if(seat&&seat.gap<=(spec.radius??.3)+.09&&traveled>1e-5) {
-          const profile=seat.support?bodyMaterial(ctx,seat.support):groundMaterial(ctx,seat.at);
-          const cue=profile?.sounds?.roll;
-          contacts.push({entity:body.entity,point:seat.at,support:seat.support?.id??'ground',
-            material:profile?.id??seat.support?.material??'ground',weight:traveled,
-            wheel:key,...(cue&&{cue})});
-        }
+        const frame=gravityAt(ctx,point), prev=V.add(old.position,M.app(old.rotation,at)), root=roots[body.id];
+        const motion=W.gravity.tangent(V.sub(point,prev),frame.up), traveled=V.len(motion);
+        if(!grounded&&traveled<=1e-5)continue;
+        const seat=wheelSupport(point,spec.radius??.3,root,frame.up);
+        if(!seat||seat.gap>(spec.radius??.3)+.09)continue;
+        if(grounded)grounded.set(root,(grounded.get(root)??0)+1);
+        if(traveled<=1e-5)continue;
+        const profile=seat.support?bodyMaterial(ctx,seat.support):groundMaterial(ctx,seat.at);
+        const cue=profile?.sounds?.roll;
+        const row={entity:body.entity,point:seat.at,support:seat.support?.id??'ground',
+          material:profile?.id??seat.support?.material??'ground',weight:traveled,wheel:key,...(cue&&{cue})};
+        if(track)track.push({row,root,frame,seat,motion,profile});
+        else contacts.push(row);
+      }
+      if(track)for(const {row,root,frame,seat,motion,profile} of track){
+        const travel=row.weight, normal=seat.normal??frame.up;
+        const load=(masses[root]??0)*Math.max(0,-V.dot(frame.acceleration,normal))/grounded.get(root);
+        contacts.push(W.contactEffects.capture(ctx,row,contacts.length,'roll',{
+          speed:travel/ctx.dt,load,travel,normal,heading:V.mul(motion,1/travel),profile}));
       }
       let beams;
       if(state.beams){
@@ -856,7 +867,8 @@
         const hits=body.collider||body.bend?W.colliders.columns(body,x,z,low,high):[column(body,x,z,low,high)];
         for(const row of hits)if(row&&row.normal[1]>.25){
           const profile=bodyMaterial(context,body);
-          rows.push(profile?{...row,material:profile.id,...(profile.sounds?.step&&{cue:profile.sounds.step})}:row);
+          rows.push(profile?{...row,material:profile.id,...(profile.sounds?.step&&{cue:profile.sounds.step}),
+            ...(args.includeMaterial&&{surface:profile})}:row);
         }
       };
       const broad=colliderIndex(state.bodies);
@@ -868,7 +880,7 @@
       if(!local&&floor>=low&&floor<=high){
         const surface=groundMaterial(context,[x,floor,z]);
         rows.push({y:floor,normal:up,id:'ground',material:surface?.id??'ground',
-          ...(surface?.sounds?.step&&{cue:surface.sounds.step})});
+          ...(surface?.sounds?.step&&{cue:surface.sounds.step}),...(args.includeMaterial&&surface&&{surface})});
       }
       return Q.ok(rows.sort((a,b)=>b.y-a.y||a.id.localeCompare(b.id)));
     }

@@ -1,18 +1,11 @@
 const clamp = (value, lo, hi) => Math.max(lo, Math.min(hi, value));
+const ContributionRules = require('../src/contribution-rules.js');
 
-function opacity(logWeight, gain, hard) {
-  if (logWeight < -4.5 || logWeight > 0) return 0;
-  const gaussian = gain * Math.exp(logWeight);
-  if (!hard) return Math.min(.99, gaussian);
-  const blend = clamp((gaussian - .38) / .24, 0, 1);
-  return .99 * blend * blend * (3 - 2 * blend);
-}
-
-function footprint(dx, dy, k0, k1, k2, gain, hard) {
+function footprint(dx, dy, k0, k1, k2, gain, hard, edge) {
   let total = 0;
   for (const v of [-.25, .25]) for (const u of [-.25, .25]) {
     const x = dx + u, y = dy + v;
-    total += opacity(-.5 * (k0 * x * x + k2 * y * y) - k1 * x * y, gain, hard);
+    total += ContributionRules.alpha(-.5 * (k0 * x * x + k2 * y * y) - k1 * x * y, gain, hard, edge);
   }
   return total * .25;
 }

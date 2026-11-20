@@ -55,6 +55,7 @@
           if (fits(foot) && (!transition || !from || transition(from,foot,s))) {
             best = { foot, support: s.id ?? null, normal: V.norm(s.normal) };
             if (s.material !== undefined) best.material = s.material;
+            if (s.surface !== undefined) best.surface = s.surface;
           }
         }
       }

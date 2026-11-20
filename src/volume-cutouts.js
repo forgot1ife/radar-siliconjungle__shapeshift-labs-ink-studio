@@ -148,23 +148,32 @@ const VolumeCutouts = (() => {
   function compile(source) {
     if (source?.[brand]) return source;
     if (!Array.isArray(source?.zones)) throw new TypeError('Volume cutouts need a zones array');
-    const all=Array.from(source.zones,zone=>{
+    const all=Array.from(source.zones,(zone,index)=>{
       if (!zone || typeof zone!=='object') throw new TypeError('Invalid volume cutout');
       const { feather=.32, retain=0, affects='both' }=zone;
       number(feather,0,1e6,'Cutout feather');
       number(retain,0,1,'Cutout retained density');
       if (!['fog','cloud','both'].includes(affects)) throw new RangeError('Cutout affects must be fog, cloud or both');
-      return { affects, frame:shape(zone,feather,retain), retain };
+      return { index,id:typeof zone.id==='string' ? zone.id : null,type:zone.type,affects,frame:shape(zone,feather,retain),retain };
     }).filter(zone=>zone.retain<1);
     return Object.freeze({ [brand]:true, frame(time=0) {
       if (!Number.isFinite(time)) throw new RangeError('Volume cutout time must be finite');
       const fog=[], cloud=[];
-      for (const zone of all) {
-        const sample=zone.frame(time);
+      const sampled = all.map(({frame,...zone}) => {
+        const sample=frame(time);
         if (zone.affects!=='cloud') fog.push(sample);
         if (zone.affects!=='fog') cloud.push(sample);
-      }
-      return { fog:channel(fog), cloud:channel(cloud) };
+        return { ...zone,sample };
+      });
+      const fogChannel=channel(fog), cloudChannel=channel(cloud);
+      return { fog:fogChannel, cloud:cloudChannel, inspect(x,y,z) {
+        const zones=sampled.flatMap(({sample,...zone}) => {
+          if (outside(sample.bounds,x,y,z)) return [];
+          const gain=sample.gain(x,y,z);
+          return gain>=1 ? [] : [{...zone,gain}];
+        });
+        return { fog:fogChannel?.gain(x,y,z) ?? 1,cloud:cloudChannel?.gain(x,y,z) ?? 1,zones };
+      } };
     } });
   }
   function settings(authored,override) {

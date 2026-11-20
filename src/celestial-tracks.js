@@ -39,7 +39,7 @@ const CelestialTracks = (() => {
       const ease = entry.ease ?? 'smooth';
       if (!Object.hasOwn(eases, ease)) throw new TypeError('Celestial ease needs linear, smooth or hold');
       return {
-        at, ease: eases[ease],
+        at, easing:ease, ease: eases[ease],
         azimuth: number(entry.azimuth, -1e6, 1e6, 'Celestial azimuth'),
         elevation: number(entry.elevation, -pi / 2, pi / 2, 'Celestial elevation'),
         radius: number(entry.radius ?? base.radius, .00005, pi / 3, 'Celestial radius'),
@@ -54,17 +54,23 @@ const CelestialTracks = (() => {
       if (last.at > end) throw new RangeError('Celestial keys must fit within their period');
       if (last.at < end) entries.push({ ...first, at: end });
     }
-    return seconds => {
+    const key = ({ease,easing,...value}) => ({...value,ease:easing});
+    return (seconds, trace) => {
       const t = period === undefined ? seconds : first.at + mod(seconds - first.at, period);
       let lo = 0, hi = entries.length - 1;
-      if (t <= first.at) return first;
-      if (t >= entries[hi].at) return entries[hi];
+      if (trace) Object.assign(trace,{trackTime:t,period,azimuthMode});
+      if (t <= first.at || t >= entries[hi].at) {
+        const held = t <= first.at ? first : entries[hi];
+        if (trace) Object.assign(trace,{keys:[key(held)],weight:0});
+        return held;
+      }
       while (hi - lo > 1) {
         const mid = (lo + hi) >>> 1;
         if (t < entries[mid].at) hi = mid;
         else lo = mid;
       }
-      const a = entries[lo], b = entries[hi], w = a.ease((t - a.at) / (b.at - a.at));
+      const a = entries[lo], b = entries[hi], progress = (t-a.at)/(b.at-a.at), w = a.ease(progress);
+      if (trace) Object.assign(trace,{keys:[key(a),key(b)],progress,weight:w});
       const difference = b.azimuth - a.azimuth;
       const span = azimuthMode === 'unwrapped' ? difference : mod(difference + pi, tau) - pi;
       return { azimuth: a.azimuth + span * w, elevation: mix(a.elevation, b.elevation, w),
@@ -92,8 +98,8 @@ const CelestialTracks = (() => {
     const dark = kind === 'moon' ? color(raw.darkColor ?? '#141b31') : null;
     const sample = motion(raw, { radius, opacity, phase });
 
-    function frame(seconds) {
-      const sampled = sample(seconds);
+    function frame(seconds, trace) {
+      const sampled = sample(seconds,trace);
       const { azimuth: az, elevation: el, radius, phase } = sampled;
       const axis = Object.freeze(direction(az, el));
       const opacity = seconds >= start && seconds < end ? sampled.opacity : 0;
@@ -163,9 +169,15 @@ const CelestialTracks = (() => {
     const ordered = tracks.filter(track => track.kind !== 'eclipse').sort((a, b) => b.distance - a.distance);
     const replacesSun = ordered.some(track => track.kind === 'sun');
 
-    function frame(seconds) {
+    function frame(seconds, inspect = false) {
       number(seconds, -1e12, 1e12, 'Celestial time');
-      const states = new Map(tracks.map(track => [track.id, track.frame(seconds)]));
+      const report = inspect && [];
+      const states = new Map(tracks.map(track => {
+        const keys = inspect && {};
+        const item = track.frame(seconds,keys);
+        if (report) report.push({...item.pose,...keys});
+        return [track.id,item];
+      }));
       const masks = new Map();
       for (const { kind, id, target } of tracks) {
         if (kind !== 'eclipse') continue;
@@ -191,7 +203,8 @@ const CelestialTracks = (() => {
         }
         return out;
       }
-      return Object.freeze({ replacesSun, sun, visible: layers.length > 0, body: id => states.get(id)?.pose, shade });
+      return Object.freeze({ replacesSun, sun, visible: layers.length > 0, body: id => states.get(id)?.pose, shade,
+        ...(report && {tracks:report,primarySun}) });
     }
     return Object.freeze({ [compiled]: true, frame });
   }

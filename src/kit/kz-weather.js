@@ -48,7 +48,7 @@
       const spatial = o.worldSpace === true && (kind === 'rain' || kind === 'snow');
       if (spatial && (!Number.isFinite(speed) || speed <= 0 || !Number.isFinite(top)))
         throw new RangeError('World precipitation needs finite height and positive fall speed');
-      const first = spatial ? B.count() : 0;
+      const first = B.count();
       let laid = 0;
       for (let i = 0; i < (o.n || 300); i++) {
         const x = box[0] + (box[1] - box[0]) * R(),
@@ -72,7 +72,7 @@
         } else B.disc(x, top, z, [0, 0, 1], size, size, col, 2.2, an);
         laid++;
       }
-      if (spatial) B.describePrecipitation(first, B.count(), o.profile === true);
+      if (spatial || kind === 'snow') B.describePrecipitation(first, B.count(), o.profile === true, spatial);
       return laid;
     }
   };

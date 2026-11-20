@@ -3,7 +3,7 @@
    role (stone, moss, ember ...) and a style says what colours those roles are, so the same diorama can be put in another style by one word.
      K.diorama.check(spec, env)   -> [{ level: 'error' | 'warning', path, problem, hint }]     nothing is built; every mistake is listed at once
      K.diorama.build(spec, env)   -> the world (throws, with the whole list, if check finds errors)
-     K.diorama.scene(spec, env)   -> { id, name, blurb, seed, build }, ready to go on SCENES
+     K.diorama.scene(spec, env)   -> scene descriptor with build, model and drawing authoring hooks
      K.diorama.styles             the looks by name; add your own: { palette: [hex ...], roles: { stone: [1, 2, 3], ... }, sun, amb, sky, finish }
      K.diorama.kinds              what each kind of solid needs and may have (the checker reads this; so can an editor)
    env: { assets: { name: mesh } } for solids of kind 'mesh'. See lab/data-shrine.json for a whole one. */
@@ -127,6 +127,11 @@
     lathe: { need: { at: 'vec3', h: 'pos', r: 'num|vec2|profile' } },
     torus: { need: { at: 'vec3', R: 'pos', r: 'pos' } },
     tube: { need: { pts: 'pts', r: 'num|vec2' } },
+    stroke: {
+      need: { points: 'list' },
+      may: { surface: 'obj', axis: 'vec3', width: 'pos', depth: 'pos', taper: 'vec2', pressure: 'list', offset: 'num' }
+    },
+    fill: { need: { rings: 'list' }, may: { surface: 'obj', frame: 'obj', depth: 'pos', offset: 'num' } },
     regular: { need: { shape: ['d4', 'd6', 'd8', 'd12', 'd20'], at: 'vec3', r: 'pos' }, may: { round: 'num' } },
     extrude: { need: { outline: 'outline', at: 'vec3', depth: 'pos' }, may: { round: 'num' } },
     revolve: { need: { outline: 'outline', at: 'vec3' } },
@@ -401,6 +406,11 @@
       bad('finish.look.silhouetteProtection', error.message);
     }
     try {
+      DetailBudgets.prepare(look?.detailBudgets);
+    } catch (error) {
+      bad('finish.look.detailBudgets', error.message);
+    }
+    try {
       HorizonBands.compile(look?.horizonBands);
     } catch (error) {
       bad('finish.look.horizonBands', error.message);
@@ -513,7 +523,9 @@
       if (m === undefined) return;
       const role = typeof m === 'string' ? m : m && m.role;
       if (m && typeof m === 'object') {
-        keys(m, path, { role: 1, ramp: 1, noise: 1, scale: 1, glow: 1, over: 1, surface: 1, model: 1, lookAsset: 1, albedo: 1, materialId: 1, surfaceId: 1 });
+        keys(m, path, { role: 1, ramp: 1, noise: 1, scale: 1, glow: 1, over: 1, surface: 1, model: 1, lookAsset: 1, albedo: 1, materialId: 1, surfaceId: 1, pixelStyle: 1 });
+        try { MaterialPixelStyle.prepare(m.pixelStyle); }
+        catch (error) { bad(path + '.pixelStyle', error.message); }
         for (const key of ['materialId', 'surfaceId'])
           if (m[key] !== undefined && !TargetSelectors.name(m[key])) bad(path + '.' + key, key + ' must be a name');
         if (m.albedo !== undefined) {
@@ -664,6 +676,13 @@
         );
       }
       fields(s, path, def, COMMON);
+      if (K.drawing.kind(s)) {
+        try {
+          K.drawing.prepare(s);
+        } catch (error) {
+          bad(path, error.message);
+        }
+      }
       if (s.id !== undefined) {
         if (ids.has(s.id)) bad(path + '.id', 'two solids are called "' + s.id + '"');
         ids.add(s.id);
@@ -714,7 +733,7 @@
         g = isNum(s.res) ? s.res : res0;
       if (!inner && !s.carve) area += (12.6 * r * r) / (g * g);
     }
-    if (!Array.isArray(spec.solids) || !spec.solids.length)
+    if (!Array.isArray(spec.solids))
       bad(
         'solids',
         'a diorama needs a list of solids',
@@ -864,7 +883,8 @@
         const mesh = K.mesh.fit(env.assets[s.asset], { size: s.size || 4, at: s.at, turn: s.spin, up: s.up });
         meshLooks[s.asset] = { mesh, look: K.mesh.look(mesh, { hues: s.hues || 5, pal }) };
       }
-    const B = (env.makeBuilder || makeBuilder)(seed, pal);
+    const detailBudgets = st0.finish.look?.detailBudgets;
+    const B = (env.makeBuilder || makeBuilder)(seed, pal, detailBudgets === undefined ? undefined : { detailBudgets });
     let S, grp;
     function startSculpt() {
       S = K.sculpt((env.makeSculpt || makeSculpt)(B));
@@ -893,6 +913,7 @@
           if (m.model) out.model = m.model;
           if (m.albedo !== undefined) out.albedo = m.albedo;
           if (m.surfaceId !== undefined) out.surfaceId = m.surfaceId;
+          if (m.pixelStyle !== undefined) out.pixelStyle = m.pixelStyle;
           if (m.over) {
             const r2 = ramp(m.over.role),
               above = m.over.above === undefined ? 0.55 : m.over.above,
@@ -947,6 +968,7 @@
         else if (k === 'torus') p = S.torus(s.at, s.R, s.r, m, o);
         else if (k === 'tube')
           p = S.tube(s.pts, Array.isArray(s.r) ? s.r[0] : s.r, Array.isArray(s.r) ? s.r[1] : s.r, m, o);
+        else if (K.drawing.kind(s)) p = K.drawing.solid(S, s, m, o);
         else if (k === 'regular')
           p = S.regular(s.shape, s.at, s.r, m, Object.assign(s.round ? { rd: s.round } : {}, o));
         else if (k === 'extrude')
@@ -1063,22 +1085,28 @@
       }) : [];
       return { meshes, joints, animations };
     }
-    for (const s of spec.solids) if (!s.part) make(s);
+    const drawingBounds = new Map();
+    function placeSolid(s) {
+      const p = make(s);
+      if (K.drawing.kind(s) && p.geometryBounds) drawingBounds.set(s, p.geometryBounds);
+    }
+    for (const s of spec.solids) if (!s.part) placeSolid(s);
     S.bake();
     const moving = spec.solids.filter(s => s.part);
     if (moving.length) {
-      for (const s of moving) make(s);
+      for (const s of moving) placeSolid(s);
       S.bake();
     }
     const pool = loose ? K.pool(B, spec.spare || 600) : null,
       lo = [1e9, 1e9, 1e9],
       hi = [-1e9, -1e9, -1e9];
-    for (const s of spec.solids)
-      if (s.at && s.kind !== 'ground')
-        for (let a = 0; a < 3; a++) {
-          lo[a] = Math.min(lo[a], s.at[a]);
-          hi[a] = Math.max(hi[a], s.at[a]);
-        }
+    for (const s of spec.solids) {
+      const b = drawingBounds.get(s) ?? (s.at && s.kind !== 'ground' ? { min: s.at, max: s.at } : null);
+      if (b) for (let a = 0; a < 3; a++) {
+        lo[a] = Math.min(lo[a], b.min[a]);
+        hi[a] = Math.max(hi[a], b.max[a]);
+      }
+    }
     const cam = Object.assign(
       {
         target: lo[0] > 1e8 ? [0, 1.5, 0] : [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2 + 0.5, (lo[2] + hi[2]) / 2],
@@ -1205,13 +1233,69 @@
     W.lab = { rig, ps, lit, parts: partNames };
     return W;
   };
-  DIO.scene = (spec, env) => ({
-    id: spec.id,
-    name: spec.name || spec.id,
-    blurb: spec.blurb || '',
-    seed: spec.seed === undefined ? 1 : spec.seed,
-    build: seed => DIO.build(Object.assign({}, spec, { seed }), env),
-    model: (seed, options = {}) => DIO.build(Object.assign({}, spec, { seed }), env, options)
-  });
+  DIO.scene = (spec, env) => {
+    const id = 'drawing:' + spec.id, seed0 = spec.seed ?? 1;
+    const editable = s => K.drawing.kind(s) && typeof s.id === 'string';
+    const resolve = (seed, snapshot) => {
+      if (snapshot === undefined) return { ...spec, seed: seed ?? seed0 };
+      const state = K.authoring.data.validate(snapshot);
+      if (state.id !== id) throw Error('Drawing snapshot belongs to a different scene');
+      const marks = new Map(Object.values(state.entities).map(({ id, type, parameters, anchor, parent, styleRef }) => {
+        const mark = { ...parameters, id, kind: type };
+        if (!K.drawing.kind(mark)) throw Error('Invalid drawing entity: ' + id);
+        if (anchor || parent || styleRef) throw Error('Set carrier, part and material in drawing parameters: ' + id);
+        return [id, mark];
+      }));
+      const solids = [];
+      for (const s of spec.solids) {
+        if (!editable(s)) solids.push(s);
+        else if (marks.has(s.id)) {
+          solids.push(marks.get(s.id));
+          marks.delete(s.id);
+        }
+      }
+      return { ...spec, seed: seed ?? state.seed, solids: solids.concat([...marks.values()]) };
+    };
+    const build = (seed, { snapshot } = {}) => DIO.build(resolve(seed, snapshot), env);
+    const authoring = (seed, { snapshot } = {}) => {
+      const A = K.authoring;
+      let document;
+      if (snapshot === undefined) {
+        const start = A.document({ ...A.document().snapshot(), id, seed: seed ?? seed0 });
+        start.transact('Load drawings', () => {
+          for (const { id, kind, ...parameters } of spec.solids.filter(editable))
+            start.create(kind, { id, parameters });
+        });
+        document = A.document(start.snapshot());
+      } else {
+        resolve(seed, snapshot);
+        document = A.document(snapshot);
+      }
+      return {
+        document,
+        realize(state = document.snapshot()) {
+          try {
+            return { world: build(seed, { snapshot: state }) };
+          } catch (error) {
+            if (!error.problems) throw error;
+            return {
+              checks: error.problems.filter(p => p.level === 'error').map(({ path, problem }) =>
+                ({ pass: false, path, message: problem }))
+            };
+          }
+        }
+      };
+    };
+    return {
+      id: spec.id,
+      name: spec.name || spec.id,
+      blurb: spec.blurb || '',
+      seed: seed0,
+      build,
+      model: (seed, { snapshot, ...options } = {}) =>
+        DIO.build(resolve(seed, snapshot), env, options),
+      authoring
+    };
+  };
   DIO.roles = ROLES;
 })(KIT);

@@ -8,13 +8,13 @@ function plainVertex(source) {
     .replace('if (i >= u_azn) break;', 'break;');
 }
 
-export function createSplatPipeline(gl, { ascii, specialize = true, sampleCoverage } = {}) {
+export function createSplatPipeline(gl, { ascii, specialize = true, sampleCoverage, coverageRules } = {}) {
   const resources = createResources(gl);
   try {
-    const { vertex, fragment } = splatShaderSources(ascii, sampleCoverage);
+    const { vertex, fragment } = splatShaderSources(ascii, sampleCoverage, { coverageRules });
     const full = resources.program(vertex, fragment);
     const variants = new Map();
-    let plain, plainUnavailable = false;
+    let plain, plainUnavailable = false, subset;
     let disposed = false;
     let orderCapacity = 0, orderCount = 0, hasReferences = false;
     const vao = resources.allocate('VertexArray');
@@ -41,13 +41,18 @@ export function createSplatPipeline(gl, { ascii, specialize = true, sampleCovera
       // explicitly be false before the shader can omit their work.
       programFor(features) {
         check();
-        if (features?.water || features?.portal || features?.instances) {
+        if (features?.water || features?.portal || features?.instances || features?.contributions ||
+            features?.masked || features?.layeredGlass || features?.materialStyles) {
           const water = Boolean(features.water), portal = Boolean(features.portal);
           const airPockets = Boolean(features.airPockets), layered = Boolean(features.layered), atlas = Boolean(features.atlas);
           const instances = Boolean(features.instances);
-          const key = +airPockets + 2 * layered + 4 * atlas + 8 * water + 16 * portal + 32 * instances;
+          const contributions = Boolean(features.contributions), masked = Boolean(features.masked), textured = Boolean(features.textured);
+          const layeredGlass = Boolean(features.layeredGlass), materialStyles = Boolean(features.materialStyles);
+          const key = +airPockets + 2 * layered + 4 * atlas + 8 * water + 16 * portal + 32 * instances +
+            64 * contributions + 128 * masked + 256 * textured + 512 * layeredGlass + 1024 * materialStyles;
           if (!variants.has(key)) {
-            const shader = splatShaderSources(ascii, sampleCoverage, { water, airPockets, layered, atlas, portal, instances });
+            const shader = splatShaderSources(ascii, sampleCoverage, { water, airPockets, layered, atlas, portal, instances,
+              contributions, masked, textured, layeredGlass, coverageRules, materialStyles });
             variants.set(key, resources.program(shader.vertex, shader.fragment));
           }
           return variants.get(key);
@@ -95,6 +100,29 @@ export function createSplatPipeline(gl, { ascii, specialize = true, sampleCovera
         if (!count) return;
         gl.bindVertexArray(geometry);
         gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
+      },
+      drawSubset(indices) {
+        check();
+        if (!(indices instanceof Int32Array)) throw new TypeError('Subset order must be an Int32Array');
+        if (!indices.length) return;
+        if (!subset) {
+          subset={vao:resources.allocate('VertexArray'),buffer:resources.allocate('Buffer')};
+          gl.bindVertexArray(subset.vao);
+          gl.bindBuffer(gl.ARRAY_BUFFER,cornerBuffer);
+          gl.enableVertexAttribArray(0);
+          gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+          gl.bindBuffer(gl.ARRAY_BUFFER,subset.buffer);
+          gl.enableVertexAttribArray(1);
+          gl.vertexAttribIPointer(1,1,gl.INT,0,0);
+          gl.vertexAttribDivisor(1,1);
+        }
+        if (subset.indices !== indices) {
+          gl.bindBuffer(gl.ARRAY_BUFFER,subset.buffer);
+          gl.bufferData(gl.ARRAY_BUFFER,indices,gl.DYNAMIC_DRAW);
+          subset.indices=indices;
+        }
+        gl.bindVertexArray(subset.vao);
+        gl.drawArraysInstanced(gl.TRIANGLE_STRIP,0,4,indices.length);
       },
       dispose() {
         if (disposed) return;

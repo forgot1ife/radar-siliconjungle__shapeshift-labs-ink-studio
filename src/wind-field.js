@@ -101,7 +101,7 @@ const WindField = (() => {
       cells.set(key,gain);
       return gain;
     }
-    function unmasked(x,y,z,time=0) {
+    function unmasked(x,y,z,time=0,trace) {
       if (![x,y,z].every(Number.isFinite)) throw new TypeError('Wind position must be finite XYZ');
       const state = at(time);
       const candidate = local?.(time,x,z,state.open);
@@ -110,14 +110,21 @@ const WindField = (() => {
       const multiplier = gustStrength*state.wave;
       const vx = clamp(xWind*multiplier,-20,20), vz = clamp(zWind*multiplier,-20,20);
       const gain = shelter(x,y,z,vx,vz);
+      if (trace) Object.assign(trace,{ambient:state.open.slice(),regional:[xWind,zWind],gust:gustStrength,wave:state.wave,shelterGain:gain});
       return [vx*gain,vz*gain];
     }
-    const attenuate = (velocity,x,y,z) => {
+    const attenuate = (velocity,x,y,z,trace) => {
       const scale = exposure?.wind?.(x,y,z) ?? 1;
+      if (trace) trace.exposureGain = scale;
       return scale === 1 ? velocity : [velocity[0]*scale,velocity[1]*scale];
     };
     function sample(x,y,z,time=0) {
       return attenuate(unmasked(x,y,z,time),x,y,z);
+    }
+    function inspect(x,y,z,time) {
+      const trace = {};
+      const velocity = attenuate(unmasked(x,y,z,time,trace),x,y,z,trace);
+      return { ...trace,velocity };
     }
     function integrate(from,to,velocity) {
       if (!Number.isFinite(from) || !Number.isFinite(to) || !Number.isFinite(to-from))
@@ -150,7 +157,7 @@ const WindField = (() => {
       })();
       return { windOffset: exposure?.wind ? (x,y,z) => attenuate(windOffset(x,y,z),x,y,z) : windOffset };
     }
-    return Object.freeze({ open, sample, travel, frame,
+    return Object.freeze({ open, sample, inspect, travel, frame,
       cloudTravel:(from,to) => integrate(from,to,open),
       xyz(x,y,z,time) { const [vx,vz] = sample(x,y,z,time); return [vx,0,vz]; }
     });

@@ -31,6 +31,9 @@ for (let i = 1; i < argv.length; i++) {
     }
   } else pos.push(a);
 }
+const Shot = require('./shot-recipes.js');
+let shot, shotReplay, shotRender;
+const outputFile = name => opt.out ? path.resolve(opt.out) : path.join(OUT,name);
 const num = (k, d) => (opt[k] === undefined ? d : +opt[k]),
   list = (k, d) => (opt[k] === undefined ? d : String(opt[k]).split(',').map(Number));
 let A = null;
@@ -138,13 +141,15 @@ function build(id, seedOverride) {
   const s = scene(id);
   // Load paint by scene ID so rendering the same file from another path finds its decals.
   const decalFile = path.join(paintDirectory(s.id), 'decals.json');
+  shot?.dependency(decalFile);
   globalThis.INK_DECAL_NEXT = fs.existsSync(decalFile)
     ? JSON.parse(fs.readFileSync(decalFile, 'utf8')).decals
     : (globalThis.INK_PAINT || {})[s.id] || null;
-  const t0 = Date.now(),
-    seed = seedOverride ?? (opt.seed === undefined ? s.seed : +opt.seed);
+  const t0 = Date.now();
   const controls = opt.params ? JSON.parse(String(opt.params)) : undefined;
   const snapshot = opt.authoring ? JSON.parse(fs.readFileSync(path.resolve(opt.authoring), 'utf8')) : undefined;
+  const seed = seedOverride ?? (opt.seed === undefined ? snapshot?.seed ?? s.seed : +opt.seed);
+  shot?.seed(seed);
   const assemble = () => {
     const built = s.build(seed, { controls, snapshot });
     return (s.animate && s.animate(built, seed)) || built;
@@ -480,6 +485,18 @@ function clipCamera(world) {
   });
 }
 
+function skyOptions() {
+  const options = {
+    skyEnvironment: opt['sky-environment'] === 'off' ? false : opt['sky-environment'] === undefined ? undefined :
+      (skyOverride ??= require('../src/sky-environment.js').compile(
+        JSON.parse(fs.readFileSync(path.resolve(opt['sky-environment']), 'utf8')))),
+    skyTime: num('sky-time'),
+    skyProfiles: opt['sky-profile'] === undefined ? undefined : (skyProfiles ??= skyProfileOverrides(opt['sky-profile']))
+  };
+  shot?.profiles(options.skyProfiles);
+  return options;
+}
+
 const view = extra =>
   Object.assign(
     {
@@ -518,9 +535,7 @@ const view = extra =>
       water: opt.water === 'off' ? false : undefined,
       reflections: opt.reflections === 'off' ? false : undefined,
       skyReflections: opt['sky-reflections'],
-      skyEnvironment: opt['sky-environment'] === 'off' ? false : opt['sky-environment'] === undefined ? undefined :
-        (skyOverride ??= require('../src/sky-environment.js').compile(
-          JSON.parse(fs.readFileSync(path.resolve(opt['sky-environment']), 'utf8')))),
+      ...skyOptions(),
       celestialTracks: celestialOption(),
       cloudField: cloudFieldOption(),
       cloudRepresentation: opt['cloud-representation'],
@@ -534,9 +549,7 @@ const view = extra =>
       sceneExposure: sceneExposureOption(),
       precipitation: precipitationOption(),
       rainImpacts: rainImpactOption(),
-      skyTime: num('sky-time'),
       skyTransitions: skyTransitionsOption(),
-      skyProfiles: opt['sky-profile'] === undefined ? undefined : (skyProfiles ??= skyProfileOverrides(opt['sky-profile'])),
       liveSun: liveSunOption(),
       atmosphere: opt.atmosphere === 'off' ? false : undefined,
       shapedAtmosphere: shapedAtmosphereOption(),
@@ -555,10 +568,11 @@ const view = extra =>
       } : undefined,
       edges: opt.edges === 'off' ? false : undefined
     },
-    extra
+    extra,
+    shotRender
   );
 const save = (name, img) => {
-  const f = opt.out ? path.resolve(opt.out) : path.join(OUT, name);
+  const f = outputFile(name);
   fs.mkdirSync(path.dirname(f), { recursive: true });
   PNG.write(f, img.w, img.h, img.rgb);
   console.log('wrote', f, img.w + 'x' + img.h);
@@ -572,12 +586,13 @@ const asciiFrame = (image, world) => lib().KIT.ascii.draw(image, {
   pal: image.palette || world.pal
 });
 const displayFrame = (image, world) => opt.text ? asciiFrame(image, world) : R.upscale(image, opt.px1 ? 1 : image.px);
-function buildPreview() {
+function buildPreview(id = pos[0]) {
   const Preview = require('./look-preview.js');
-  const world = opt.look !== undefined && opt.look !== 'off' ? Preview.withAlbedo(() => build(pos[0])) : build(pos[0]);
+  const world = opt.look !== undefined && opt.look !== 'off' ? Preview.withAlbedo(() => build(id)) : build(id);
   return Preview.override(world, opt, lib());
 }
 const previewPasses = () => require('./look-preview.js').preview(opt);
+const reviewSidecars = diagnostics => [...(diagnostics?.suffixes ?? []), ...(opt.text ? ['.txt'] : [])];
 const textSidecar = file => file.replace(/\.(?:a?png)$/i, '') + '.txt';
 const times = () =>
   opt.t !== undefined
@@ -592,7 +607,7 @@ function die(m) {
   process.exit(1);
 }
 const worldCLI = () => require('./world.js')({kit:lib(),build,pose,dataScene,opt,renderOptions:view,atmosphereEmittersOption,effectPalettesOption,stabilityOption,artDirectionOption,silhouetteOption,horizonOption,skyTransitionsOption,
-  weatherTracksOption:() => onOffOption('weather-tracks')});
+  weatherTracksOption:() => onOffOption('weather-tracks'),skyOptions,shot,shotReplay,shotRender});
 const worldCommands = new Set(['inspect','probe','trace','field','scene','sim']);
 const CMD = {
   help() {
@@ -601,6 +616,7 @@ const CMD = {
         'ink-studio <command> <diorama id | lab/file.js> [options]',
         '',
         '  inspect <scene|run>         discover fields, actions, ports and entities',
+        '  environment inspect <scene|run> --at x,y,z [--t seconds] [--out report.json]   explain sky and local weather',
         '  probe <scene|run> --field name [--at x,y,z | --entity id] [--explain]  sample world state',
         '  inspect|validate|probe <scene|run> --select JSON   inspect, check, or sample a look target',
         '  probe <scene|run> --field look/sample [--select JSON | --entity ID] [--at x,y,z]   explain a baked splat',
@@ -636,6 +652,8 @@ const CMD = {
         '  render <id> --palette-constraints <file.json|off>   override target palettes and dither settings',
         '  render <id> --coverage-aware on|off   grade target contributions before compositing',
         '  render <id> --look-masks off   bypass masked look bindings',
+        '  render, clip, transition-review, sim render: --recipe <shot.json>   save reproducible review inputs',
+        '  shot replay <shot.json> --out <image.png> [--root project]   verify and recreate the review render',
         '  render <scene.json> --asset-pack <pack-or-bundle.json>   install look assets for this invocation',
         '  ramps <id> [--n 12]         the ramps it is shaded on, and which only get darker without turning; a turning one is offered from the same palette',
         '  values <id> [--t 1.5]       the value check: the picture sorted into dark, middle and light, and whether it reads in three tones',
@@ -682,6 +700,8 @@ const CMD = {
         '    [--bake clip.json] [--preview directory] [--at seconds|--frames count] [--direction index] [--out report.json]',
         '  retarget --profiles  show built-in role templates',
         '  passes <id> [--channels coverage,depth,normal,objectId,materialId,emission]  save art-pixel render pass previews',
+        '  passes <id> --channels environment --px1   export sky, fog transmittance, precipitation, reflections and foreground coverage',
+        '  render|sheet|clip <id> or sim render <file> --passes environment   write environment passes beside the export',
         '  render|sheet|clip <id> --look pack/look|file.json|off [--passes target,mask,materialId]',
         '    --look-select JSON --look-params JSON --look-strength N   override an asset binding for the preview',
         '  shimmer <id> [--mode orbit|zoom|pan|still --frames 24]  how many pixels flicker over a move, and a GIF of it',
@@ -722,6 +742,29 @@ const CMD = {
         return PNG.encode(image.w, image.h, image.rgb);
       }
     });
+  },
+  environment() {
+    if (pos[0] !== 'inspect' || pos.length !== 2)
+      die('Usage: ink-studio environment inspect <scene|run> --at x,y,z [--t seconds]');
+    if (typeof opt.at !== 'string' || opt.at.split(',').length !== 3 || opt.at.split(',').some(value=>!value.trim()) ||
+        !list('at').every(Number.isFinite)) die('--at needs three finite comma-separated coordinates');
+    const requested = num('t',0);
+    if (opt.t === true || !Number.isFinite(requested) || requested < 0) die('--t needs nonnegative scene seconds');
+    const snapshot = worldCLI().environmentSnapshot(pos[1]);
+    const world = snapshot ?? buildPreview(pos[1]);
+    const t = snapshot?.lookSnapshot?.time ?? requested;
+    if (!snapshot) pose(world,t);
+    const { inspectEnvironment } = require('./environment-inspector.js');
+    const report = inspectEnvironment(world,view({t,at:list('at')}));
+    if (snapshot && opt.t !== undefined) report.time.requested = requested;
+    const json = JSON.stringify(report,null,opt.json ? 0 : 2)+'\n';
+    if (opt.out === undefined) process.stdout.write(json);
+    else {
+      if (typeof opt.out !== 'string') die('--out needs a report filename');
+      const file = path.resolve(opt.out);
+      fs.mkdirSync(path.dirname(file),{recursive:true});
+      fs.writeFileSync(file,json);
+    }
   },
   look() {
     const io = require('./look.js');
@@ -764,8 +807,12 @@ const CMD = {
           resolution: num('res', undefined), method: opt.method, targetTriangles: num('triangles', undefined),
           duration: num('duration', undefined), fps: num('fps', undefined)
         };
+        if (opt.authoring !== undefined) {
+          if (typeof opt.authoring !== 'string') throw Error('--authoring needs a file path');
+          options.snapshot = JSON.parse(fs.readFileSync(path.resolve(opt.authoring), 'utf8'));
+        }
         if (box) options.bounds = { min: box.slice(0, 3), max: box.slice(3) };
-        source = authored.model(num('seed', authored.seed), options);
+        source = authored.model(num('seed', options.snapshot?.seed ?? authored.seed), options);
       }
       const result = require('../index.js').exportGlb(source, {
         out: opt.out, textureSize: num('texture-size', 1024), uvMargin: num('uv-margin', 0.008)
@@ -938,9 +985,15 @@ const CMD = {
       warn.push(unused.length + ' of ' + hexs.length + ' colours never show from the default view');
     console.log(warn.length ? 'warnings:\n  ' + warn.join('\n  ') : 'no warnings');
   },
+  shot() {
+    if (pos[0] !== 'replay') die('Use shot replay <recipe.json> --out <image.png>');
+    Shot.replay(pos[1],{out:opt.out,root:opt.root,entry:__filename});
+  },
   render() {
     const w = buildPreview(), diagnostics = previewPasses(),
       t = num('t', 0);
+    const suffixes = reviewSidecars(diagnostics);
+    shot?.destination(outputFile(w.id+'.png'),suffixes);
     pose(w, t);
     const t0 = Date.now(),
       im = R.render(w, view({ t, ...diagnostics?.settings }));
@@ -952,10 +1005,12 @@ const CMD = {
       const T = asciiFrame(im, w);
       const f = save(w.id + '.png', T), ft = textSidecar(f); fs.writeFileSync(ft, T.text + '\n'); console.log('wrote', ft); console.log('as text:', T.cols, 'x', T.rows, 'characters');
       diagnostics?.write(f, { times: [t] });
+      shot?.finish(f,{suffixes});
       return;
     }
     const output = save(w.id + '.png', R.upscale(im, opt.px1 ? 1 : im.px));
     diagnostics?.write(output, { times: [t] });
+    shot?.finish(output,{suffixes});
   },
   variants() {
     const seeds = list('seeds', [3, 7, 12, 19, 22, 27]), group = opt.group || 'silhouette';
@@ -1004,12 +1059,14 @@ const CMD = {
     if (opt.out !== undefined && (typeof opt.out !== 'string' || !/\.png$/i.test(opt.out)))
       die('Transition review output needs a PNG filename');
     const plan = opt.plan === undefined ? world.transitionReview : JSON.parse(fs.readFileSync(path.resolve(opt.plan), 'utf8'));
+    shot?.destination(outputFile(world.id+'-transition-review.png'),['.json']);
     const { transitionReview } = require('./transition-review.js');
     const { image, report } = transitionReview(world,{ plan, width:num('w',160), height:num('h',90), scale:num('scale',1), view:view(), pose });
     const file = save(world.id+'-transition-review.png',image);
     const reportFile = file.replace(/\.png$/i,'')+'.json';
     fs.writeFileSync(reportFile, JSON.stringify(report,null,2)+'\n');
     console.log('wrote',reportFile, '('+report.flagCount+' flags)');
+    shot?.finish(file,{fps:report.fps,suffixes:['.json']});
     if (opt['fail-on-flags'] && report.flagCount) process.exitCode = 2;
   },
   'silhouette-review'() {
@@ -1514,7 +1571,10 @@ const CMD = {
       from = num('from', 0),
       to = num('to', 6),
       n = Math.max(2, Math.round((to - from) * fps)),
-      frames = [], ts = [], camera = clipCamera(w);
+      frames = [], ts = [], camera = clipCamera(w),
+      f = outputFile(w.id+'-clip.png');
+    const suffixes = reviewSidecars(diagnostics);
+    shot?.destination(f,suffixes);
     for (let k = 0; k < n; k++) {
       const t = from + k / fps;
       pose(w, t);
@@ -1524,7 +1584,6 @@ const CMD = {
       ts.push(t);
       frames.push(displayFrame(im, w));
     }
-    const f = opt.out ? path.resolve(opt.out) : path.join(OUT, w.id + '-clip.png');
     fs.mkdirSync(path.dirname(f), { recursive: true });
     PNG.animate(f, frames, fps);
     diagnostics?.write(f, { times: ts, fps });
@@ -1533,6 +1592,7 @@ const CMD = {
       fs.writeFileSync(textFile, frames.map(frame => frame.text).join('\n\f\n') + '\n');
       console.log('wrote', textFile);
     }
+    shot?.finish(f,{fps,suffixes});
     console.log('wrote', f, frames.length, 'frames at', fps, 'a second (an animated PNG: a browser will play it)');
   },
   motion() {
@@ -2176,7 +2236,16 @@ const CMD = {
   }
 };
 async function run() {
-  if (worldCommands.has(cmd)) return worldCLI().execute(cmd,pos);
+  const mode = Shot.modeFor(cmd,pos);
+  if (opt.recipe !== undefined)
+    shot = Shot.createRecorder(opt.recipe,{mode,scene:pos[cmd === 'sim' ? 1 : 0],options:opt,root:CWD});
+  shotReplay = Shot.replayState(mode);
+  shotRender = shot?.render ?? shotReplay?.render;
+  if (worldCommands.has(cmd)) {
+    await worldCLI().execute(cmd,pos);
+    shotReplay?.verify();
+    return;
+  }
   if (/\.glb$/i.test(pos[0] || '') && opt.uv !== 'off') {
     try {
       importedAssets.set(path.resolve(pos[0]), await require('../index.js').readAsset(path.resolve(pos[0]), { size: 3 }));
@@ -2186,5 +2255,6 @@ async function run() {
     }
   }
   await (CMD[cmd] || (() => die('unknown command "' + cmd + '". try: ink-studio help')))();
+  shotReplay?.verify();
 }
 run().catch(error => { console.error(error.message); process.exitCode = 1; });

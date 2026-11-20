@@ -120,9 +120,10 @@
     const fields = new Map(), traces = new Map();
     const base = {world, states, signals, tick, time:view.time ?? tick * world.dt};
     const locations = new Map(), active = new Set();
-    let spatialIndex, aliases, appearance;
+    let spatialIndex, aliases, appearance, picker, renderScene;
+    const scene = () => renderScene ??= (visual ? visual() : W.visual({makeBuilder,makeSculpt},view,api));
     const transfers = () => W.transfers.bind(systems);
-    const look = () => appearance ??= W.lookQuery(visual ?? (() => W.visual({makeBuilder,makeSculpt},view,api)),base.time);
+    const look = () => appearance ??= W.lookQuery(scene,base.time);
     const physical = () => W.materials.catalog(world);
 
     function location(id) {
@@ -232,6 +233,10 @@
       }}
     },'read');
     add(traces,'world',{
+      contributions:{selector:true,run:({target,args})=>{
+        picker ??= K.procedural.contributions.create(scene(),{time:base.time});
+        return ok(picker.ray({...args,origin:args.origin??(Array.isArray(target)?target:target?.point)}));
+      }},
       cause:{selector:true,run:({target,args}) => view.causality ?
         W.causality.trace(view.causality,world,tick,args,target?.entity??args.entity) :
         missing('causal recording is not enabled for this snapshot')},
@@ -385,13 +390,19 @@
   function fromScene(w, time=0) {
     if(typeof w.query==='function'){
       const wrapped=w.query(w,time), appearance=W.lookQuery(()=>w,time);
+      let picker;
       const api = Object.freeze({...wrapped, select:appearance.select, inspectLook:options=>appearance.inspect(options,api),
         inspect(options){
           const result=wrapped.inspect(options);
           return {...result,fields:[...(result.fields??[]).filter(row=>!lookFields.some(field=>field.name===row.name)),...lookFields]};
         },
         probe(name,site,args) {return lookFields.some(field=>field.name===name) ?
-          freeze(appearance[name.slice(5)](site,args)) : wrapped.probe(name,site,args);}});
+          freeze(appearance[name.slice(5)](site,args)) : wrapped.probe(name,site,args);},
+        trace(name,site,args={}){
+          if(name!=='world/contributions'&&name!=='contributions')return wrapped.trace(name,site,args);
+          picker??=K.procedural.contributions.create(w,{time});
+          return ok(picker.ray({...args,origin:args.origin??(Array.isArray(site)?site:site?.point)}));
+        }});
       return api;
     }
     const descriptors={}, configs={};

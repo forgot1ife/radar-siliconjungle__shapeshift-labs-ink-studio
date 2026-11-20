@@ -734,6 +734,51 @@ clipped palette inputs separately. Swatch usage counts exact RGB
 matches in the saved color frame after blending and masks.
 `swatches.unused` lists available swatches with zero matches.
 
+## Per-object detail budgets
+
+Set `finish.look.detailBudgets` in a JSON scene or pass `{ detailBudgets }`
+as the third argument to `makeBuilder(seed, palette, options)` in JavaScript.
+The builder carries the rules into the finished scene. Each rule has a
+`select` using `object`, `entity`, or `tag`. The first matching rule
+supplies the settings for that subject. Omitted settings use the scene defaults.
+
+| Setting | Effect |
+| --- | --- |
+| `spacing` | Multiplies each selected solid's sampling spacing during the bake. The range is 0.25 to 4. Smaller values create more splats. Blended solids can contribute samples to a shared surface. |
+| `fine` | Enables or disables baked 4 × 4 surface color tiles for the subject. Enabling it needs a bake. Disabling it also suppresses existing tiles for matching splats in both renderers. |
+| `cleanup` | Enables or disables pixel cleanup on pixels owned by the subject, independently of scene-wide cleanup. |
+| `protectSilhouette` | Preserves the subject's visible outer edge and adjacent fringe during cleanup, while allowing cleanup inside the shape. |
+
+JSON solids use `id` for `entity`, `part` or `id` for `object`, and
+`tags` for tag matching. JavaScript solids use `objectId` and
+`target: { entity, tags }`. Native splats created directly can supply labels
+with `builder.describeSplats`. Template spacing is resolved on the source
+solids when the template is baked. Placed copies can have independent fine-tile
+and cleanup settings through `objectId` and `target`. Raw rendering skips
+scoped cleanup and fine-tile overrides.
+
+The browser renderer expands shared GPU instance groups when scoped cleanup
+or fine-tile rules need to resolve their individual splats. Spacing-only rules
+apply at bake time and can use the shared instance path.
+
+## Material-specific pixel styles
+
+Set `pixelStyle` on a JavaScript sculpt material or inside a JSON solid's
+`mat` object. Each setting is optional.
+
+| Setting | Effect |
+| --- | --- |
+| `edgeHardness` | Controls the coverage transition of solid splats. Use 0 for a broad soft edge and 1 for a sharp cutoff. |
+| `dither` | Selects `bayer`, `checker`, or `diagonal` interpolation between neighboring ramp shades on the art-pixel grid. `none` uses discrete ramp shades. |
+| `highlight` | Shapes the baked highlight as a `spot`, `streak`, or `rim`. An object with `shape` and `strength` sets a strength between 0 and 1. The default strength is 0.75. |
+| `shadeSteps` | Limits lighting to 2–64 evenly spaced steps in the material's ramp, up to the number of available swatches. |
+
+Highlights use the sculpt's light and view direction at bake time.
+Headless and WebGL renders apply the authored coverage and ramp dithering.
+Raw views keep the baked shading and bypass those two render-time controls.
+The separate scene-wide palette dither still applies at palette resolve.
+Explicit texture colors and fine tiles keep priority over ramp dithering.
+
 ## Shared look selectors
 
 Use `finish.look.targets` in a diorama, `visual.look.targets` on a world,
