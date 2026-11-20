@@ -145,11 +145,11 @@ function build(id, seedOverride) {
   globalThis.INK_DECAL_NEXT = fs.existsSync(decalFile)
     ? JSON.parse(fs.readFileSync(decalFile, 'utf8')).decals
     : (globalThis.INK_PAINT || {})[s.id] || null;
-  const t0 = Date.now(),
-    seed = seedOverride ?? (opt.seed === undefined ? s.seed : +opt.seed);
-  shot?.seed(seed);
+  const t0 = Date.now();
   const controls = opt.params ? JSON.parse(String(opt.params)) : undefined;
   const snapshot = opt.authoring ? JSON.parse(fs.readFileSync(path.resolve(opt.authoring), 'utf8')) : undefined;
+  const seed = seedOverride ?? (opt.seed === undefined ? snapshot?.seed ?? s.seed : +opt.seed);
+  shot?.seed(seed);
   const assemble = () => {
     const built = s.build(seed, { controls, snapshot });
     return (s.animate && s.animate(built, seed)) || built;
@@ -805,8 +805,12 @@ const CMD = {
           resolution: num('res', undefined), method: opt.method, targetTriangles: num('triangles', undefined),
           duration: num('duration', undefined), fps: num('fps', undefined)
         };
+        if (opt.authoring !== undefined) {
+          if (typeof opt.authoring !== 'string') throw Error('--authoring needs a file path');
+          options.snapshot = JSON.parse(fs.readFileSync(path.resolve(opt.authoring), 'utf8'));
+        }
         if (box) options.bounds = { min: box.slice(0, 3), max: box.slice(3) };
-        source = authored.model(num('seed', authored.seed), options);
+        source = authored.model(num('seed', options.snapshot?.seed ?? authored.seed), options);
       }
       const result = require('../index.js').exportGlb(source, {
         out: opt.out, textureSize: num('texture-size', 1024), uvMargin: num('uv-margin', 0.008)

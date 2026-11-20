@@ -795,6 +795,8 @@
         );
       return ball;
     };
+    S.stroke = (spec, mat, o) => K.drawing.solid(S, { ...spec, kind: 'stroke' }, mat, o);
+    S.fill = (spec, mat, o) => K.drawing.solid(S, { ...spec, kind: 'fill' }, mat, o);
     return S;
   };
   // outlines for S.extrude and S.revolve. Each gives a list of loops

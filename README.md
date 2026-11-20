@@ -20,6 +20,7 @@ The package includes geometry, materials, lighting, animation, character control
 - [Importing depth maps](#importing-depth-maps)
 - [Procedural worlds](#procedural-worlds)
 - [Retained authoring](#retained-authoring)
+- [Editable 3D drawing](#editable-3d-drawing)
 - [Headless world simulation](docs/headless-worlds.md)
 - [Rendering and command reference](#rendering-and-command-reference)
 - [View-dependent surface materials](#view-dependent-surface-materials)
@@ -634,6 +635,22 @@ S.bake();
 ```
 
 Use `ink-studio catalog <words>` to search catalog entries and follow their `where` fields to the implementation.
+
+## Editable 3D drawing
+
+`KIT.sculpt(S)` adds `S.stroke(mark, mat, options)` and `S.fill(mark, mat, options)`. JSON dioramas accept the same fields as `kind: "stroke"` and `kind: "fill"` solids. Marks bake into splats with the same materials, rig parts, and detail budgets as other solids.
+
+| Field | Behavior |
+| --- | --- |
+| `points` | Stroke control points as world XYZ triples or surface UV pairs. A single point makes a dab. |
+| `width`, `depth`, `axis` | Stroke diameter and thickness in world units. Defaults are width 0.2, depth equal to width, and world Z as the depth axis. On a carrier, depth follows the surface normal. |
+| `pressure`, `taper` | Pressure is one value per control point, and taper is a pair of start and end values. Both multiply the brush size, range from 0 to 1, and default to full size. |
+| `rings`, `frame`, `depth` | A fill takes an outside ring and optional holes. Free-space rings are 2D world-unit coordinates in a frame with `origin`, `u`, and `v`. The frame defaults to world XY. Depth defaults to 0.08 and is centered on the frame. |
+| `surface`, `offset` | A carrier uses the procedural plane or circular cylinder fields plus `kind`. Points and rings use chart UVs. A stroke straddles the offset and a fill extrudes outward from it. Use continuous U coordinates outside the unit interval to specify a winding across a closed cylinder's seam. |
+
+Use `KIT.diorama.scene(spec).authoring(seed)` to open a drawing document. Top-level marks with an `id` become entities with editable `parameters`. The document supports creating, updating, deleting, undoing, and redoing marks. Call `realize(document.snapshot())` to rebuild the scene, or save the snapshot for a later build. The CLI can inspect and edit those parameters through `authoring inspect`, `authoring preview`, and `authoring apply`. Pass `--authoring` to render or export a saved drawing revision.
+
+`createDrawingInput(element, { brush, project, preview, commit })` from `webgl.mjs` collects pointer samples and stylus pressure. The host supplies brush settings and maps each pointer event to the active drawing plane or surface chart. The optional preview callback receives the draft and clears when the gesture ends. The commit callback receives a stroke or a single closed fill ring ready for the drawing document. Set the drawing element's CSS `touch-action` to `none` when using touch and call `dispose()` when unmounting.
 
 ## Retained authoring
 
