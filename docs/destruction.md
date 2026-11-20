@@ -184,3 +184,5 @@ binding creation. External animation resumes when the caller redraws its pose.
 reservation. It is safe to call twice. Create another binding to use those
 splats again. Reset does not seek a host timeline or automatically replay
 stateful effects after a backward scrub; the caller owns replay and scheduling.
+
+Destruction and [surface materialisation](materialisation.md) share `K.geometryOwnership(stage)` reservations. Their active mask is also exposed as `geometryOwned`; `physicsOwned` remains the compatibility alias. Dispose a binding before handing its samples to the other system.

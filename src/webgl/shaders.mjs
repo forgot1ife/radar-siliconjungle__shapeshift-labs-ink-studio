@@ -242,7 +242,7 @@ ${environment ? '  v_envAxial = -cam.z;' : ''}
       if (steps > 0) { int ci = -1; for (int k = 0; k < 48; k++) { vec3 dc = abs(color - u_lpal[k]); if (max(dc.r, max(dc.g, dc.b)) < 0.004) { ci = k; break; } }
         if (ci >= 0) { if (!stat) steps = min(steps, 1);   /* (whoever carries the light is not washed out by it) */
           for (int k = 0; k < 3; k++) { if (k >= steps) break; ci = u_lup[ci]; } color = u_lpal[ci]; color0 = color; } } } }
-  bool plain = color == color0; float fogk = (flags & 2) == 0 && u_fogp.y > 0.0 && u_fogp.x < 1.0 ? smoothstep(u_fogp.x, 1.0, dn) * u_fogp.y : 0.0;   // (smoothstep from 1 to 1 is undefined: some cards give NaN, a black pixel)
+  bool plain = color == color0 && (kraw & 32768) == 0; float fogk = (flags & 2) == 0 && u_fogp.y > 0.0 && u_fogp.x < 1.0 ? smoothstep(u_fogp.x, 1.0, dn) * u_fogp.y : 0.0;   // (smoothstep from 1 to 1 is undefined: some cards give NaN, a black pixel)
   ${optical ? `
   ivec2 opticalUV = ivec2((a_index & 511) * 3, a_index >> 9);
   v_optical = texelFetch(u_optical, opticalUV, 0);
@@ -790,7 +790,7 @@ uniform highp isampler2D u_keyTex; uniform float u_keyOn;
 ivec3 keyCalc(ivec2 q);
 ivec3 keyAt(ivec2 q) { if (u_keyOn > 0.5) { ivec2 s = textureSize(u_keyTex, 0); if (q.x < 0 || q.y < 0 || q.x >= s.x || q.y >= s.y) return ivec3(-99999);
     ivec4 k = texelFetch(u_keyTex, q, 0); return k.w == 1 ? k.xyz : ivec3(-99999); } return keyCalc(q); }
-ivec3 keyCalc(ivec2 q) { g_q = q; int i = dabAt(q); if (i < 0) return ivec3(-99999); vec4 A = pixA(i); if (A.x < 0.5 || A.z < 0.5) return ivec3(-99999);
+ivec3 keyCalc(ivec2 q) { g_q = q; int i = dabAt(q); if (i < 0) return ivec3(-99999); if ((int(texelFetch(u_dat,ivec2(((i & 511)<<2)+2,i>>9),0).w) & 32768) != 0) return ivec3(-99999); vec4 A = pixA(i); if (A.x < 0.5 || A.z < 0.5) return ivec3(-99999);
   vec4 Bq = pixB(i); vec3 n = vec3(A.w, Bq.x, Bq.y); vec4 h = hitOf(q, i, n); return cellOf(int(A.z + 0.5) - 1, int(A.x + 0.5) - 1, h.xyz, n, unfoldN(Bq.zw, n), 0.5, h.w).key; }
 bool differs(ivec3 k, ivec3 q) { return q.x != -99999 && q != k; }
 const ivec2 N4o[4] = ivec2[4](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1)); bool g_pixed = false;
@@ -811,7 +811,8 @@ float materialLight(float t, int id, int rampSize, ivec2 p) {
 }
 ` : ''}
 vec3 pixColour(ivec2 p, vec3 c) {
-  int i = dabAt(p); if (i < 0) return c; vec4 A = pixA(i); if (A.x < 0.5) return c;
+  int i = dabAt(p); if (i < 0) return c;
+  if ((int(texelFetch(u_dat,ivec2(((i & 511)<<2)+2,i>>9),0).w) & 32768) != 0) return c; vec4 A = pixA(i); if (A.x < 0.5) return c;
   // (only where the dab is what shows: nothing soft in front of it, no light carried onto it)
   vec4 t1 = texelFetch(u_dat, ivec2(((i & 511) << 2) + 1, i >> 9), 0); float pk = t1.w;
   vec3 baked = vec3(mod(pk, 256.0), mod(floor(pk / 256.0), 256.0), floor(pk / 65536.0)) / 255.0;
@@ -1172,6 +1173,7 @@ void main() {
   int k = int(t2.x + 0.5); vec4 E0 = sprT(0, k), E1 = sprT(1, k);
   if (t1.w >= u_keep * E1.w) return;
   int j = int(t0.w + 0.5); vec4 m2 = texelFetch(u_dat, ivec2(((j & 511) << 2) + 2, j >> 9), 0), m3 = texelFetch(u_dat, ivec2(((j & 511) << 2) + 3, j >> 9), 0);
+  if ((int(m2.w) & 32768) != 0) return;
   ${relighting ? 'v_relightOwner = j;' : ''}
   vec3 pos = t0.xyz;
   if (int(m2.w + 0.5) % 16 == 11) { pos.x += m3.z * sin(u_time * m3.y + pos.y * 1.3 + pos.z * 0.9 + m3.x); pos.y += m3.z * 0.6 * sin(u_time * m3.y * 1.3 + pos.x * 1.1 + m3.x); }

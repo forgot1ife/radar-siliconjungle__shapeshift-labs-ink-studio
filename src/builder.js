@@ -447,6 +447,7 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
       }
       // kind, plus flags: 16 = leave out of outlines, 32 = glows (ignores haze and relighting)
       // 64 = behind everything, 256 = glass, 8192 = responds to horizontal airflow, 2048 = drawn as text where a page offers it
+      // 32768 bypasses rest-space brushes for world-space surface fragments.
       // (K.ascii), with its own set in 4096 and 16384 (as: 1 ascii, 2 symbols, 3 braille; as: true, the page's)
       const asSet = an.as && an.as !== true ? Math.max(0, Math.min(3, an.as | 0)) : 0;
       data[o + 11] = (an.k || 0) + (an.nd ? 16 : 0) + (an.em ? 32 : 0) + (an.bk ? 64 : 0) + (an.gl ? 256 : 0) + (an.wind ? 8192 : 0)

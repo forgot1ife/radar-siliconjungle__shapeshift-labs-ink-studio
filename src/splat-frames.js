@@ -18,11 +18,12 @@ const SplatFrames = (() => {
       const packed = Math.round(data[q + 11]), kind = packed % 16;
       const part = rig?.free?.[i] ? 0 : rig?.bid[i] || 0;
       const restKind = Math.round(rest?.[q + 11] || 0) % 16;
-      const skinned = bones && (restKind === 12 || restKind === 13);
+      const skinned = bones && (kind === 12 || kind === 13 || !(packed & 32768) && (restKind === 12 || restKind === 13));
+      const skinRows = kind === 12 || kind === 13 ? data : rest;
       const matrix = part ? rig.M : skinned ? bones : null;
-      const bone = part || (skinned ? rest[q + 12] : 0);
-      const blend = skinned ? rest[q + 14] : 0;
-      const second = blend ? rest[q + 13] : 0;
+      const bone = part || (skinned ? skinRows[q + 12] : 0);
+      const blend = skinned ? skinRows[q + 14] : 0;
+      const second = blend ? skinRows[q + 13] : 0;
       if (matrix) {
         const key = [part ? 'rig' : 'bones', bone, second, blend].join(',');
         if (!matrices.has(key)) {
@@ -65,22 +66,48 @@ const SplatFrames = (() => {
             z *= scale;
           } else if (kind === 10) y += rg * Math.min(1, Math.hypot(x, z) * .22) * Math.sin(time * sp + Math.hypot(x, z) * ex);
           else if (kind === 11) {
-            x += rg * Math.sin(time * sp + ph + z * 1.3);
-            y += rg * .6 * Math.sin(time * sp + ph + x * 1.1);
+            x += rg * Math.sin(time * sp + y * 1.3 + z * .9 + ph);
+            y += rg * .6 * Math.sin(time * sp * 1.3 + x * 1.1 + ph);
           } else if (kind === 14) {
             const spread = rg * Math.max(0, y - ex);
             x += spread * Math.sin(time * sp + ph);
-            z += spread * .6 * Math.sin(time * sp * .73 + ph);
+            z += spread * .6 * Math.sin(time * sp * .73 + ph * 1.7);
           } else if ((kind === 12 || kind === 13) && bones) {
             const component = (bone, axis) => bones[bone * 12 + axis * 3] * x +
               bones[bone * 12 + axis * 3 + 1] * y + bones[bone * 12 + axis * 3 + 2] * z + bones[bone * 12 + 9 + axis];
             [x, y, z] = [0, 1, 2].map(axis => component(ph, axis) * (1 - rg) + (rg ? component(sp, axis) * rg : 0));
             if (kind === 13) {
-              x += .022 * Math.sin(time * 1.9 + y * 1.3 + z * .9);
-              z += .0132 * Math.sin(time * 1.1 + x * 1.3);
+              x += .022 * Math.sin(time * 1.9 + y * 1.3 + z * .9 + 1);
+              y += .0132 * Math.sin(time * 2.47 + x * 1.1 + 1);
             }
           }
           return [x, y, z];
+        },
+        opacity() {
+          let alpha=data[q+3];
+          const ph=data[q+12],sp=data[q+13],rg=data[q+14];
+          const smooth=(a,b,x)=>{x=Math.max(0,Math.min(1,(x-a)/(b-a)));return x*x*(3-2*x);};
+          if(kind===1)alpha*=.62+.38*Math.sin(time*sp+ph);
+          else if(kind===7)alpha*=.82+.18*Math.sin(time*sp+ph);
+          else if((kind===2||kind===3||kind===15)&&rg){
+            const tick=time*sp/rg+ph,u=tick-Math.floor(tick);
+            alpha*=kind===2?1-u*u:kind===3?(1-u)*smooth(0,.1,u):smooth(0,.05,u)*(1-smooth(.92,1,u));
+          }
+          return alpha;
+        },
+        covariance(out = new Float64Array(6)) {
+          let A=null,scale=1;
+          if(kind===5)A=[c,0,s,0,1,0,-s,0,c];
+          else if((kind===12||kind===13)&&bones)A=bones.subarray(data[q+12]*12,data[q+12]*12+9);
+          if((kind===2||kind===3)&&data[q+14]){
+            const tick=time*data[q+13]/data[q+14]+data[q+12],phase=tick-Math.floor(tick);
+            scale=kind===3?.6+phase*data[q+15]:1+phase*data[q+15];
+          }
+          const C=[data[q+4],data[q+5],data[q+6],data[q+5],data[q+8],data[q+9],data[q+6],data[q+9],data[q+10]];
+          const result=A?M.mul(M.mul(A,C),M.tr(A)):C,k=scale*scale;
+          out[0]=result[0]*k;out[1]=result[1]*k;out[2]=result[2]*k;
+          out[3]=result[4]*k;out[4]=result[5]*k;out[5]=result[8]*k;
+          return out;
         },
         localOffset(x, y, z) {
           const offset = [c * x - s * z, y, c * z + s * x];

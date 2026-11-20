@@ -792,11 +792,15 @@ function renderFrame(world, o, preparedPalettes) {
   }
   let drawn = 0;
   // colour per pixel (look.pixel): which dab is in front at each pixel, to be coloured afterwards from where the pixel lands on it
-  const PIX =
+  let PIX =
       (o.pixel || (world.look && world.look.pixel)) && !o.raw && world.pix && world.pix.length >= baseCount * 8
         ? world.pix
-        : null,
-    win = PIX ? new Int32Array(W * H).fill(-1) : null;
+        : null;
+  if(PIX){
+    let copy=false;
+    for(let i=0;i<baseCount;i++)if(Math.round(d[i*16+11])&32768){if(!copy){PIX=PIX.slice();copy=true;}PIX[i*8]=0;}
+  }
+  const win = PIX ? new Int32Array(W * H).fill(-1) : null;
   const materialStyles = o.raw ? null : world.materialPixelStyles;
   const artScale = o.artGridScale || 1;
   // Keep later translucent coats when the opaque receiver is recoloured per pixel.
@@ -974,7 +978,7 @@ function renderFrame(world, o, preparedPalettes) {
       pk = d[q + 7];
     const fieldParticle = i >= baseCount;
     const jStyle = i * 4, edgeStyle = materialStyles?.[jStyle] || 0;
-    const styleKey = materialStyles?.[jStyle + 1] || 0;
+    const styleKey = (kraw & 32768) ? 0 : materialStyles?.[jStyle + 1] || 0;
     const staged = stages ? stages.at(fieldParticle ? -1 : i) : null;
     lookPass?.begin();
     const materialSample = staged?.material?.some(rule => rule.mask) ? stageSample(i, [x, y, z]) : undefined;
@@ -1123,7 +1127,7 @@ function renderFrame(world, o, preparedPalettes) {
       i01 = 0,
       i10 = 0,
       i11 = 0;
-    if (!liveNormal && FN && FN[i * 12 + 11] && (budgetAt?.(i)?.fine ?? defaultFine) &&
+    if (!(kraw & 32768) && !liveNormal && FN && FN[i * 12 + 11] && (budgetAt?.(i)?.fine ?? defaultFine) &&
         FN[i * 12 + 7] === pk && !add[i] && kind !== 5 && kind !== 12 && kind !== 13) {
       const f = i * 12,
         sc = SC[i],
@@ -1651,8 +1655,9 @@ function renderFrame(world, o, preparedPalettes) {
         const q0 = a * 12,
           ed = EP[A[q0 + 8]];
         if (!ed || A[q0 + 7] >= keep * (ed.share === undefined ? 0.7 : ed.share)) continue;
-        const i = A[q0 + 3],
-          ax = A[q0] + X[i] - d[i * 16],
+        const i = A[q0 + 3];
+        if(Math.round(d[i*16+11])&32768)continue;
+        const ax = A[q0] + X[i] - d[i * 16],
           ay = A[q0 + 1] + Y[i] - d[i * 16 + 1],
           az = A[q0 + 2] + Z[i] - d[i * 16 + 2],
           nx = A[q0 + 4],

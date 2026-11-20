@@ -809,9 +809,10 @@
     const alphaA = Float32Array.from(a.ids, i => base[i * 16 + 3]),
       alphaB = Float32Array.from(b.ids, i => base[i * 16 + 3]);
     // b starts hidden
-    for (const i of b.ids) D[i * 16 + 3] = 0;
+    for (const i of b.ids) if(!st.physicsOwned?.[i])D[i * 16 + 3] = 0;
     const place = (i, j, s, alpha) => {
       // dab i (made where it is) travels toward where dab j was made, s of the way
+      if(st.physicsOwned?.[i])return;
       const o2 = i * 16,
         sw = o.swirl ? o.swirl * Math.sin(Math.PI * s) : 0;
       const tx = transport ? j[0] : base[j * 16],

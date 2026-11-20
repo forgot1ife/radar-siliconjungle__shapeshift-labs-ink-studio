@@ -630,6 +630,7 @@
               c11 = rest[r + 6],
               c12 = rest[r + 7],
               c22 = rest[r + 8];
+            if(W.anim?.physicsOwned?.[ids[j]])continue;
             D[q] = a * x + b * y + c * z + Mx[k + 9];
             D[q + 1] = d * x + e * y + f * z + Mx[k + 10];
             D[q + 2] = g * x + h * y + i * z + Mx[k + 11];
@@ -671,8 +672,10 @@
       const out = W.posedBuf && W.posedBuf.length === D.length ? W.posedBuf : (W.posedBuf = new Float32Array(D.length));
       out.set(D);
       for (let j = 0; j < bd.length; j++) {
-        const o = bd[j] * 16,
-          k = D[o + 12] * 12,
+        const o = bd[j] * 16;
+        const kind=Math.round(D[o+11])%16;
+        if(kind!==12&&kind!==13)continue;
+        const k = D[o + 12] * 12,
           x = D[o],
           y = D[o + 1],
           z = D[o + 2],

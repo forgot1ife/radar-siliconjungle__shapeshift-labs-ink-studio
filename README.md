@@ -967,3 +967,5 @@ The package is currently version `0.1.0` and marked private.
 ## License
 
 Licensed under the [MIT License](LICENSE).
+
+Surface fragments can detach, follow shared wind, gather into live forms, and rejoin animated parts. See [surface materialisation](docs/materialisation.md) and the [interactive matter relay](examples/materialisation.html).

@@ -92,6 +92,7 @@
     if (!(st?.D instanceof Float32Array) || !(st.base instanceof Float32Array) || !Number.isSafeInteger(st.N) || st.D.length < st.N * 16 || typeof st.touch !== 'function')
       throw new TypeError('Destruction needs a splat stage');
     const occupied = bindings.get(st) ?? new Map();
+    const ownership=K.geometryOwnership(st),token={};
     const { D } = st, maxPieces = bounded(options.maxPieces ?? 128, 2048, 'piece');
     const maxProjectiles = bounded(options.maxProjectiles ?? 64, 1024, 'projectile');
     const maxEvents = bounded(options.maxEvents ?? 1024, 100000, 'event');
@@ -136,7 +137,7 @@
       if (!ids.length || owner.size + ids.length > maxSplats) throw new RangeError('Empty group or destruction splat budget exceeded');
       const unique = new Set();
       for (const id of ids) {
-        if (!Number.isSafeInteger(id) || id < 0 || id >= st.N || unique.has(id) || owner.has(id) || occupied.has(id) || st.physicsOwned?.[id]) throw new RangeError('Structural splat ownership must be distinct and in range');
+        if (!Number.isSafeInteger(id) || id < 0 || id >= st.N || unique.has(id) || owner.has(id) || occupied.has(id) || ownership.owner(id)!==undefined || st.physicsOwned?.[id]) throw new RangeError('Structural splat ownership must be distinct and in range');
         unique.add(id);
         const q = id * 16;
         if (!Array.from(D.subarray(q, q + 16)).every(Number.isFinite)) throw new RangeError('Structural geometry must be finite');
@@ -282,7 +283,7 @@
       const result = [];
       for (const plan of plans) {
         const g = plan.g; g.intact = false; g.damage = Math.max(1, g.damage);
-        for (const id of g.ids) st.physicsOwned[id] = 1;
+        ownership.activate(token,g.ids);
         for (const piece of plan.pieces) {
           const body = plan.mode === 'rubble' ? rubble.spawn(piece.ids, piece) : debris.spawn(piece.ids, { ...piece, life: plan.life });
           body.group = g.id; body.mass = piece.mass;
@@ -419,7 +420,8 @@
       for (const shot of projectiles) shot.active = false;
       projectiles.length = 0; events.length = 0; accumulator = 0; clock = 0; serial = 0;
       for (const g of groups.values()) {
-        g.ids.forEach((id, k) => { D.set(g.saved.subarray(k * 16, k * 16 + 16), id * 16); st.base[id * 16 + 3] = g.appearance[k * 2]; st.base[id * 16 + 7] = g.appearance[k * 2 + 1]; if (st.rig) st.rig.free[id] = g.free[k]; st.physicsOwned[id] = 0; st.touch(id); });
+        ownership.deactivate(token,g.ids);
+        g.ids.forEach((id, k) => { D.set(g.saved.subarray(k * 16, k * 16 + 16), id * 16); st.base[id * 16 + 3] = g.appearance[k * 2]; st.base[id * 16 + 7] = g.appearance[k * 2 + 1]; if (st.rig) st.rig.free[id] = g.free[k]; st.touch(id); });
         g.intact = true; g.damage = 0; g.v = [0, 0, 0]; g.w = [0, 0, 0]; g.sampled = false;
       }
       for (const edge of links) edge.active = true;
@@ -431,7 +433,7 @@
         center: g.center.slice(), velocity: g.v.slice(), angularVelocity: g.w.slice(),
         pieces: rubble.bodies.filter(b => b.group === id).length + debris.chunks.filter(b => b.group === id).length };
     }
-    st.physicsOwned ??= new Uint8Array(st.N);
+    ownership.reserve(token,[...owner.keys()]);
     for (const id of owner.keys()) occupied.set(id, true);
     bindings.set(st, occupied);
     const api = { release, sever, impact, sweep, launch, sync, update, reset, inspect,
@@ -439,7 +441,7 @@
       paint: (id, color) => { if (!disposed) debris.paint(id, color); },
       dispose() {
         if (disposed) return;
-        reset(); disposed = true;
+        reset(); ownership.release(token); disposed = true;
         for (const id of owner.keys()) occupied.delete(id);
         for (const list of [st.systems, st.painters]) { const index = list.indexOf(api); if (index >= 0) list.splice(index, 1); }
       },
