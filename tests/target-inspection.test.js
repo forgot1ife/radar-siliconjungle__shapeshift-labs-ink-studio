@@ -72,3 +72,16 @@ test('transparent exports gain annotation coverage without changing the original
  const out=K.inspection.compose(frame,p,s,()=>1);assert(out.alpha.some(a=>a>0));assert(frame.alpha.every(a=>a===0));
  const hidden=K.inspection.compose(frame,p,s,()=>0);assert(hidden.alpha.every(a=>a===0));
 });
+test('invalid live activation fails clearly and Unicode labels clip by glyph instead of UTF-16 code unit',()=>{
+ assert.throws(()=>K.inspection.plan(settings([target({active:()=>0})]),context),/boolean/);
+ const p=K.inspection.plan(settings([target({label:'😀'.repeat(90)})]),context);assert.equal([...p.targets[0].text[0]].length,80);
+});
+test('auxiliary reflection captures do not replace the main inspection camera',()=>{
+ const B=makeBuilder(3,[0x07131d,0x326277,0xffdba0]),S=K.sculpt(core.load().makeSculpt(B));
+ const water=K.reflection.material({r:[1],a:.8},'pool',{f0:.8});
+ S.box([0,-.1,0],[1.8,.1,1.8],water,{res:.18});S.ball([0,1,0],[.3,.3,.3],{r:[2]},{res:.1});S.bake();
+ const W=B.finish();W.cam={target:[0,.5,0],dist:7,yaw:.1,pitch:.5};W.radius=4;W.look={pixelSize:1};W.reflections=[K.reflection.plane({id:'pool',at:[0,0,0]})];
+ let view;const inspection={targets:[target({at:[0,1,0],halfSize:[.3,.3,.3],ripple:false,label:({camera})=>{view=Array.from(camera.view);return 'RELAY';}})]};
+ const frame=core.render(W,{w:100,h:80,px:1,inspection,renderStats:true});const reflected=view;
+ core.render(W,{w:100,h:80,px:1,inspection,reflections:false});assert.deepEqual(reflected,view);assert(frame.renderStats.rasterPasses>1);
+});

@@ -118,7 +118,9 @@ const TargetInspection = (() => {
     let magnifiers = 0;
     for (const target of ordered) {
       const reject = reason => diagnostics.push({ id: target.id, reason });
-      if (value(target.active ?? true, ctx) === false) {
+      const active = value(target.active ?? true, ctx);
+      if (typeof active !== 'boolean') throw new TypeError('Inspection active must resolve to a boolean');
+      if (!active) {
         reject('inactive');
         continue;
       }
@@ -207,7 +209,7 @@ const TargetInspection = (() => {
         }
       }
       const text = [value(target.label ?? target.id, ctx), value(target.detail ?? '', ctx)].map(v =>
-        String(v ?? '').slice(0, 80)
+        [...String(v ?? '')].slice(0, 80).join('')
       );
       const labelSize = [
         Math.min(80, Math.max(...text.map(v => [...v].length))) * 6 * st.scale + 8,

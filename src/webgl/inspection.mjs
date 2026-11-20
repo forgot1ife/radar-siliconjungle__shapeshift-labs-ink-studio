@@ -70,7 +70,10 @@ uniform sampler2D u_scene;
 uniform vec2 u_size;
 out vec4 color;
 void main(){color=texture(u_scene,gl_FragCoord.xy/u_size);}`;
-export function createInspection(gl, { api, program, resources, target, textureUnit, fullscreen, maxSize }) {
+export function createInspection(
+  gl,
+  { api, program, resources, target, textureUnit, fullscreen, maxSize, viewportLimit }
+) {
   const base = target(),
     visibility = target(),
     depthCopy = target(),
@@ -86,7 +89,8 @@ export function createInspection(gl, { api, program, resources, target, textureU
     gl.texImage2D(gl.TEXTURE_2D, 0, format === gl.RED ? gl.R8 : gl.RGBA8, w, h, 0, format, gl.UNSIGNED_BYTE, data);
   };
   return function inspect(world, frame, settings, w, h, output, present) {
-    if (w > maxSize || h > maxSize) throw new RangeError('Inspection frame exceeds texture limit');
+    if (w > Math.min(maxSize, viewportLimit[0]) || h > Math.min(maxSize, viewportLimit[1]))
+      throw new RangeError('Inspection frame exceeds texture limit');
     base.resize(w, h);
     let capture;
     // Copy immediately: reflections/portals can reuse the renderer's geometry targets later.

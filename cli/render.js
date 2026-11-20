@@ -394,7 +394,7 @@ function renderFrame(world, o, preparedPalettes) {
     asp = W / H,
     baseCount = world.count,
     R = world.radius;
-  o[inspectionCamera]?.({view: V, tangent: ortho ? oh : tangent, aspect: asp, ortho,
+  if (!o.reflectionPlane) o[inspectionCamera]?.({view: V, tangent: ortho ? oh : tangent, aspect: asp, ortho,
     clipNear: near, clipFar: 400, depthRange: [eyeD - R, eyeD + R],
     eye: [-(V[0]*V[12]+V[1]*V[13]+V[2]*V[14]), -(V[4]*V[12]+V[5]*V[13]+V[6]*V[14]), -(V[8]*V[12]+V[9]*V[13]+V[10]*V[14])]});
   const hex = i => {

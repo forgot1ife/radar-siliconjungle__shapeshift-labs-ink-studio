@@ -1119,7 +1119,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       if (!api) throw new Error('Target inspection needs the Ink Studio KIT');
       const settings = api.prepare(definition);
       if (!settings.targets.length) return presentGraph(world, frame, width, height, output);
-      inspection ??= createInspection(gl, { api, program, resources, target, textureUnit, fullscreen, maxSize });
+      inspection ??= createInspection(gl, { api, program, resources, target, textureUnit, fullscreen, maxSize, viewportLimit });
       inspection(world, frame, settings, width, height, output, presentGraph);
     }
     return { render: presentFrame, dispose() { surfacePipeline?.dispose(); pipeline.dispose(); resources.dispose(); } };

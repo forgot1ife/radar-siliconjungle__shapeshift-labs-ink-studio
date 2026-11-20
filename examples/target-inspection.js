@@ -99,7 +99,7 @@ function inspectionScene({ KIT: K, makeBuilder, makeSculpt }) {
     光: ['..#..', '#.#.#', '.###.', '..#..', '.###.', '#.#.#', '#..##'],
     波: ['.#.##', '#..#.', '.#.##', '#..#.', '.#.##', '#.#..', '#..##']
   };
-  const options = { enabled: true, magnify: true, hide: false, occlusion: true };
+  const options = { enabled: true, magnify: true, hide: false, occlusion: true, focus: 'CORE' };
   let clock = 0;
   const targets = [
     {
@@ -120,6 +120,7 @@ function inspectionScene({ KIT: K, makeBuilder, makeSculpt }) {
       halfSize: [0.44, 0.72, 0.36],
       label: '02 / 日 / ARCHIVE',
       detail: 'MEMORY  /  064',
+      magnify: { rect: [0.74, 0.07, 0.22, 0.25], zoom: 2.6 },
       style: { color: '#89e2d4' },
       ripple: { chars: '日0123:+', period: 5.1, radius: 72, speed: 45 }
     },
@@ -129,6 +130,7 @@ function inspectionScene({ KIT: K, makeBuilder, makeSculpt }) {
       halfSize: [0.45, 0.75, 0.36],
       label: '03 / 波 / PROBE',
       detail: 'UPLINK  /  ACTIVE',
+      magnify: { rect: [0.74, 0.07, 0.22, 0.25], zoom: 2.6 },
       style: { color: '#ffd19a' },
       ripple: { chars: '波012347:+', period: 4.7, radius: 83, speed: 53 }
     }
