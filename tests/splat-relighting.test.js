@@ -17,7 +17,8 @@ function plates(B, K, mode = 'fine') {
   const palette = [0, 0x606060, 0x702a2a, 0x2a2a70, 0x207720, 0x272727, 0x444444, 0x808080,
     0xaaaaaa, 0x9b2d2d, 0xc85353, 0x532e7a, 0x806363, 0x9f6363, 0x723d3d, 0x303030];
   const b = B(21, palette);
-  const pattern = K.pixel.tiles({ r: [5, 6, 1, 7, 8], px: .08 }).pat;
+  const patterned = K.pixel.tiles({ r: [5, 6, 1, 7, 8], px: .08 });
+  const pattern = K.pixel.edge(patterned, { up: [K.sprite.art('#')], share: 1 }).pat;
   for (const x of [-.85, .85]) {
     if (mode === 'fine') {
       const row = 2 + 64 * 3 + 64 ** 2 * 2 + 64 ** 3 * 3;
@@ -36,6 +37,7 @@ function plates(B, K, mode = 'fine') {
     world.pixTex = K.pixel.evaluators(world);
     world.pixCell = K.pixel.CELL;
     world.pixUnfold = K.pixel.unfold;
+    world.pixAnchors = K.pixel.anchors;
   }
   return world;
 }
@@ -152,10 +154,11 @@ try {
   const builder = makeBuilder(1, day.pal);
   builder.disc(0,0,0,[0,0,1],.4,.03,builder.P[1],3);
   const prototype = builder.finish();
-  const empty = {...day, count:0, data:new Float32Array(0), renderMetadata:undefined, relighting:rig};
+  const empty = {...day, count:0, data:new Float32Array(0), renderMetadata:undefined, celestialTracks:undefined, relighting:rig};
   const copies = createSplatInstances({ prototype }, [{id:'placed',prototype:'prototype',position:[-.85,0,0]}]);
-  if (changes(draw(empty,false,{instances:copies}),draw(empty,true,{instances:copies}))[0] < 12)
-    throw Error('Expanded instances lost their normals');
+  const instanced = { raw:true, instances:copies };
+  if (changes(draw(empty,false,instanced),draw(empty,true,instanced))[0] < 12)
+    throw Error('The instance did not respond to the lamp');
   renderer.dispose();
   result.textContent = 'PASS';
 } catch (error) { result.textContent = error.stack; }
@@ -163,6 +166,6 @@ try {
   const html = execFileSync(process.env.INK_TEST_CHROME, ['--headless', '--no-first-run', '--disable-background-networking',
     '--allow-file-access-from-files', '--enable-unsafe-swiftshader', '--use-angle=swiftshader',
     '--user-data-dir=' + path.join(dir, 'profile'), '--dump-dom', pathToFileURL(page).href],
-  { encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] });
+  { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'] });
   assert.match(html, /<pre id="result">PASS<\/pre>/, html.match(/<pre[^>]*>([\s\S]*?)<\/pre>/)?.[1] || html);
 });

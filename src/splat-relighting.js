@@ -31,7 +31,8 @@ const SplatRelighting = (() => {
     fields(raw, ['at', 'range', 'color', 'intensity', 'enabled', 'select'], 'point light');
     const { at, range: reach = 4, color, intensity = 1, enabled = true, select } = raw;
     if (!vector(at) || typeof enabled !== 'boolean') throw new TypeError('A point light needs XYZ and a boolean enabled flag');
-    return { at, reach: range(reach, .001, 1024, 'Point light range'), color: tint(color),
+    range(reach, .001, 1024, 'Point light range');
+    return { at, reach, reach2: reach * reach, color: tint(color),
       intensity: range(intensity, 0, 8, 'Point light intensity'), enabled,
       select: select === undefined ? undefined : Target.prepare(select) };
   }
@@ -114,8 +115,9 @@ const SplatRelighting = (() => {
       for (const light of lamps) {
         if (light.select && !Target.matches(light.select, target)) continue;
         const dx = light.at[0] - x, dy = light.at[1] - y, dz = light.at[2] - z;
-        const distance = Math.hypot(dx, dy, dz);
-        if (distance >= light.reach) continue;
+        const distance2 = dx * dx + dy * dy + dz * dz;
+        if (distance2 >= light.reach2) continue;
+        const distance = Math.sqrt(distance2);
         const facing = distance < 1e-7 ? 1 : Math.max(0, (normal[0] * dx + normal[1] * dy + normal[2] * dz) / distance);
         const gain = (1 - distance / light.reach) ** 2 * facing * light.intensity;
         for (let k = 0; k < 3; k++) local[k] += gain * light.color[k];

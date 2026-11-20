@@ -204,7 +204,7 @@ function stampInstancePixelStyle(out, row, start) {
 function stampInstanceNormals(out, { asset, authored: { rotation } }, start) {
   if (!out || !asset.normals) return;
   for (let i = 0, j = start * 3; i + 2 < asset.normals.length; i += 3, j += 3) {
-    const [x, y, z] = asset.normals.subarray(i, i + 3);
+    const x = asset.normals[i], y = asset.normals[i + 1], z = asset.normals[i + 2];
     for (let axis = 0; axis < 3; axis++) {
       const k = axis * 3;
       out[j + axis] = rotation[k] * x + rotation[k + 1] * y + rotation[k + 2] * z;
