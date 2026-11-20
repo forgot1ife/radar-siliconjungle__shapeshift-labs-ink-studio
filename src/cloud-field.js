@@ -233,8 +233,8 @@ const CloudField = (() => {
       };
       function shapedView(source) {
         if (!edge) return source;
-        return { ...source, trace(origin, ray, start, stop, out) {
-          const sample = source.trace(origin,ray,start,stop,out), amount = 1-sample[3];
+        return { ...source, trace(origin, ray, start, stop, out, counters) {
+          const sample = source.trace(origin,ray,start,stop,out,counters), amount = 1-sample[3];
           if (amount > 0) art.remapOpacity(sample,a=>opacity*edge(Math.min(1,a/opacity)));
           return sample;
         } };
@@ -248,7 +248,7 @@ const CloudField = (() => {
       } : null;
       const reflections=(useDetail || geometry) && rendered ? shapedView(asset.view([0,0,0],null,'volume',shift,shade,opacity,cutouts)) : null;
       const reflectionSample=[0,0,0,1];
-      function paintVolume(origin, ray, out, flashAt, signal) {
+      function paintVolume(origin, ray, out, flashAt, signal, counters) {
         const range = [0,horizon];
         if (!clip(range,origin[1],ray[1],low,high) || (!repeat &&
             (!clip(range,origin[0],ray[0],minX+dx,maxX+dx) || !clip(range,origin[2],ray[2],minZ+dz,maxZ+dz)))) return out;
@@ -262,6 +262,7 @@ const CloudField = (() => {
         for (let i=0; i<steps && through>.005; i++) {
           const t=range[0]+(i+.5)*step;
           const x=origin[0]+t*ray[0], y=origin[1]+t*ray[1], z=origin[2]+t*ray[2];
+          if (counters) counters.cloudSamples++;
           const density=sample(cells,x,z);
           if (density<=0) continue;
           const h=(y-low)/thickness, top=topOf(density), cap=top-.12;
@@ -285,20 +286,22 @@ const CloudField = (() => {
         for (let c=0;c<3;c++) out[c]=out[c]*(1-amount)+gain*lightSum[c];
         return out;
       }
-      function paint(origin, direction, out, light, signal) {
+      function paint(origin, direction, out, light, signal, counters) {
         if (signal) signal[0] = 0;
         if (!rendered) return out;
         if (reflections) {
-          reflections.trace(origin,direction,0,Infinity,reflectionSample);
+          reflections.trace(origin,direction,0,Infinity,reflectionSample,counters);
           if (signal) signal[0] = 1-reflectionSample[3];
           for (let c=0;c<3;c++) out[c]=reflectionSample[c]+out[c]*reflectionSample[3];
           return out;
         }
-        if (thickness>0) return paintVolume(origin,direction,out,light,signal);
+        if (counters) counters.cloudTraces++;
+        if (thickness>0) return paintVolume(origin,direction,out,light,signal,counters);
         if (Math.abs(direction[1]) < 1e-8) return out;
         const distance=(height-origin[1])/direction[1];
         if (distance <= 0) return out;
         const x = origin[0] + distance * direction[0], z = origin[2] + distance * direction[2];
+        if (counters) counters.cloudSamples++;
         const coverage = sample(cells,x,z), amount = opacity*(edge ? edge(coverage) : coverage)*(cutouts?.gain(x,height,z)??1);
         if (!(amount>0)) return out;
         if (signal) signal[0] = amount;

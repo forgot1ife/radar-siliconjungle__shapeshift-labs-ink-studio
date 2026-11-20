@@ -2,6 +2,7 @@
 // k0-math: vectors, 3x3 matrices, easing, keyed values, springs.
 const KIT = {};
 KIT.detailBudgets = DetailBudgets;
+KIT.shadowArt = ShadowArt;
 (function (K) {
   const V = (K.V = {
     add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]],

@@ -75,6 +75,12 @@ const VolumeField = (() => {
         allocated.add(key(i, j, k));
     }
     const value = (x, y, z) => data.get(key(Math.floor(x / brick), Math.floor(y / brick), Math.floor(z / brick)))?.[index(x, y, z)] || 0;
+    function exit(axis, block, at, dir) {
+      if (Math.abs(dir) < 1e-9) return Infinity;
+      const lo = min[axis], unit = step[axis];
+      const face = dir > 0 ? Math.min(max[axis],lo+(block+1)*unit*brick) : lo+block*unit*brick;
+      return Math.max(0,(face-at)/dir);
+    }
     const out = bounded({
       bounds: { min, max },
       sample(x, y, z) {
@@ -91,17 +97,11 @@ const VolumeField = (() => {
         return density;
       },
       skip(x, y, z, direction) {
-        const c = [x, y, z];
-        const cell = c.map((v, i) => clamp(Math.floor((v - min[i]) / step[i]), 0, resolution[i] - 1));
-        const coord = cell.map(v => Math.floor(v / brick));
-        if (allocated.has(key(...coord))) return 0;
-        let dist = Infinity;
-        for (let i = 0; i < 3; i++) {
-          if (Math.abs(direction[i]) < 1e-9) continue;
-          const face = direction[i] > 0 ? Math.min(max[i], min[i] + (coord[i] + 1) * step[i] * brick) :
-            min[i] + coord[i] * step[i] * brick;
-          dist = Math.min(dist, Math.max(0, (face - c[i]) / direction[i]));
-        }
+        const ix = Math.floor(clamp(Math.floor((x-min[0])/step[0]),0,nx-1)/brick);
+        const iy = Math.floor(clamp(Math.floor((y-min[1])/step[1]),0,ny-1)/brick);
+        const iz = Math.floor(clamp(Math.floor((z-min[2])/step[2]),0,nz-1)/brick);
+        if (allocated.has(key(ix,iy,iz))) return 0;
+        const dist = Math.min(exit(0,ix,x,direction[0]),exit(1,iy,y,direction[1]),exit(2,iz,z,direction[2]));
         return Math.max(0, dist - 1e-7);
       }
     });

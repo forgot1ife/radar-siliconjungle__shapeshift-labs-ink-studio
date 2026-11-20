@@ -127,7 +127,7 @@ const VolumeLight = (() => {
   }
 
   function integrate(segments, origin, direction, stop, result, options = {}) {
-    const { time = 0, media, maxSteps = 64, stepScale = 1, jitter = .5, skip = true, cloudShadow, flash, exposure, cutouts } = options;
+    const { time = 0, media, maxSteps = 64, stepScale = 1, jitter = .5, skip = true, cloudShadow, flash, exposure, cutouts, counters } = options;
     const active = new Set(), rgb = [0, 0, 0], light = [1, 1, 1];
     result[0] = result[1] = result[2] = 0;
     result[3] = 1;
@@ -163,6 +163,7 @@ const VolumeLight = (() => {
             density += v.density;
             for (let k = 0; k < 3; k++) rgb[k] += v.density * v.rgb[k];
           }
+          if (counters) counters.analyticSegments++;
           if (cloudShadow) {
             // Sample the changing light along the segment while keeping analytic extinction.
             const step = (end - last) / 4;
@@ -173,9 +174,33 @@ const VolumeLight = (() => {
           } else blend(density, effectiveLength?.(last,end) ?? end-last);
         } else {
           const step = Math.max(minStep, rateFloor);
+          const volumes = [...active];
+          const gaps = skip && volumes.some(v=>v.type === 'field' && v.field.skip) ? new Float64Array(volumes.length) : null;
           for (let t = last; t < end && (!hasField || result[3] >= .001);) {
             const distance = Math.min(end - t, step);
             if (t + distance === t) break;
+            if (counters) counters.marchSteps++;
+            if (gaps) {
+              // Check occupancy before evaluating lighting, exposure, or cutout samplers.
+              const x = origin[0]+t*direction[0], y = origin[1]+t*direction[1], z = origin[2]+t*direction[2];
+              let empty = Infinity;
+              for (let i=0;i<volumes.length;i++) {
+                const v = volumes[i];
+                let gap = 0;
+                if (v.type === 'field' && v.field.skip) {
+                  if (counters) counters.skipTests++;
+                  gap = v.field.skip(x,y,z,direction,time);
+                }
+                gaps[i] = gap >= distance ? gap : 0;
+                empty = Math.min(empty,gaps[i]);
+              }
+              if (empty >= distance) {
+                const jump = empty > distance ? Math.min(end-t,Math.max(1,Math.floor(empty/step))*step) : distance;
+                if (counters) counters.skippedSteps += Math.ceil(jump/step-1e-9);
+                t += jump;
+                continue;
+              }
+            }
             const depth = t + distance * jitter;
             const x = origin[0] + depth * direction[0], y = origin[1] + depth * direction[1], z = origin[2] + depth * direction[2];
             const visibility = cloudShadow?.(x, y, z) ?? 1;
@@ -183,23 +208,19 @@ const VolumeLight = (() => {
             const strike = flash?.light(x, y, z);
             const mist = (exposure?.fog?.(x,y,z) ?? 1) *
               (cutRay ? cutRay.distance(t,t+distance)/distance : 1);
-            let density = 0, advance = Infinity;
+            let density = 0;
             rgb.fill(0);
-            for (const v of active) {
+            for (let i=0;i<volumes.length;i++) {
+              if (gaps?.[i] >= distance) continue;
+              const v = volumes[i];
+              if (counters && v.densityField) counters.densitySamples++;
               const localDensity = v.density * (v.densityField?.sample(x,z) ?? 1) * mist;
               if (v.type !== 'field') {
-                advance = 0;
                 density += localDensity;
                 for (let k = 0; k < 3; k++) rgb[k] += localDensity * (v.rgb[k] * gain + .45 * (strike?.[k] ?? 0));
                 continue;
               }
-              const gap = skip && v.field.skip ? v.field.skip(origin[0] + t * direction[0], origin[1] + t * direction[1],
-                origin[2] + t * direction[2], direction, time) : 0;
-              if (gap >= distance) {
-                advance = Math.min(advance, gap);
-                continue;
-              }
-              advance = 0;
+              if (counters) counters.densitySamples++;
               const value = v.field.sample(x, y, z, time, options);
               const extinction = value * localDensity;
               if (!extinction) continue;
@@ -211,8 +232,7 @@ const VolumeLight = (() => {
                 rgb[k] += extinction * (base[k] * light[k] + v.emissiveRgb[k] * v.emissiveGain + (v.lit ? .45 * (strike?.[k] ?? 0) : 0));
             }
             blend(density, distance);
-            // Round to the same step grid so skipping agrees with dense integration.
-            t += advance > distance ? Math.min(end - t, Math.max(1, Math.floor(advance / step)) * step) : distance;
+            t += distance;
           }
         }
       }

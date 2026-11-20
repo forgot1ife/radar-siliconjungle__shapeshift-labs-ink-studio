@@ -163,6 +163,8 @@ The package entry point exposes:
 
 Bake static scenery before adding moving objects when scenery should not contain holes or baked shadows from those moving objects. The puppet example uses this pattern.
 
+Use [art-directed shadows](docs/live-sun.md#art-directed-shadows) to step shadow ramps, select casters and receivers, and simplify shadows at small sizes.
+
 A world includes `data`, `count`, `pal`, `seed`, rendering metadata, and optionally `anim`. `data` is a `Float32Array` with **16 floats per splat**:
 
 ```text
@@ -534,6 +536,10 @@ const heat = voxels.get('heat', 0, 1, 0);
 ```
 
 The channels are created on demand. Fire behavior depends on the sampled scene's fuel/material properties. See `burn` for fire and frost, `idol` for destruction, `bench` for the lightweight solvers, and `stuff` for the material-point solver.
+
+## Optional textured surfaces
+
+Use `TexturedSurface.heightfield`, `TexturedSurface.sweep` and `TexturedSurface.grid` to author optional pixel-textured patches alongside SDF solids and splats. Add patches with `SpriteSurface.make().mesh(...)` and attach the finished atlas as `world.spriteSurfaces`. Attachment samples use the same triangles as the visible patch. Both the software renderer and WebGL renderer accept mixed scenes and entirely textured scenes. See the [textured surface guide](docs/textured-surfaces.md) and [mixed example](examples/textured-surfaces.js).
 
 ## Importing meshes
 

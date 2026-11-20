@@ -1,5 +1,6 @@
 // An orthographic depth map and hemisphere lighting for the posed splats.
 const ColorSpace = require('../src/color-space.js');
+const ShadowArt = require('../src/shadow-art.js');
 const linear = ColorSpace.prepare('srgb', 'srgb-linear');
 const srgb = ColorSpace.prepare('srgb-linear', 'srgb');
 const luminance = rgb => .2126 * rgb[0] + .7152 * rgb[1] + .0722 * rgb[2];
@@ -69,7 +70,7 @@ function covariance(data, i, a, b) {
     a[2] * (data[i+6]*b[0] + data[i+9]*b[1] + data[i+10]*b[2]);
 }
 
-function shadowMap(sun, data, { x, y, z, alpha, scale }, normalAt) {
+function shadowMap(sun, data, { x, y, z, alpha, scale }, normalAt, casts) {
   if (!sun.shadows || !sun.intensity) return null;
   const light = sun.direction;
   const right = unit(cross(Math.abs(light[1]) > .94 ? [0,0,1] : [0,1,0], light));
@@ -79,7 +80,8 @@ function shadowMap(sun, data, { x, y, z, alpha, scale }, normalAt) {
   for (let i = 0; i < alpha.length; i++) {
     const q = i * 16;
     // Opaque surface samples cast. Glass, backdrop art and outline-free particles are excluded.
-    if (!Number.isFinite(alpha[i]) || alpha[i] < 1 || y[i] < -30 || (Math.round(data[q + 11]) & (16 | 64 | 256))) continue;
+    if (!Number.isFinite(alpha[i]) || alpha[i] < 1 || y[i] < -30 || (Math.round(data[q + 11]) & (16 | 64 | 256)) ||
+        casts && !casts(i)) continue;
     const point = [x[i], y[i], z[i]], u = dot(right, point), v = dot(up, point), depth = dot(light, point);
     const s2 = scale[i] ** 2;
     const a = s2 * covariance(data, q, right, right), b = s2 * covariance(data, q, right, up),
@@ -149,7 +151,7 @@ function shadowMap(sun, data, { x, y, z, alpha, scale }, normalAt) {
   };
 }
 
-function create(sun, world, pose, normalAt, cloudShadow, exposure) {
+function create(sun, world, pose, normalAt, cloudShadow, exposure, { shadowArt, footprint } = {}) {
   // Albedo exists on opted-in sculpt bakes and explicitly described builder rows.
   // Older pixel-material bakes still carry the original material ramps.
   const fill = new Int32Array(pose.alpha.length).fill(-1);
@@ -164,7 +166,10 @@ function create(sun, world, pose, normalAt, cloudShadow, exposure) {
     normals[i] = normal;
     fill[i] = rgb;
   }
-  const shadow = shadowMap(sun, world.data, pose, normalAt);
+  const art = ShadowArt.prepare(shadowArt ?? world.look?.shadowArt);
+  const receives = ShadowArt.bind(art, world, 'receive');
+  const coarse = ShadowArt.small(art, footprint);
+  const shadow = shadowMap(sun, world.data, pose, normalAt, ShadowArt.bind(art, world, 'cast'));
   const facing = new Float32Array(fill.length);
   const indirect = (sun.sky || sun.ground) && new Float32Array(fill.length * 3);
   for (let i = 0; i < normals.length; i++) {
@@ -180,7 +185,8 @@ function create(sun, world, pose, normalAt, cloudShadow, exposure) {
   }
   const visibility = (i, x, y, z) => {
     if (!normals[i]) return undefined;
-    const geometry = shadow && facing[i] > 0 ? shadow(x, y, z, normals[i], facing[i]) : 1;
+    const geometry = shadow && facing[i] > 0 && (!receives || receives(i)) ?
+      ShadowArt.transfer(art, shadow(x, y, z, normals[i], facing[i]), coarse) : 1;
     return geometry && geometry * (cloudShadow?.(x,y,z) ?? 1) * (exposure?.(x,y,z) ?? 1);
   };
   const level = (i, x, y, z) => sun.ambient + sun.intensity * facing[i] * visibility(i, x, y, z);

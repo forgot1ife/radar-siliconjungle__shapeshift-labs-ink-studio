@@ -38,6 +38,21 @@ Set `world.liveSun` in the finished scene for a default. Per-render settings can
 
 The map fits opaque scene splats independently of the viewing camera, so perspective and orthographic views can reuse the same authored light. Glass and outline-free particles do not cast shadows. Emissive colours keep their emission. Pixel-material renders sample their original ramps with the live light level. Raw renders use captured albedo with ambient and direct lighting. Highly specialized baked material effects may look different under live lighting. This version runs in the headless renderer.
 
+## Art-directed shadows
+
+Set `finish.look.shadowArt` in a JSON diorama or pass `shadowArt` in the third argument to `makeBuilder` before sculpting. The same settings guide baked lighting and headless live sun. The CLI accepts `--shadow-art file.json` for JSON bakes and live-sun renders.
+
+| Setting | Behavior |
+| --- | --- |
+| `ramp` | Select evenly spaced steps of visibility and map each to a direct-light gain. Supply 2 to 16 nondecreasing gains from zero to one, ending at one for clear light. The material's own palette ramp supplies the colours. |
+| `cast` | Choose which geometry casts shadows with `include` and `exclude` selector arrays. |
+| `receive` | Choose which surfaces respond to those shadows, using the same mask fields. |
+| `small` | Choose a `belowPixels` threshold and a `referenceSize` in world units, which defaults to one. When that span projects to fewer pixels on the camera target plane, use an optional simpler `ramp` and `strength` from zero to one. Zero strength suppresses the cast shadow. |
+
+Masks accept object, entity, material, surface, prefab, and tag selectors. A target matches a mask if it passes any supplied include selector and no exclude selector. Include is unrestricted when omitted. Masks leave the visible geometry and ambient occlusion intact.
+
+The CPU and WebGL renderers select the small-size variant for baked surface splats as camera scale changes. Headless live sun evaluates the same rule against its current depth map. Programmable point lights that use a cached visibility map can use the masks and regular ramp through `K.light.shadow`. Set the programmatic render option `shadowArt: false` to use the regular baked variant or the unstyled live sun.
+
 ## Sky and ground bounce
 
 Choose extra diffuse fill from above and below in either the Node API or CLI. Each side can use a preset, a hex colour, or `off`.

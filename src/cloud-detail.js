@@ -33,7 +33,7 @@ const CloudDetail = (() => {
     const step=2*radius/steps;
     const tiles=new Map();
 
-    function integrate(o,d,start,stop,out,cutRay) {
+    function integrate(o,d,start,stop,out,cutRay,counters) {
       let first=start,last=stop;
       for (let i=0;i<3;i++) {
         if (Math.abs(d[i])<1e-10) {
@@ -51,6 +51,7 @@ const CloudDetail = (() => {
       for (let i=0;i<count;i++) {
         const edge=first+i*length, t=edge+length*.5;
         const occupied=cutRay?.distance(edge,edge+length)??length;
+        if (counters) counters.cloudSamples++;
         const mass=occupied*density(o[0]+t*d[0],o[1]+t*d[1],o[2]+t*d[2]);
         if (!mass) continue;
         optical+=mass;
@@ -118,7 +119,8 @@ const CloudDetail = (() => {
       const billboard=weightCard && tile('card',cardYaw,0);
       const local=[0,0,0], deltaOrigin=[0,0,0], hit=[0,0,0], sampled=[0,0,0], rgb=[0,0,0];
       // Camera reflections and the primary view each get their own scratch state and projection.
-      function trace(origin,dir,start,stop,out) {
+      function trace(origin,dir,start,stop,out,counters) {
+        if (counters) counters.cloudTraces++;
         out[0]=out[1]=out[2]=0; out[3]=1;
         if (!(stop>start)) return out;
         for (let c=0;c<3;c++) {
@@ -132,7 +134,7 @@ const CloudDetail = (() => {
           for (let c=0;c<3;c++) out[c]+=alpha*rgb[c];
           out[3]-=alpha;
         };
-        if (weightVolume && integrate(local,dir,start,stop,hit,cutRay))
+        if (weightVolume && integrate(local,dir,start,stop,hit,cutRay,counters))
           contribute(hit[0],(hit[1]+hit[2])*.5,weightVolume);
         if (!frame) return out;
         const d=-dot(dir,frame.normal);

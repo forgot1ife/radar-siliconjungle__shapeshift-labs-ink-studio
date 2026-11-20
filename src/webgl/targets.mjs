@@ -7,7 +7,7 @@ export function createTargets(gl, resources) {
   function target(colors = 1, { integer = false, depth = false } = {}) {
     const framebuffer = resources.allocate('Framebuffer');
     const textures = Array.from({ length: colors }, () => resources.texture());
-    const depthBuffer = depth ? resources.allocate('Renderbuffer') : null;
+    let depthBuffer = depth ? resources.allocate('Renderbuffer') : null;
     gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
     const attachments = textures.map((texture, i) => {
       const attachment = gl.COLOR_ATTACHMENT0 + i;
@@ -25,6 +25,14 @@ export function createTargets(gl, resources) {
       framebuffer, textures,
       get width() { return w; },
       get height() { return h; },
+      ensureDepth() {
+        if(depthBuffer)return;
+        depthBuffer=resources.allocate('Renderbuffer');
+        gl.bindRenderbuffer(gl.RENDERBUFFER,depthBuffer);
+        if(w&&h)gl.renderbufferStorage(gl.RENDERBUFFER,gl.DEPTH_COMPONENT16,w,h);
+        gl.bindFramebuffer(gl.FRAMEBUFFER,framebuffer);
+        gl.framebufferRenderbuffer(gl.FRAMEBUFFER,gl.DEPTH_ATTACHMENT,gl.RENDERBUFFER,depthBuffer);
+      },
       resize(width, height) {
         if (w === width && h === height) return;
         for (const texture of textures) {

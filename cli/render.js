@@ -1,3 +1,4 @@
+const { performance } = require('node:perf_hooks');
 const frameBudget = require('../src/frame-budget.js');
 // Draws a world without a browser: motion kinds, projection of each splat's covariance to a screen ellipse,
 // blending from far to near, low-resolution sampling, dithering and palette quantization.
@@ -13,6 +14,7 @@ const ArtInk = require('../src/art-ink.js');
 const ArtDirection = require('../src/art-direction.js');
 const SilhouetteProtection = require('../src/silhouette-protection.js');
 const DetailBudgets = require('../src/detail-budgets.js');
+const ShadowArt = require('../src/shadow-art.js');
 const MaterialPixelStyle = require('../src/material-pixel-style.js');
 const EffectPalettes = require('../src/effect-palettes.js');
 const ArtEffects = require('../src/art-effects.js');
@@ -50,6 +52,7 @@ const Precipitation = require('./precipitation.js');
 const RainImpacts = require('./rain-impacts.js');
 const AtlasSprites = require('../src/atlas-sprites.js');
 const AtlasRaster = require('./atlas-sprites.js');
+const SurfaceRaster = require('./sprite-surfaces.js');
 let SplatFields, AtmosphereEmitters;
 const { cameraRays, surfacePoint, reflectionSampler, atmosphereQuality, mediaSampler, applyAtmosphere } = require('./scene-optics.js');
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x),
@@ -98,7 +101,22 @@ function viewMatrix(yaw, pitch, dist, T) {
 }
 // o: t (seconds), yaw, pitch, dist, target, w, h (the size of the stage in screen pixels), zoom (1 = the diorama's own distance), raw (skip the palette)
 function render(world, o, preparedPalettes) {
+  if (!o?.renderStats) return renderFrame(world, o, preparedPalettes);
+  const start = performance.now();
+  const counters = {
+    rasterPasses:0, fragments:0, translucentFragments:0, peakDeferredFragments:0, deferredFlushes:0,
+    volume:{ traces:0, boundsTests:0, boundsCacheHits:0, mediaQueries:0, mediaCacheHits:0, fullFogCacheHits:0, emptyFogIntervals:0, raySamples:0,
+      analyticSegments:0, marchSteps:0, densitySamples:0, skipTests:0, skippedSteps:0, cloudTraces:0, cloudSamples:0 }
+  };
+  const frame = renderFrame(world, { ...o, renderStats:false, counters }, preparedPalettes);
+  frame.renderStats = { ...counters, frameMs:performance.now()-start };
+  return frame;
+}
+
+function renderFrame(world, o, preparedPalettes) {
   o = o || {};
+  const counters = o.counters;
+  if (counters) counters.rasterPasses++;
   const lensScale = o.lensScale ?? 1;
   if (!Number.isFinite(lensScale) || lensScale <= 0) throw new RangeError('Lens scale must be finite and positive');
   const tangent = Math.tan(FOV / 2) / lensScale;
@@ -220,7 +238,7 @@ function render(world, o, preparedPalettes) {
   const globalPaletteMark = passSelection.has('target') && (tone || grade) ?
     { assetId: look.colorStackAssetId, stackName: tone ? 'Tone' : (o.colorStack ?? look.colorStack)?.name } : null;
   const rel = c.dist / dist0,
-    rho = world.detail * Math.pow(rel, rel > 1 ? 0.5 : 0.25),
+    rho = (world.detail ?? 12) * Math.pow(rel, rel > 1 ? 0.5 : 0.25),
     preferred = look.pixelSize || clamp(Math.round(ch / (2 * tangent * rho * dist0)), 1, 18),
     px = o.px || frameBudget.artScale(cw, ch, preferred, o.raw || o.samples || o.captureCoverage ? null : look.pixelBudget),
     W = Math.ceil(cw / px),
@@ -321,6 +339,9 @@ function render(world, o, preparedPalettes) {
   const effectRules = EffectPalettes.activate(effectPaletteSettings, environment?.parameters);
   const windState = resolveWind(world,o,climate);
   const { windConfig,flow,wind,localWind,airAt,windAt } = windState;
+  const { celestial,sun,flash,clouds } = resolveLighting(world,o,climate,windState,direction);
+  const shadowFootprint = 2 * dist * tangent * (o.artGridScale || 1) / H;
+  if (!sun && o.shadowArt !== false) world = ShadowArt.frame(world, shadowFootprint);
   const travel = (at, birth, time) => {
     const age = time - birth;
     return flow ? flow.travel(...at, skyTime - age, skyTime) : airAt(...at).velocity.map(v => v * age);
@@ -368,13 +389,16 @@ function render(world, o, preparedPalettes) {
   const reflectPass = environmentPasses?.passes.reflections;
   const centerReflection = reflectPass && new Float64Array(3), fragmentReflection = reflectPass && new Float64Array(3);
   const rayAt = cameraRays(V, eye, W, H, focal, ortho);
-  const { celestial,sun,flash,clouds } = resolveLighting(world,o,climate,windState,direction);
   const baseSky = SkyEnvironment.withCelestials(environment?.sky, celestial, celestial && hex(0));
   const sky = baseSky && direction?.bands ? { ...baseSky, bands:direction.bands } : baseSky;
   const aerial = o.atmosphere !== false && !o.captureCoverage ?
     SkyEnvironment.aerial(world.aerialPerspective, o.aerialPerspective, environment?.parameters) : null;
   const cloudShadow = clouds?.shadow;
   const spriteAtlases=AtlasSprites.placements(world.spriteAtlases,o.spriteAtlases);
+  const surfaceFragments=o.spriteSurfaces===false?[]:SurfaceRaster.rasterize(world.spriteSurfaces,{V,W,H,focal,ortho,near,
+    clip:reflectionPlane && (p=>SceneOptics.planeDistance(reflectionPlane,...p)>reflectionPlane.bias)});
+  const surfaceDepth=surfaceFragments.length?new Float32Array(W*H).fill(Infinity):null;
+  for(const sample of surfaceFragments)surfaceDepth[sample.p]=sample.z;
   const sprites=AtlasRaster.rasterize(spriteAtlases,{
     eye,V,W,H,focal,ortho,near,rayAt,time:t,override:o.spriteAtlasMode,sun,
     objectDither: anchoring && stable.anchorSpaces.has('object'),
@@ -382,6 +406,8 @@ function render(world, o, preparedPalettes) {
     visibility:(position)=>(cloudShadow?.(...position)??1)*(exposure?.light?.(...position)??1),
     clip:reflectionPlane && (position=>SceneOptics.planeDistance(reflectionPlane,...position)>reflectionPlane.bias)
   });
+  for(const sample of surfaceFragments)sprites.push(sample);
+  sprites.sort((a,b)=>b.z-a.z);
   const cloudEye = ortho ? eye.map((value, i) => value - (eyeD - dist) * V[2 + i * 4]) : eye;
   const cloudView = clouds?.view?.(cloudEye, ortho ? [V[2],V[6],V[10]] : null);
   const axialDepth = volumes.length || water || aerial || cloudView ? new Float32Array(W * H).fill(Infinity) : null;
@@ -404,7 +430,7 @@ function render(world, o, preparedPalettes) {
     if (horizonArt && !reflection) horizonArt(direction, out);
     if (origin) {
       flash?.sky(origin, direction, out);
-      if (!cloudView || reflection) clouds?.paint(origin, direction, out, flash?.light, cloudSignal);
+      if (!cloudView || reflection) clouds?.paint(origin, direction, out, flash?.light, cloudSignal, counters?.volume);
     }
     return out;
   });
@@ -454,7 +480,7 @@ function render(world, o, preparedPalettes) {
     if (volumeFlow) quality.windOffset = volumeFlow.windOffset;
     const media = volumes.some(volume => volume.type === 'field') ? prepareVolumeLight() : undefined;
     return { ...quality, time: t, cloudShadow, flash, media, exposure, cutouts, cloud:cloudView, effectCoverage: trackMedia,
-      cloudStart:cloudView && eyeD-dist, fogTransmittance:!!fogPass, bands:direction?.bands };
+      cloudStart:cloudView && eyeD-dist, fogTransmittance:!!fogPass, bands:direction?.bands, counters:counters?.volume };
   };
   const geometrySample = probe || sortedSurfaces || aerial || cloudShadow || flash || cloudView ? sampleFrames(world, t) : null;
   const captured = o.captureCoverage || transparent ? new Float32Array(W * H) : null;
@@ -498,7 +524,7 @@ function render(world, o, preparedPalettes) {
     sky: opticalSky && ((direction, out, origin) => {
       if (!skyOverlay) return skySample(direction,out,origin,true);
       flash?.sky(origin,direction,out);
-      cloudView && clouds.paint(origin,direction,out,flash?.light);
+      cloudView && clouds.paint(origin,direction,out,flash?.light,undefined,counters?.volume);
       return out;
     }),
     skyOverlay: Boolean(skyOverlay),
@@ -665,7 +691,8 @@ function render(world, o, preparedPalettes) {
   if (sun) {
     const frames = sampleFrames(world, t), normals = [];
     const normalAt = i => normals[i] ?? (normals[i] = frames(i).normal ?? false);
-    live = LiveSun.create(sun, world, { x: X, y: Y, z: Z, alpha: AL, scale: SC }, normalAt, cloudShadow, exposure?.light);
+    live = LiveSun.create(sun, world, { x: X, y: Y, z: Z, alpha: AL, scale: SC }, normalAt, cloudShadow, exposure?.light,
+      { shadowArt: o.shadowArt, footprint: shadowFootprint });
   }
   let mn = Infinity;
   for (let i = 0; i < N; i++) if ((i < baseCount || AL[i] > 0) && depth[i] < mn) mn = depth[i];
@@ -689,7 +716,7 @@ function render(world, o, preparedPalettes) {
       const q = environmentPasses.top(i) * 3, color = sampled ?? hex(0);
       if (skyCloud) {
         const { origin, direction, axial } = rayAt(i % W + .5, Math.floor(i / W) + .5);
-        cloudView.trace(origin, direction, Math.max(0,eyeD-dist), horizon/axial, skyCloud);
+        cloudView.trace(origin, direction, Math.max(0,eyeD-dist), horizon/axial, skyCloud, counters?.volume);
         for (let c = 0; c < 3; c++) skyPass[q + c] = skyCloud[c] + skyCloud[3] * color[c];
       } else skyPass.set(color,q);
     }
@@ -762,7 +789,12 @@ function render(world, o, preparedPalettes) {
   const foregroundDepth = z => z - (eyeD-dist);
   function composite(p, i, z, dn, a, pr, pg, pb, wd, emits, highlight, paletteId, detailParticle, projected, coat, glass, mark,
     opticalDepth = z, sprite, haze = 0, rule, reflected) {
+    if(surfaceDepth&&!sprite?.surface&&opticalDepth>surfaceDepth[p]+1e-5)return;
     const p3 = p * 3, ia = 1 - a;
+    if (counters) {
+      counters.fragments++;
+      if (!wd && a < 1) counters.translucentFragments++;
+    }
     if (foreground && wd && (i < 0 ? !sprite?.emission : !(d[i*16+11] & 32)))
       [pr,pg,pb] = foreground(foregroundDepth(opticalDepth),pr,pg,pb,contrastColor);
     if (rule && rule.contrast !== 1 && (i < 0 ? !sprite?.emission : !(d[i*16+11] & 32)))
@@ -831,6 +863,7 @@ function render(world, o, preparedPalettes) {
   }
   function playFragments(sort,through=-Infinity) {
     if (sprites.length) playSprites(through,true);
+    if (counters && deferred.size) counters.deferredFlushes++;
     for (const [p, layers] of deferred) {
       if (sort) layers.sort((a, b) => b.sort - a.sort || a.index - b.index);
       else if (sprites.length) layers.sort((a,b)=>b.center-a.center || a.index-b.index);
@@ -1170,6 +1203,7 @@ function render(world, o, preparedPalettes) {
           if (!deferred.has(p)) deferred.set(p, []);
           deferred.get(p).push(entry);
           deferredCount++;
+          if (counters) counters.peakDeferredFragments = Math.max(counters.peakDeferredFragments,deferredCount);
         } else composite(p, i, -cz, dn, a, pr, pg, pb, wd, emits, highlight, paletteId, detailParticle, projected, coat, glass,
           lookPass?.mark, aerial || cloudView ? surfaceZ : undefined, undefined, fogMix, rule, reflected);
       }
@@ -1624,6 +1658,7 @@ function render(world, o, preparedPalettes) {
         if (transparent) captured[q] = 1;
         if (axialDepth) axialDepth[q] = eyeD - R + sprD[q] * 2 * R;
         if (art) art.sprite(q, sprOwner[q], eyeD - R + sprD[q] * 2 * R);
+        if (counters) counters.fragments++;
         environmentPasses?.fragment?.(q, -1, 1, 0, 0, 0);
         if (hazeCoverage) hazeCoverage[q] = 0;
         lookPass?.fragment(q, 1);

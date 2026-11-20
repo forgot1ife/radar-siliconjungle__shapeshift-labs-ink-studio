@@ -85,15 +85,15 @@ function reflectionSampler(planes, render, view, eye, scale) {
 
 function atmosphereQuality(value = {}) {
   const { scale = 1, depthTolerance = .22, steps = 64, stepScale = 1, samples = 1, jitter = 'off',
-    skip = true, seed = 0, stats = false } = value;
+    skip = true, cacheBounds = true, seed = 0, stats = false } = value;
   if (!Number.isSafeInteger(scale) || scale < 1 || scale > 4 ||
       !Number.isFinite(depthTolerance) || depthTolerance < 0 ||
       !Number.isSafeInteger(steps) || steps < 4 || steps > 256 ||
       !Number.isFinite(stepScale) || stepScale < .25 || stepScale > 8 ||
       !Number.isSafeInteger(samples) || samples < 1 || samples > 4 || !['off', 'blue-noise', 'spatiotemporal'].includes(jitter) ||
-      !Number.isSafeInteger(seed) || typeof skip !== 'boolean' || typeof stats !== 'boolean')
+      !Number.isSafeInteger(seed) || typeof skip !== 'boolean' || typeof cacheBounds !== 'boolean' || typeof stats !== 'boolean')
     throw new RangeError('Invalid atmosphere quality options');
-  return { scale, depthTolerance, maxSteps: steps, stepScale, samples, jitter, skip, seed, stats };
+  return { scale, depthTolerance, maxSteps: steps, stepScale, samples, jitter, skip, cacheBounds, seed, stats };
 }
 
 const noiseTiles = new Map();
@@ -124,14 +124,25 @@ function traceMedia(volumes, segments, origin, direction, stop, result, sample, 
   }
   function air(end) {
     if (end <= cursor) return;
-    if (volumes.length) {
-      SceneOptics.trace(volumes, origin, direction, end, sample, { ...options, start: cursor });
-      if (options?.bands) ArtDirection.remapOpacity(sample, options.bands);
+    const bounds = options?.rayBounds, counters = options?.counters;
+    if (volumes.length && (!bounds || bounds.near < end && bounds.far > cursor)) {
+      // Samples past the exit see the same full volume, even when cloud, water,
+      // or aerial perspective needs a new calculation at the fragment depth.
+      const cache = cursor === 0 && end >= bounds?.far ? options.fullFog : null;
+      const cached = cache?.[options.sampleIndex];
+      if (cached && cached.scale === options.fogScale) {
+        for (let c=0;c<4;c++) sample[c] = cached.values[c];
+        if (counters) counters.fullFogCacheHits++;
+      } else {
+        SceneOptics.trace(volumes, origin, direction, end, sample, { ...options, start: cursor });
+        if (options?.bands) ArtDirection.remapOpacity(sample, options.bands);
+        if (cache) cache[options.sampleIndex] = { scale:options.fogScale, values:sample.slice() };
+      }
       composite(6);
       if (trackFog) result[8] *= sample[3];
-    }
+    } else if (volumes.length && counters) counters.emptyFogIntervals++;
     if (options?.cloud) {
-      options.cloud.trace(origin,direction,Math.max(cursor,options.cloudStart ?? 0),end,sample);
+      options.cloud.trace(origin,direction,Math.max(cursor,options.cloudStart ?? 0),end,sample,options.counters);
       composite(7);
     }
     if (!aerial || end <= aerial.start || aerialThrough === 0) return;
@@ -180,6 +191,7 @@ function mediaSampler(volumes, water, rayAt, width, horizon, options, aerial) {
   let opacity = 0, fogCoverage = 0, cloudCoverage = 0, fogThrough = 1;
   const stats = { rays: 0, fallbackRays: 0, depthSamples: 0 };
   function shade(pixel, depth, rgb, geometry = true, fogScale = 1) {
+    if (options.counters) options.counters.mediaQueries++;
     let ray = rays[pixel];
     if (!ray) {
       const x = pixel % width, y = Math.floor(pixel / width);
@@ -187,8 +199,11 @@ function mediaSampler(volumes, water, rayAt, width, horizon, options, aerial) {
       stats.rays++;
       ray = rays[pixel] = { origin: origin.slice(), direction: direction.slice(), axial,
         segments: water ? water.raySegments(origin, direction, horizon / axial) : [],
+        bounds:options.cacheBounds !== false && volumes.length
+          ? SceneOptics.rayBounds(volumes,origin,direction,horizon/axial,options.counters) : undefined,
         phase: tile ? (tile.ranks[y % tile.height * tile.width + x % tile.width] + .5) / tile.ranks.length : .5,
         values: new Float64Array(size) };
+      if (ray.bounds?.ranges.length) ray.fullFog = [];
     }
     const stop = Math.min(horizon, depth) / ray.axial;
     const useAerial = geometry && aerial && Number.isFinite(depth) && stop > aerial.start;
@@ -215,14 +230,18 @@ function mediaSampler(volumes, water, rayAt, width, horizon, options, aerial) {
       ray.useAerial = mode;
       ray.fogScale = fogScale;
       query.fogScale = fogScale;
+      query.rayBounds = ray.bounds;
+      query.fullFog = ray.fullFog;
       values.fill(0);
       for (let i = 0; i < samples; i++) {
         query.jitter = (i + ray.phase) / samples;
+        query.sampleIndex = i;
         stats.depthSamples++;
+        if (options.counters) options.counters.raySamples++;
         traceMedia(volumes, ray.segments, ray.origin, ray.direction, stop, result, sample, query, mode ? ray.aerial : null);
         for (let c = 0; c < size; c++) values[c] += result[c] / samples;
       }
-    }
+    } else if (options.counters) options.counters.mediaCacheHits++;
     opacity = 1 - (values[3] + values[4] + values[5]) / 3;
     if (size > 6) {
       fogCoverage = values[6];
@@ -265,6 +284,7 @@ function applyAtmosphere(volumes, col, depths, rayAt, W, H, horizon, quality, ti
       SceneOptics.trace(volumes, origin, direction, stop, sample, query);
       for (let c = 0; c < 4; c++) light[c] += sample[c] / samples;
       stats.rays++;
+      if (quality.counters) quality.counters.raySamples++;
     }
   }
 

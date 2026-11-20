@@ -4,7 +4,7 @@ const SplatProvenance = (() => {
   const channels = [['normals', 3, Float32Array], ['muteEmission', 1, Uint8Array]];
   const perSplat = [['data', 16, Float32Array], ['attr', 4, Float32Array], ['fine', 12, Float32Array],
     ['pix', 8, Float32Array], ['surfaceData', 8, Float32Array], ['materialAlbedo', 1, Uint32Array],
-    ['materialPixelStyles', 4, Float32Array]];
+    ['materialPixelStyles', 4, Float32Array], ['shadowLod', 6, Float32Array]];
   const targetKey = target => JSON.stringify([target.entity, target.surface, target.prefabs, target.tags, target.medium, target.mediumKind]);
 
   function dictionary(key = value => value) {
@@ -109,6 +109,9 @@ const SplatProvenance = (() => {
       });
       for (let i = 0; i < part.count; i++) {
         const at = (offset + i) * 8;
+        const alternateRamp = (offset + i) * 6 + 3;
+        if (result.shadowLod?.[alternateRamp])
+          result.shadowLod[alternateRamp] = remapRamps?.[result.shadowLod[alternateRamp] - 1] ?? 0;
         if (result.surfaceData?.[at]) result.surfaceData[at] += base;
         if (result.pix?.[at]) {
           result.pix[at] = remapRamps?.[result.pix[at] - 1] ?? 0;

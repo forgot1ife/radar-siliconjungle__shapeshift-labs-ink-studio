@@ -374,13 +374,15 @@ bool capturedAtRest(float baked, float base, float additional) {
        a splat with something in the way gets only a little of it (as a baked lamp's shadow does). Kept on the lamp as lamp.vis. */
     shadow(st, cap, lamp, sdf, o) {
       o = o || {};
+      const art = ShadowArt.prepare(st.W?.look?.shadowArt);
+      const receives = ShadowArt.bind(art, st.W, 'receive'), distance = sdf.forShadow ?? sdf;
       const N = st.N,
         D = st.base || st.D,
         vis = new Uint8Array(N).fill(255),
-        dark = Math.round(255 * (o.dark === undefined ? 0.12 : o.dark));
+        dark = Math.round(255 * ShadowArt.transfer(art, o.dark ?? 0.12));
       let n = 0;
       for (let i = 0; i < N; i++) {
-        if (!cap.ramp[i]) continue;
+        if (!cap.ramp[i] || receives && !receives(i)) continue;
         const q = i * 16,
           nv = cap.n[i],
           x = D[q] + nv[0] * 0.05,
@@ -393,7 +395,7 @@ bool capturedAtRest(float baked, float base, float additional) {
         if (dist > lamp.r || dist < 0.2) continue;
         let t = 0.08;
         for (let k = 0; k < 32 && t < dist - 0.12; k++) {
-          const h = sdf(x + (lx / dist) * t, y + (ly / dist) * t, z + (lz / dist) * t);
+          const h = distance(x + (lx / dist) * t, y + (ly / dist) * t, z + (lz / dist) * t);
           if (h < 0.004) {
             vis[i] = dark;
             n++;

@@ -39,6 +39,23 @@ Use the [environment inspector](environment-inspector.md) to report which keys, 
 
 Export [environment passes](art-passes.md#environment-passes-for-compositing) for downstream compositing of sky, fog, precipitation, reflections, and foreground coverage.
 
+
+## Measured render budgets
+
+Run the headless benchmark from the repository root. It covers the fog observatory, the shaped-mist ravine, sparse illuminated mist pockets, and the lens workshop's transparent layers.
+
+```sh
+node scripts/benchmark-render.js 7 > render-budgets.json
+```
+
+The report records median and 95th-percentile frame time, translucent fragments, optical ray samples, density and cloud lookups, and skipped work. It measures warmed render calls at 128 × 80 art pixels before image encoding. The uncached and dense reference lanes use the same camera, lighting and sampling quality. The benchmark checks identical RGB bytes.
+
+In Node, pass `renderStats: true` to `render(world, options)` and read `frame.renderStats`. Its `frameMs` measures the render with counters enabled, including any internal color and reflection passes. The benchmark records its timing samples with counters disabled and captures the work totals separately.
+
+- `fragments` counts blended splat and sprite contributions. `translucentFragments` counts contributions with opacity below one that leave the surface depth buffer unchanged.
+- `volume.raySamples` counts optical solves at pixel ray depths. `densitySamples` and `cloudSamples` count primary optical density lookups during the frame. Light and shadow probes and asset baking are outside those lookup counts. Analytic bounds, cached fog, and empty march steps have separate counters.
+- `volumeQuality.cacheBounds: false` bypasses the per-ray volume bounds and full-fog caches for comparison. `volumeQuality.skip: false` bypasses conservative field skipping and evaluates the same march grid densely.
+
 ## Planar reflections
 
 ```js

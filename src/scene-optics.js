@@ -191,18 +191,48 @@ const SceneOptics = (() => {
     }
   }
 
+  // A fragment changes the end of the view ray, never its intersection with a volume.
+  function rayBounds(volumes, origin, direction, horizon, counters) {
+    const ranges = [];
+    let near = Infinity, far = -Infinity;
+    if (counters) counters.boundsTests += volumes.length;
+    for (const volume of volumes) {
+      const range = interval(volume,origin,direction,horizon,0);
+      if (!range) continue;
+      ranges.push([range[0],range[1],volume]);
+      near = Math.min(near,range[0]);
+      far = Math.max(far,range[1]);
+    }
+    return { ranges, near, far };
+  }
+
   // Integrate overlapping constant-density media in front-to-back depth order.
   function trace(volumes, origin, direction, stop, result = [0, 0, 0, 1], options) {
-    const scale = options?.fogScale ?? 1;
+    const scale = options?.fogScale ?? 1, counters = options?.counters;
+    if (counters) counters.traces++;
     if (scale === 0) {
       result[0] = result[1] = result[2] = 0;
       result[3] = 1;
       return result;
     }
-    const hits = [];
-    for (const volume of volumes) {
-      const range = interval(volume, origin, direction, stop, options?.start ?? 0);
-      if (range) hits.push([range[0], volume, 1], [range[1], volume, -1]);
+    const hits = [], start = options?.start ?? 0, bounds = options?.rayBounds;
+    if (bounds) {
+      if (counters) counters.boundsCacheHits++;
+      for (const [near,far,volume] of bounds.ranges) {
+        const from = Math.max(start,near), to = Math.min(stop,far);
+        if (to > from) hits.push([from,volume,1],[to,volume,-1]);
+      }
+    } else {
+      if (counters) counters.boundsTests += volumes.length;
+      for (const volume of volumes) {
+        const range = interval(volume,origin,direction,stop,start);
+        if (range) hits.push([range[0],volume,1],[range[1],volume,-1]);
+      }
+    }
+    if (!hits.length) {
+      result[0] = result[1] = result[2] = 0;
+      result[3] = 1;
+      return result;
     }
     hits.sort((a, b) => a[0] - b[0]);
     if (options?.cloudShadow || options?.flash || options?.exposure?.fog || options?.cutouts?.fog || hits.some(([, volume]) => volume.type === 'field' || volume.densityField))
@@ -214,6 +244,7 @@ const SceneOptics = (() => {
       last = 0;
     for (const [t, volume, sign] of hits) {
       if (density > 1e-10 && t > last) {
+        if (counters) counters.analyticSegments++;
         const alpha = -Math.expm1(-density * (t - last) * scale);
         for (let i = 0; i < 3; i++) result[i] += (result[3] * alpha * rgb[i]) / density;
         result[3] *= 1 - alpha;
@@ -226,7 +257,7 @@ const SceneOptics = (() => {
   }
 
   return { plane, planeDistance, reflectedView, captureView, fog, sphere, box, shaft, field, shaped, shapedVolumes, prepareVolumes,
-    trace, slab, lighting: (settings, palette, options) => volumeLight.lighting(settings, volumeColor, palette, options),
+    trace, rayBounds, slab, lighting: (settings, palette, options) => volumeLight.lighting(settings, volumeColor, palette, options),
     addLocalLight: volumeLight.addLocal, occluder: volumeLight.occluder, volumeHistory: volumeLight.history, ripple, ringSampler };
 })();
 if (typeof module !== 'undefined') module.exports = SceneOptics;
