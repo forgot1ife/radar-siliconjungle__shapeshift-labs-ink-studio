@@ -15,6 +15,7 @@ const ArtDirection = require('../src/art-direction.js');
 const SilhouetteProtection = require('../src/silhouette-protection.js');
 const DetailBudgets = require('../src/detail-budgets.js');
 const ShadowArt = require('../src/shadow-art.js');
+const SplatRelighting = require('../src/splat-relighting.js');
 const MaterialPixelStyle = require('../src/material-pixel-style.js');
 const EffectPalettes = require('../src/effect-palettes.js');
 const ArtEffects = require('../src/art-effects.js');
@@ -339,7 +340,9 @@ function renderFrame(world, o, preparedPalettes) {
   const effectRules = EffectPalettes.activate(effectPaletteSettings, environment?.parameters);
   const windState = resolveWind(world,o,climate);
   const { windConfig,flow,wind,localWind,airAt,windAt } = windState;
-  const { celestial,sun,flash,clouds } = resolveLighting(world,o,climate,windState,direction);
+  const relative = SplatRelighting.frame(world, o, climate);
+  const lightingOptions = (o.relighting ?? world.relighting) ? { ...o, liveSun: false } : o;
+  const { celestial,sun,flash,clouds } = resolveLighting(world,lightingOptions,climate,windState,direction);
   const shadowFootprint = 2 * dist * tangent * (o.artGridScale || 1) / H;
   if (!sun && o.shadowArt !== false) world = ShadowArt.frame(world, shadowFootprint);
   const travel = (at, birth, time) => {
@@ -694,6 +697,7 @@ function renderFrame(world, o, preparedPalettes) {
     live = LiveSun.create(sun, world, { x: X, y: Y, z: Z, alpha: AL, scale: SC }, normalAt, cloudShadow, exposure?.light,
       { shadowArt: o.shadowArt, footprint: shadowFootprint });
   }
+  const relight = relative && SplatRelighting.rows(world, relative, sampleFrames(world, t), { x: X, y: Y, z: Z, alpha: AL });
   let mn = Infinity;
   for (let i = 0; i < N; i++) if ((i < baseCount || AL[i] > 0) && depth[i] < mn) mn = depth[i];
   const mediumHorizon = aerial ? Math.max(horizon, -mn + R) : horizon;
@@ -911,6 +915,7 @@ function renderFrame(world, o, preparedPalettes) {
     const litMask = staged?.lit?.some(rule => rule.mask);
     const litNormal = litMask ? stageFrame(i).normal : null;
     const liveNormal = live?.normal(i), liveAlbedo = liveNormal && live.albedo(i);
+    const lightSlot = i * 4, relit = relight?.[lightSlot + 3];
     let r = liveAlbedo ? liveAlbedo[0] : (pk % 256) / 255,
       g = liveAlbedo ? liveAlbedo[1] : (Math.floor(pk / 256) % 256) / 255,
       b = liveAlbedo ? liveAlbedo[2] : Math.floor(pk / 65536) / 255;
@@ -1018,7 +1023,7 @@ function renderFrame(world, o, preparedPalettes) {
       ? targetFog(sstep(world.fog.start,1,dn)*world.fog.max*(exposure?.fog?.(x,y,z)??1),rule) : 0;
     const reflectInRaster = (planar || reflectedSky) && !pixelSurface;
     const normal = fragmentSurface ? surface.surfaceNormal(i) : null;
-    if (fogMix && !reflectInRaster && !staged?.lit && !liveNormal && !splatFlash && coverGain === 1) {
+    if (fogMix && !reflectInRaster && !staged?.lit && !liveNormal && !splatFlash && !relit && coverGain === 1) {
       r += (fog[0] - r) * fogMix;
       g += (fog[1] - g) * fogMix;
       b += (fog[2] - b) * fogMix;
@@ -1100,7 +1105,7 @@ function renderFrame(world, o, preparedPalettes) {
           const shade = shadeFraction > MaterialPixelStyle.thresholds(shadeMode,
             Math.floor(ix / artScale), Math.floor(iy / artScale)) ? highStyle : lowStyle;
           if (shade !== pk) {
-            const visibility = reflectInRaster || staged?.lit || splatFlash || coverGain < 1 ? 1 : 1 - fogMix;
+            const visibility = reflectInRaster || staged?.lit || splatFlash || relit || coverGain < 1 ? 1 : 1 - fogMix;
             const gain = visibility / 255;
             pr += ((shade & 255) - (pk & 255)) * gain;
             pg += ((shade >> 8 & 255) - (pk >> 8 & 255)) * gain;
@@ -1116,7 +1121,7 @@ function renderFrame(world, o, preparedPalettes) {
             pg = c[1];
             pb = c[2];
             if (staged?.material) [pr, pg, pb] = stagedMaterial(i, staged.material, [pr, pg, pb], materialSample);
-            if (!reflectInRaster && !staged?.lit && !splatFlash && coverGain === 1) {
+            if (!reflectInRaster && !staged?.lit && !splatFlash && !relit && coverGain === 1) {
               pr += (fog[0] - pr) * fogMix;
               pg += (fog[1] - pg) * fogMix;
               pb += (fog[2] - pb) * fogMix;
@@ -1149,6 +1154,11 @@ function renderFrame(world, o, preparedPalettes) {
             lookPass?.surface, fragmentReflection);
           reflected = fragmentReflection;
         }
+        if (relit) {
+          pr = Math.min(1, pr * relight[lightSlot]);
+          pg = Math.min(1, pg * relight[lightSlot + 1]);
+          pb = Math.min(1, pb * relight[lightSlot + 2]);
+        }
         const scoped = contribution?.applies(i, paletteId);
         if (staged?.lit || scoped || glassLook) {
           let sample;
@@ -1180,7 +1190,7 @@ function renderFrame(world, o, preparedPalettes) {
           pg = Lightning.shade(pg, splatFlash[1]);
           pb = Lightning.shade(pb, splatFlash[2]);
         }
-        if (staged?.lit || (fragmentSurface && reflectInRaster) || liveNormal || splatFlash || coverGain < 1) {
+        if (staged?.lit || (fragmentSurface && reflectInRaster) || liveNormal || splatFlash || relit || coverGain < 1) {
           pr += (fog[0] - pr) * fogMix;
           pg += (fog[1] - pg) * fogMix;
           pb += (fog[2] - pb) * fogMix;
@@ -1478,12 +1488,15 @@ function renderFrame(world, o, preparedPalettes) {
           lookPass?.surface, fragmentReflection) : base;
         if (finishedSurface && reflectPass) environmentPasses.pattern(p,fragmentReflection);
         let rgb = c;
+        const lightSlot = i * 4;
+        if (relight?.[lightSlot + 3]) rgb = c.slice(0, 3).map((value, channel) =>
+          Math.min(1, value * relight[lightSlot + channel]));
         if (contribution?.applies(i, c[5])) {
           const rule = fragmentRule(i);
           const site = sample ?? (rule || contribution.masked(i, c[5]) ? stageSample(i, [HX[p], HY[p], HZ[p]]) : undefined);
           const [dx,dy] = rule ? ArtStability.coordinates(rule, rule.dither === 'object' ? site.position : site.worldPosition, x, H-1-y) :
             [x,H-1-y];
-          rgb = contribution.shade(i, c[5], c, dx, dy, site, !(c[4] > .22), lookPass?.palette);
+          rgb = contribution.shade(i, c[5], rgb, dx, dy, site, !(c[4] > .22), lookPass?.palette);
         }
         let lit = staged?.lit ? RenderStages.apply(staged.lit, rgb, sample, lookPass?.stage) : rgb;
         if (cloudShadow && !live?.normal(i) && !(Math.round(d[i * 16 + 11]) & (32 | 64))) {
@@ -1559,7 +1572,7 @@ function renderFrame(world, o, preparedPalettes) {
         A = AN.data,
         sprD = new Float32Array(W * H).fill(9),
         sprC = new Int16Array(W * H).fill(-1),
-        sprOwner = art || foreground || subject ? new Int32Array(W * H) : null;
+        sprOwner = art || foreground || subject || relight ? new Int32Array(W * H) : null;
       for (let a = 0; a < AN.n; a++) {
         const q0 = a * 12,
           ed = EP[A[q0 + 8]];
@@ -1638,6 +1651,8 @@ function renderFrame(world, o, preparedPalettes) {
         if (sprC[q] < 0 || !PALC[sprC[q]]) continue;
         const depth = eyeD - R + sprD[q] * 2 * R;
         let c = PALC[sprC[q]];
+        const lightSlot = sprOwner?.[q] * 4;
+        if (relight?.[lightSlot + 3]) c = c.map((value, channel) => Math.min(1, value * relight[lightSlot + channel]));
         if (cloudShadow) {
           const { origin, direction, axial } = rayAt(q % W + .5, Math.floor(q / W) + .5);
           const distance = depth / axial;

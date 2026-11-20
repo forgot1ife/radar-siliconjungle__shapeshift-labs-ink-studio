@@ -1,54 +1,11 @@
 const ArtPasses = require('../src/art-passes.js');
-const SurfaceLook = require('../src/surface-look.js');
 const { surfacePoint } = require('./scene-optics.js');
 
+const SplatFrames = require('../src/splat-frames.js');
+let matrices;
 function sampleFrames(world, time) {
-  const { renderMetadata, pix, surfaceData, anim, data, rest } = world;
-  const rig = anim?.rig, bones = anim?.bones;
-  const matrices = new Map();
-  const M = rig || bones ? require('../index.js').load().KIT.M : null;
-  function sample(i) {
-    const offset = i * 3, p = i * 8, surfaceOffset = i * SurfaceLook.STRIDE, q = i * 16;
-    let normal;
-    if (pix?.[p]) normal = [pix[p + 3], pix[p + 4], pix[p + 5]];
-    else if (renderMetadata?.normals?.[offset] || renderMetadata?.normals?.[offset + 1] || renderMetadata?.normals?.[offset + 2])
-      normal = Array.from(renderMetadata.normals.subarray(offset, offset + 3));
-    else if (surfaceData?.[surfaceOffset])
-      normal = [surfaceData[surfaceOffset + 1], surfaceData[surfaceOffset + 2], surfaceData[surfaceOffset + 3]];
-
-
-    const packed = Math.round(data[q + 11]), kind = packed % 16;
-    const part = rig?.free?.[i] ? 0 : rig?.bid[i] || 0;
-    const restKind = Math.round(rest?.[q + 11] || 0) % 16;
-    const skinned = bones && (restKind === 12 || restKind === 13);
-    const matrix = part ? rig.M : skinned ? bones : null;
-    const bone = part || (skinned ? rest[q + 12] : 0);
-    const blend = skinned ? rest[q + 14] : 0;
-    const second = blend ? rest[q + 13] : 0;
-    if (matrix) {
-      const key = [part ? 'rig' : 'bones', bone, second, blend].join(',');
-      if (!matrices.has(key)) {
-        const rows = matrix.slice(bone * 12, bone * 12 + 9);
-        if (blend) for (let j = 0; j < 9; j++) rows[j] += (matrix[second * 12 + j] - rows[j]) * blend;
-        const inverse = Math.abs(M.det(rows)) > 1e-8 ? M.inv(rows) : null;
-        matrices.set(key, inverse && { inverse, normal: M.tr(inverse) });
-      }
-    }
-    const transform = matrix ? matrices.get([part ? 'rig' : 'bones', bone, second, blend].join(',')) : null;
-    const angle = kind === 5 ? time * data[q + 13] : 0;
-    const c = Math.cos(angle), s = Math.sin(angle);
-    if (normal && transform) normal = M.app(transform.normal, normal);
-    if (normal && angle) normal = [c * normal[0] + s * normal[2], normal[1], c * normal[2] - s * normal[0]];
-    const length = normal && Math.hypot(...normal);
-    return { normal: length > 1e-8 ? normal.map(value => value / length) : null,
-      rest: (skinned ? rest : anim?.base instanceof Float32Array ? anim.base : rest || data).subarray(q, q + 3),
-      localOffset(x, y, z) {
-        const offset = [c * x - s * z, y, c * z + s * x];
-        return transform ? M.app(transform.inverse, offset) : offset;
-      }
-    };
-  }
-  return sample;
+  if (!matrices && (world.anim?.rig || world.anim?.bones)) matrices = require('../index.js').load().KIT.M;
+  return SplatFrames.create(world, time, matrices);
 }
 
 function createArtPasses(request, w, h) {

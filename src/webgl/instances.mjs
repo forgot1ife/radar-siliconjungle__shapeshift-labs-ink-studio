@@ -101,6 +101,7 @@ export function createSplatInstances(prototypes, instances) {
       if (sourceStyles != null && (!(sourceStyles instanceof Float32Array) || sourceStyles.length < world.count * 4))
         throw new TypeError('Instance material pixel styles are shorter than their prototype');
       asset = { offset:sharedCount, count:world.count, data,
+        normals: world.renderMetadata?.normals?.slice(0, world.count * 3),
         materialPixelStyles: sourceStyles?.slice(0, world.count * 4), ...bounds(data,world.count) };
       sharedCount += asset.count;
       if (sharedCount > maxCount) throw new RangeError('Too many shared splats');
@@ -200,6 +201,17 @@ function stampInstancePixelStyle(out, row, start) {
   }
 }
 
+function stampInstanceNormals(out, { asset, authored: { rotation } }, start) {
+  if (!out || !asset.normals) return;
+  for (let i = 0, j = start * 3; i + 2 < asset.normals.length; i += 3, j += 3) {
+    const [x, y, z] = asset.normals.subarray(i, i + 3);
+    for (let axis = 0; axis < 3; axis++) {
+      const k = axis * 3;
+      out[j + axis] = rotation[k] * x + rotation[k + 1] * y + rotation[k + 2] * z;
+    }
+  }
+}
+
 function flattened(base, plan) {
   validateSize(base.count, plan);
   const count = base.count + plan.count, data = new Float32Array(count * 16);
@@ -216,6 +228,11 @@ function flattened(base, plan) {
     targetIds.fill(targets.push({ entity:id })-1,start,end);
   }
   const renderMetadata = { ...metadata, objects, targets, objectIds, targetIds };
+  if (metadata.normals || plan.assets.some(asset => asset.normals)) {
+    const normals = renderMetadata.normals = new Float32Array(count * 3);
+    if (metadata.normals) normals.set(metadata.normals.subarray(0, base.count * 3));
+    for (const row of plan.rows) stampInstanceNormals(normals, row, base.count + row.start);
+  }
   const result = { ...base, count, data, renderMetadata };
   if (base.materialPixelStyles || plan.hasMaterialPixelStyles) {
     const styles = result.materialPixelStyles = new Float32Array(count * 4);
@@ -235,4 +252,4 @@ export function validateSize(baseCount, plan) {
     throw new RangeError('Instances exceed the 24-bit splat address space');
 }
 
-export { transformed, stampInstancePixelStyle };
+export { transformed, stampInstancePixelStyle, stampInstanceNormals };

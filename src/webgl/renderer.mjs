@@ -108,6 +108,9 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
     let opticsDefinition, opticsWorld, opticsPlan, opticsTime;
     const cleaned = target(), finished = target(), history = [target(), target()];
     const detailAPI = toolkit.DetailBudgets ?? toolkit.KIT?.detailBudgets;
+    const lighting = toolkit.KIT?.splatRelighting, relightUnit = 21;
+    const relitSprites = new Map();
+    let relightData, relightRows, lastRelighting;
     const detailPlans = new WeakMap();
     let detailTable, uploadedDetailFlags;
     let materialStyleTable, materialStyleUpload;
@@ -462,7 +465,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       gl.disable(gl.DEPTH_TEST);gl.depthMask(true);
     }
 
-    function drawSprites(camera, world, width, height, time, pixelOutline, water, pal, wet, clip, foreground, env) {
+    function drawSprites(camera, world, width, height, time, pixelOutline, water, pal, wet, clip, foreground, env, relighting) {
       const buffer = foreground ? portalSpriteLayer : spriteLayer;
       buffer.resize(width, height);
       data.bind();
@@ -477,7 +480,18 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       gl.disable(gl.BLEND);
       gl.enable(gl.DEPTH_TEST);
       gl.depthFunc(gl.LESS);
-      const sprites = wet ? (wet.sprites ??= resources.program(wet.sources.SPR_VS, wet.sources.SPR_FS)) :
+      let sprites;
+      if (relighting) {
+        const key = [!!wet, wet?.airPockets, wet?.layered, wet?.atlas, !!env?.media].join('/');
+        if (!relitSprites.has(key)) {
+          const shaders = pixelShaderSources(toolkit.PixelLook, {
+            water: !!wet, airPockets: wet?.airPockets, layered: wet?.layered, atlas: wet?.atlas,
+            environment: !!env?.media, relighting: true
+          });
+          relitSprites.set(key, resources.program(shaders.SPR_VS, shaders.SPR_FS));
+        }
+        sprites = relitSprites.get(key);
+      } else sprites = wet ? (wet.sprites ??= resources.program(wet.sources.SPR_VS, wet.sources.SPR_FS)) :
         env?.media ? (spriteEnvProgram ??= resources.program(sources.SPR_VS,
           pixelShaderSources(toolkit.PixelLook,{environment:true}).SPR_FS)) : spriteProgram;
       gl.useProgram(sprites.p);
@@ -490,7 +504,8 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         u_tanF: camera.tangent, u_asp: camera.aspect, u_portho: +camera.ortho,
         u_eGap: (pixelOutline?.gap ?? 0.3) / (2 * camera.radius), u_tol: 3 * camera.footprint + 0.02,
         ...water, ...env?.uniforms,
-        ...(water || env?.media ? { u_waterSpritePalette: pal, u_rmp4: materials.gpu.ramps } : {})
+        ...(relighting && { u_relight: relightUnit }),
+        ...(water || env?.media || relighting ? { u_waterSpritePalette: pal, u_rmp4: materials.gpu.ramps } : {})
       });
       gl.bindVertexArray(emptyVao);
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, anchorCount);
@@ -509,9 +524,10 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       const globalCleanup = !raw && (frame.clean ?? !!look.clean);
       const needsDetailFlags = budget?.affectsCleanup && (globalCleanup || budget?.enablesCleanup);
       const constraintDefinition = frame.paletteConstraints ?? look.paletteConstraints;
+      const wantsRelight = lighting && (frame.relighting ?? world.relighting);
       let group = frame.instances;
       // Per-pixel material, palette, and detail rules index the expanded world.
-      if (group && (frame.order || !raw && (constraintDefinition || look.pixel && world.pix ||
+      if (group && (frame.order || wantsRelight || !raw && (constraintDefinition || look.pixel && world.pix ||
           needsDetailFlags || budget?.fineOn || budget?.fineOff))) {
         expandInstances ??= createExpandedInstances();
         const expanded = expandInstances(world,group,frame.changedRows);
@@ -630,6 +646,24 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       lastEnvironment = !!env;
       const wet = water && wetVariant(water,!!env?.media);
       const time = frame.stepAnimation !== false && look.pixel ? Math.floor(t * 10) / 10 : t;
+      let relighting = false;
+      if (wantsRelight) {
+        const K = toolkit.KIT;
+        const timeline = K.environmentFrame.timeline(world, frame, t,
+          K.artDirection.prepare(look.artDirection, frame.artDirection), K.weather?.tracks);
+        const active = lighting.frame(world, frame, timeline);
+        if (active) {
+          const next = lighting.rows(world, active, K.splatFrames.create(world, time, K.M), null, relightRows);
+          if (next) {
+            relightRows = next;
+            relightData ??= table(512, relightUnit, maxSize);
+            relightData.upload(next);
+            relighting = true;
+          }
+        }
+      }
+      if (relighting || lastRelighting) historyValid = false;
+      lastRelighting = relighting;
       const fineTiles = detail?.fine ?? world.fine;
       const hasFine = !raw && !!fineTiles;
       const pal = palette(world.pal);
@@ -687,7 +721,8 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       gl.blendEquation(gl.FUNC_ADD);
       const shader = pipeline.programFor({
         water: !!wet, airPockets: wet?.airPockets, layered: wet?.layered, atlas: wet?.atlas, portal: plane !== zero || !!cover,
-        instances: !!plan, contributions:coverage && !!constraints, masked, textured:constraints?.textured, layeredGlass, materialStyles, environment:env?.media
+        instances: !!plan, contributions:coverage && !!constraints, masked, textured:constraints?.textured, layeredGlass,
+        materialStyles, environment:env?.media, relighting
       });
       gl.useProgram(shader.p);
       const growth = world.grow ?? {};
@@ -704,6 +739,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         u_born: [frame.bornAt ?? 0, growth.rate ?? 1, growth.fade ?? 0.5, growth.loop ?? 0],
         u_crisp: +!raw, u_dilate: raw ? 0.3 : 0.15, u_near: camera.clipNear,
         u_paintMarker: paint?.marker ?? 0,
+        ...(relighting && { u_relight: relightUnit }),
         u_fog: rgb(world.pal[fog.c ?? 0] ?? 0),
         u_fogp: [fog.start ?? 1, fog.max ?? 0, ...camera.depthRange], ...water, ...env?.uniforms
       });
@@ -754,7 +790,8 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       }
       textureUnit(15, key.textures[0]);
       const sprites = patterned && anchorCount > 0 && frame.edges !== false;
-      const spriteCover = sprites && drawSprites(camera, world, width, height, time, pixelOutline, water, pal, wet, clip, cover?.plane, env);
+      const spriteCover = sprites && drawSprites(camera, world, width, height, time, pixelOutline, water, pal, wet, clip, cover?.plane, env,
+        relighting);
       const lines = outline && look.lines;
       const lineIndex = world.outline?.c ?? 0;
       const glass = raw ? null : world.glass;
@@ -773,13 +810,16 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       const destination = damping ? finished.framebuffer : output;
       let resolve;
       const styledPattern = patterned && materialStyles;
-      if (coverage || constraints || styledPattern || env?.media && patterned) {
+      const relitPattern = patterned && relighting;
+      if (coverage || constraints || styledPattern || relitPattern || env?.media && patterned) {
         const cache = coverage ? contributionPost : constrainedPosts;
         const mode = (wet ? 1+Number(wet.airPockets)+2*Number(wet.layered)+4*Number(wet.atlas) : 0) +
-          16*Number(masked) + 32*Number(layeredGlass) + 64*Number(styledPattern) + 128*Number(!!constraints) + 256*Number(!!env?.media);
+          16*Number(masked) + 32*Number(layeredGlass) + 64*Number(styledPattern) + 128*Number(!!constraints) +
+          256*Number(!!env?.media) + 512*Number(relitPattern);
         if (!cache.has(mode)) cache.set(mode,program(pixelShaderSources(toolkit.PixelLook,{
           water:!!wet,airPockets:wet?.airPockets,layered:wet?.layered,atlas:wet?.atlas,
-          paletteConstraints:!!constraints && !coverage,masked,contributions:coverage,layeredGlass,materialStyles:styledPattern,environment:!!env?.media
+          paletteConstraints:!!constraints && !coverage,masked,contributions:coverage,layeredGlass,materialStyles:styledPattern,
+          environment:!!env?.media,relighting:relitPattern
         }).POST_FS));
         resolve = cache.get(mode);
         if (constraints && !coverage) {
@@ -805,6 +845,8 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         u_pixOn: +patterned, u_keyOn: +patterned, u_sprOn: +sprites,
         u_paintOn: paintOnPatterns,
         ...(styledPattern && { u_materialStyles: 16 }),
+        ...(relitPattern && { u_relight: relightUnit, u_relightFog: rgb(world.pal[fog.c ?? 0] ?? 0),
+          u_relightFogRange: [fog.start ?? 1, fog.max ?? 0] }),
         u_idxTex: 9,
         u_sprLayer: 13, u_markA: +cleaning, u_pal: pal, u_n: palCount, u_luma: 0,
         u_bypass: +raw, u_colored: +colored, u_dither: dither * 0.3 * (world.dither ?? 1),

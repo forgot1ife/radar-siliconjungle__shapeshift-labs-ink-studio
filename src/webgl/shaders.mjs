@@ -20,9 +20,15 @@ float pixelStyleThreshold(int mode, ivec2 p) {
 }
 `;
 
+const relightTable = `
+uniform highp sampler2D u_relight;
+vec4 relightAt(int row) { return texelFetch(u_relight, ivec2(row & 511, row >> 9), 0); }
+`;
+
 export function splatShaderSources(ascii, sampleCoverage, {
   water = false, airPockets = false, layered = false, atlas = false, portal = false, instances = false,
-  contributions = false, masked = false, textured = false, layeredGlass = false, coverageRules, materialStyles = false, environment = false
+  contributions = false, masked = false, textured = false, layeredGlass = false, coverageRules, materialStyles = false,
+  environment = false, relighting = false
 } = {}) {
   const SPLAT_VS = `#version 300 es
 precision highp float; precision highp int;
@@ -32,6 +38,7 @@ uniform bool u_geometryDepth;
 uniform vec2 u_viewport;
 uniform float u_focal, u_time, u_scale, u_snap, u_dilate, u_near, u_ortho, u_idx;
 uniform float u_paintMarker; flat out int v_paint;
+${relighting ? relightTable + 'flat out vec4 v_relight;' : ''}
 uniform vec4 u_actor; uniform float u_reveal, u_fade; uniform vec3 u_camdir; uniform ivec2 u_dyn;
 uniform vec4 u_rev, u_rbox;   // the lit part of the world: centre x, z, sin and cos of the view's turn; then near, far, near half-width, far half-width
 uniform vec4 u_sh[16]; uniform int u_shn;
@@ -228,6 +235,7 @@ ${environment ? '  v_envAxial = -cam.z;' : ''}
         if (ci >= 0) { if (!stat) steps = min(steps, 1);   /* (whoever carries the light is not washed out by it) */
           for (int k = 0; k < 3; k++) { if (k >= steps) break; ci = u_lup[ci]; } color = u_lpal[ci]; color0 = color; } } } }
   bool plain = color == color0; float fogk = (flags & 2) == 0 && u_fogp.y > 0.0 && u_fogp.x < 1.0 ? smoothstep(u_fogp.x, 1.0, dn) * u_fogp.y : 0.0;   // (smoothstep from 1 to 1 is undefined: some cards give NaN, a black pixel)
+  ${relighting ? 'v_relight = relightAt(a_index); if (v_relight.w > 0.0) { v_relight.w += fogk; fogk = 0.0; }' : ''}
   if (fogk > 0.0) color = mix(color, u_fog, fogk);   // distance haze
   vec3 colorF = color;
   v_depth = (flags & 1) != 0 ? -1.0 : dn;
@@ -286,6 +294,7 @@ ${materialStyles ? `flat in vec4 v_pixelStyle; flat in float v_pixelFog; uniform
 ${materialStyleThreshold}` : ''}
 uniform float u_idx;
 uniform bool u_paintPass; flat in int v_paint;
+${relighting ? 'flat in vec4 v_relight;' : ''}
 layout(location=0) out vec4 o;
 layout(location=1) out vec4 od;
 ${layeredGlass && !water ? 'vec4 oa;' : 'layout(location=2) out vec4 oa;'}
@@ -367,6 +376,7 @@ ${materialStyles ? `
     vec3 shade = vec3(mod(pk, 256.0), mod(floor(pk / 256.0), 256.0), floor(pk / 65536.0)) / 255.0;
     rgb = mix(shade, u_fog, v_pixelFog);
   }` : ''}
+  ${relighting ? 'if (v_relight.w > 0.0) rgb = mix(min(vec3(1.0), rgb * v_relight.xyz), u_fog, v_relight.w - 1.0);' : ''}
 ${contributions ? `  if (v_policySlot > 0) {
     ivec2 p = ivec2(floor(gl_FragCoord.xy * u_lookViewportScale));
     p.y = int(u_lookGrid.y) - 1 - p.y;
@@ -495,7 +505,8 @@ bool constrainPalette(ivec2 p, vec3 inputColor, out vec3 color) {
 }
 
 export function pixelShaderSources(PixelLook, { water = false, airPockets = false, layered = false, atlas = false,
-  paletteConstraints = false, masked = false, contributions = false, layeredGlass = false, materialStyles = false, environment = false } = {}) {
+  paletteConstraints = false, masked = false, contributions = false, layeredGlass = false, materialStyles = false,
+  environment = false, relighting = false } = {}) {
   const waterPixelGLSL = `
 uniform highp sampler2D u_waterMask;
 ivec2 waterPixel(ivec2 p) {
@@ -512,10 +523,11 @@ ivec2 waterPixel(ivec2 p) {
 void main(){ vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
   const POST_FS = `#version 300 es
 precision highp float;
-${paletteConstraints || materialStyles ? 'precision highp int;' : ''}
+${paletteConstraints || materialStyles || relighting ? 'precision highp int;' : ''}
 uniform sampler2D u_scene, u_depth, u_crispScene, u_crispDepth;
 ${environment ? environmentMediaGLSL : ''}
 uniform bool u_paintOn;
+${relighting ? relightTable + 'uniform vec3 u_relightFog; uniform vec2 u_relightFogRange;' : ''}
 uniform vec3 u_line;
 uniform float u_edge;
 // the tone look (a diorama's look.tone, or the Tone option: PixelLook's stipple): brightness below the cutoff is black, the rest
@@ -775,6 +787,14 @@ vec3 pixColour(ivec2 p, vec3 c) {
   // (only where the dab is what shows: nothing soft in front of it, no light carried onto it)
   vec4 t1 = texelFetch(u_dat, ivec2(((i & 511) << 2) + 1, i >> 9), 0); float pk = t1.w;
   vec3 baked = vec3(mod(pk, 256.0), mod(floor(pk / 256.0), 256.0), floor(pk / 65536.0)) / 255.0;
+${relighting ? `
+  vec4 gain = relightAt(i);
+  float fogAmount = 0.0;
+  if (gain.w > 0.0) {
+    if (u_relightFogRange.x < 1.0 && u_relightFogRange.y > 0.0)
+      fogAmount = smoothstep(u_relightFogRange.x, 1.0, texelFetch(u_depth, p, 0).r) * u_relightFogRange.y;
+    baked = mix(min(vec3(1.0), baked * gain.rgb), u_relightFog, fogAmount);
+  }` : ''}
 ${water || environment ? `
   vec3 center = texelFetch(u_dat, ivec2((i & 511) << 2, i >> 9), 0).xyz;
   float axial = ${water ? '-(u_waterView * vec4(center, 1.0)).z' : 'dot(u_envEye-center,u_envBack)'};
@@ -824,6 +844,7 @@ ${environment ? '  baked = envMedia(baked, vec2(p) + 0.5, size, axial);' : ''}
       if (bb >= 0) ci = rampAt(r, edge ? max(0, bb - kk2) : bb + ck); } }
   g_pixed = true;
   vec3 surfaceColor = u_pal[clamp(ci,0,63)];
+  ${relighting ? 'if (gain.w > 0.0) surfaceColor = mix(min(vec3(1.0), surfaceColor * gain.rgb), u_relightFog, fogAmount);' : ''}
   ${water ? 'surfaceColor = waterPaint(surfaceColor,vec2(p)+0.5,size,axial,mark);' : ''}
   ${environment ? 'surfaceColor = envMedia(surfaceColor,vec2(p)+0.5,size,axial);' : ''}
   return surfaceColor; }
@@ -943,7 +964,7 @@ vec3 plainAt(ivec2 p) {
   ${layeredGlass ? 'c = refractContributions(p,c);' : ''}
   g_pixed = false;
   if (u_pixOn > 0.5) { if (u_sprOn > 0.5) {
-${water || environment ? '      vec4 sl = texelFetch(u_sprLayer, p, 0); if (sl.a > 0.5) { g_spr = true; g_pixed = true; return sl.rgb; }' :
+${water || environment || relighting ? '      vec4 sl = texelFetch(u_sprLayer, p, 0); if (sl.a > 0.5) { g_spr = true; g_pixed = true; return sl.rgb; }' :
       '      vec4 sl = texelFetch(u_sprLayer, p, 0) * 255.0; if (sl.a > 127.0) { int v = int(sl.r + 0.5), ci = v >= 100 ? v - 100 : rampAt(int(sl.g + 0.5), int(sl.b + 0.5) + v - 8); g_spr = true; g_pixed = true; return u_pal[clamp(ci, 0, 63)]; }'} }
     if (u_paintOn) {
       vec3 paint = texelFetch(u_crispScene, p, 0).rgb;
@@ -1113,6 +1134,7 @@ void main() { o = vec4(texelFetch(u_src, ivec2(gl_FragCoord.xy), 0).rgb, 1.0); }
 precision highp float; precision highp int;
 uniform highp sampler2D u_anc, u_dat, u_sprTex; uniform mat4 u_view, u_proj; uniform vec2 u_vp, u_rng; uniform float u_time, u_keep, u_ortho; uniform vec4 u_rmpN4[16];
 flat out ivec2 v_a; flat out ivec4 v_i; flat out float v_dA, v_axial; flat out vec3 v_P, v_N;
+${relighting ? 'flat out int v_relightOwner;' : ''}
 vec4 sprT(int x, int y) { return texelFetch(u_sprTex, ivec2(x, y), 0); }
 int rlen(int r) { return int(u_rmpN4[r >> 2][r & 3] + 0.5) & 15; }
 void main() {
@@ -1122,6 +1144,7 @@ void main() {
   int k = int(t2.x + 0.5); vec4 E0 = sprT(0, k), E1 = sprT(1, k);
   if (t1.w >= u_keep * E1.w) return;
   int j = int(t0.w + 0.5); vec4 m2 = texelFetch(u_dat, ivec2(((j & 511) << 2) + 2, j >> 9), 0), m3 = texelFetch(u_dat, ivec2(((j & 511) << 2) + 3, j >> 9), 0);
+  ${relighting ? 'v_relightOwner = j;' : ''}
   vec3 pos = t0.xyz;
   if (int(m2.w + 0.5) % 16 == 11) { pos.x += m3.z * sin(u_time * m3.y + pos.y * 1.3 + pos.z * 0.9 + m3.x); pos.y += m3.z * 0.6 * sin(u_time * m3.y * 1.3 + pos.x * 1.1 + m3.x); }
   vec4 cam = u_view * vec4(pos, 1.0); if (cam.z > -0.05) return;
@@ -1141,12 +1164,13 @@ precision highp float; precision highp int;
 uniform highp sampler2D u_sprTex, u_depth, u_idxTex, u_pixTex, u_dat; uniform mat4 u_pview; uniform vec3 u_peye; uniform float u_tanF, u_asp, u_portho, u_eGap, u_tol;
 uniform mat4 u_proj; uniform vec2 u_vp; uniform float u_ortho; uniform vec4 u_splatPlane, u_spriteCover;
 flat in ivec2 v_a; flat in ivec4 v_i; flat in float v_dA, v_axial; flat in vec3 v_P, v_N;
+${relighting ? relightTable + 'flat in int v_relightOwner;' : ''}
 layout(location=0) out vec4 o;
 layout(location=1) out vec4 cover;
 ${axialPosition}
 ${water ? waterGLSL(airPockets, layered, atlas) : ''}
 ${environment ? environmentMediaGLSL : ''}
-${water || environment ? `
+${water || environment || relighting ? `
 uniform vec3 u_waterSpritePalette[64];
 uniform vec4 u_rmp4[128], u_rmpN4[16];
 int spriteColor(int v) {
@@ -1186,8 +1210,9 @@ void main() {
       if (j < 0 || pixA(j).x < 0.5) other = dp - v_dA > u_eGap;
       else { vec4 A = pixA(j), B = pixB(j); other = abs(dot(hitAt(p, j, vec3(A.w, B.x, B.y)) - v_P, v_N)) > u_tol; }
       if (!other) discard; } }
-  ${water || environment ? `
+  ${water || environment || relighting ? `
   vec3 color = u_waterSpritePalette[spriteColor(v)];
+  ${relighting ? 'vec4 gain = relightAt(v_relightOwner); if (gain.w > 0.0) color = min(vec3(1.0), color * gain.rgb);' : ''}
   ${water ? 'vec3 mark; color = waterPaint(color,gl_FragCoord.xy,u_vp,v_axial,mark);' : ''}
   ${environment ? 'color = envMedia(color,gl_FragCoord.xy,u_vp,v_axial);' : ''}
   o = vec4(color,1.0);` :

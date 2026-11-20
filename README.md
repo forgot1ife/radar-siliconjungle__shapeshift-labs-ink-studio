@@ -165,6 +165,8 @@ Bake static scenery before adding moving objects when scenery should not contain
 
 Use [art-directed shadows](docs/live-sun.md#art-directed-shadows) to step shadow ramps, select casters and receivers, and simplify shadows at small sizes.
 
+Use [live splat relighting](docs/live-sun.md#relight-baked-color-and-detail) to move local lights or change the time of day while keeping authored surface detail.
+
 A world includes `data`, `count`, `pal`, `seed`, rendering metadata, and optionally `anim`. `data` is a `Float32Array` with **16 floats per splat**:
 
 ```text

@@ -13,7 +13,7 @@ const validSidecar = suffix => /^(?:\.(?:json|txt)|-passes\.json|-[a-zA-Z][a-zA-
 const fileOptions = new Set([
   'actions','art-direction','asset-pack','atmosphere-emitters','authoring','celestial-tracks','cloud-field',
   'color-stack','effect-palettes','horizon-bands','lightning','look','lut','palette-constraints','plan','precipitation',
-  'rain-impacts','scene-exposure','shadow-art','shaped-atmosphere','silhouette-protection','sky-environment','sky-transitions',
+  'rain-impacts','relighting','scene-exposure','shadow-art','shaped-atmosphere','silhouette-protection','sky-environment','sky-transitions',
   'splat-fields','sprite-atlas','stable','volume-cutouts','weather-binding','wind-field'
 ]);
 const omitted = new Set(['recipe','out','fail-on-flags']);

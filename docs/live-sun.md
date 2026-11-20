@@ -1,5 +1,21 @@
 # Live sun lighting
 
+## Relight baked color and detail
+
+Set `finish.relighting` in a JSON diorama or `relighting` in `B.finish()`. Both renderers can change the light on baked swatches, fine detail tiles, per-pixel patterns, and edge sprites while preserving the original geometry and texture data. This mode uses the baked shadow detail as part of the surface color.
+
+| Field | Behavior |
+| --- | --- |
+| `lights` | Up to 32 named point lights. Each has an XYZ `at`, `range`, hex `color`, `intensity`, optional `enabled`, and optional target `select`. Lights fall off with distance and follow the surface normal. |
+| `sun` | Defaults to `"environment"`, which follows the primary celestial sun or sky profile. Supply `direction`, `color`, and `intensity` for a fixed sun. Use `false` for ambient and point lights. |
+| `referenceTime` | Time in seconds for the baked daylight look, defaulting to zero. The sun's contribution is relative to that reference. Use `skyTime` to seek the daytime independently of scene motion. |
+| `ambient` and `strength` | Ambient light defaults to 0.45. Strength runs from zero to one and controls how much the lighting changes the bake. |
+| `select` | Limit the rig to named surfaces with the existing target selectors. |
+
+Pass a `relighting` override to either renderer to move or recolor lights without rebaking. Light changes merge by ID, and a `null` entry removes a light for that frame. Pass `false` to disable the mode. The CLI accepts `--relighting on|off|file.json` and `--sky-time seconds`. Emissive splats keep their authored colors.
+
+## Headless directional relighting
+
 The Node renderer and CLI can relight sculpted objects with one directional sun at render time. A light-space depth map is rebuilt from posed opaque splats. Move the light to change illumination and cast shadows while keeping the same sculpt.
 
 ```sh

@@ -1,4 +1,4 @@
-import { instancePlan, transformed, stampInstancePixelStyle } from './instances.mjs';
+import { instancePlan, transformed, stampInstancePixelStyle, stampInstanceNormals } from './instances.mjs';
 
 const rowSamples = 512;
 const instanceWidth = 256, instanceStride = 64;
@@ -71,6 +71,9 @@ export function createExpandedInstances() {
     for (const row of baseDirty) {
       const from = row * rowSamples * 16, end = Math.min(from + rowSamples * 16, world.count * 16);
       storage.data.set(world.data.subarray(from,end),from);
+      const normals = world.renderMetadata?.normals;
+      if (normals) storage.renderMetadata.normals.set(
+        normals.subarray(from / 16 * 3, end / 16 * 3), from / 16 * 3);
     }
     if (revision !== plan.revision) {
       for (const row of plan.rows) {
@@ -78,6 +81,7 @@ export function createExpandedInstances() {
         const at = world.count + row.start;
         transformed(storage.data,row,at);
         stampInstancePixelStyle(storage.materialPixelStyles, row, at);
+        stampInstanceNormals(storage.renderMetadata.normals, row, at);
         const end = Math.ceil((at + row.asset.count) / rowSamples);
         for (let r=Math.floor(at / rowSamples); r<end; r++) dirty.add(r);
       }

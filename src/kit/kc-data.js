@@ -323,6 +323,11 @@
       bad('finish.celestialTracks', error.message);
     }
     try {
+      SplatRelighting.settings(st.finish.relighting);
+    } catch (error) {
+      bad('finish.relighting', error.message);
+    }
+    try {
       K.atmosphere.emitters.settings(st.finish.atmosphereEmitters);
     } catch (error) {
       bad('finish.atmosphereEmitters', error.message);
