@@ -27,7 +27,7 @@ Use [Silhouette protection](silhouette-protection.md) to tune fog and contrast o
 
 Use [Layered horizon art](layered-horizon.md) to paint a distant vista with depth-dependent parallax, bounded tiling, and camera fades.
 
-Use [Transition review](transition-review.md) to compare native export frames through changes in weather, lighting, and camera. Save a [shot recipe](shot-recipes.md) to replay a review from the same camera path and weather state.
+Use [Transition review](transition-review.md) to compare native export frames through changes in weather, lighting, and camera. Save a [shot recipe](shot-recipes.md) to replay a review from the same camera path and weather state. The [environment review shots](environment-review-shots.md) cover wet stone under a moving sun, offshore cloud parallax and a fog crossing, and localized rain and reflections at a sheltered market.
 
 Use [Environment packs](environment-packs.md) to share versioned sky, weather, and atmosphere settings across scenes.
 

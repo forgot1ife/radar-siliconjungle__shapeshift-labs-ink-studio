@@ -2,7 +2,7 @@ module.exports = ({ KIT: K, makeBuilder, makeSculpt }) => ({
   id: 'beacon-court',
   name: 'Beacon court',
   seed: 13,
-  build(seed) {
+  build(seed, { floorFinish } = {}) {
     const B = makeBuilder(seed, [
       0x283c53, 0x374654, 0x63717a, 0x8c9ca0, 0xcfbfa9,
       0x68524d, 0x9b765d, 0xc3a382, 0xe7ccb2, 0xf6e7c6,
@@ -21,6 +21,7 @@ module.exports = ({ KIT: K, makeBuilder, makeSculpt }) => ({
 
     const stone = { r: [1,2,3,4] }, tile = { r: [5,6,7,8], albedo: '#d8b58e', materialId: 'paving' };
     const accent = { r: [5,6,7,9], albedo: '#edcca4', materialId: 'inlay' };
+    const floor = floorFinish ? [tile,accent].map(base=>K.surface.material(base,floorFinish)) : [tile,accent];
     const walls = { r: [10,11,12,13,14], albedo: '#d58862', materialId: 'plaster' };
     const copper = { r: [15,16,17,18], materialId: 'copper' };
     const leaf = { r: [19,20,21,22], materialId: 'cover' };
@@ -31,7 +32,7 @@ module.exports = ({ KIT: K, makeBuilder, makeSculpt }) => ({
     }
     for (let zi=0;zi<8;zi++) for (let xi=0;xi<11;xi++) {
       const x=(xi-5)*.775, z=(zi-3.5)*.69;
-      S.box([x,.032,z],[.372,.033,.329],(xi+2*zi)%7===1 ? accent : tile,{res:.115,rd:.023});
+      S.box([x,.032,z],[.372,.033,.329],floor[Number((xi+2*zi)%7===1)],{res:.115,rd:.023});
     }
     const tower = [-.78,.14,-.42];
     const at = (x,y,z) => [tower[0]+x,tower[1]+y,tower[2]+z];
