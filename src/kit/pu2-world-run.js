@@ -9,6 +9,7 @@
   const ordered = value => Object.keys(value).sort();
   const worldActions = ['input','patch','event','transfer'];
   const checkpointFormat = 'ink-studio/checkpoint', runFormat = 'ink-studio/run';
+  const savedCheckpoints=new WeakSet(), branchToken=Symbol('live checkpoint');
 
   function stepTiming(world,at,timing) {
     const baseDt=world.dt, substeps=timing?.substeps??1, detail=timing?.detail;
@@ -279,7 +280,7 @@
     return {world,plan,weather};
   }
   const validate=(source,options)=>prepare(source,options).world;
-  function create(source, {checkpoint,implementations,profile = false,validated = false,workerPool} = {}) {
+  function create(source, {checkpoint,implementations,profile = false,validated = false,workerPool} = {}, token) {
     check(workerPool===undefined||typeof workerPool?.solve==='function','Invalid simulation worker pool');
     const modules=workerPool?.implementations;
     const installed=modules?{...modules,...implementations}:implementations;
@@ -322,6 +323,7 @@
     let pendingWrites = [], lastDependencies = null, sampling = rates?.initial, spatialSampling = {};
     let causalState, weatherTrackState, chunkState;
     let currentQuery, lastTransfers = [], lastSignals = {...rootInputs,...rootOutputs};
+    let lastCheckpoint;
 
     function view(worldValue = world, statesValue = states, signals = lastSignals, tickValue = tick, receipts = lastTransfers,
       causes = causalState, chunkView = chunkState) {
@@ -343,6 +345,15 @@
     function packCommands() {
       return [...scheduled.keys()].sort((a,b) => a-b).flatMap(key => scheduled.get(key));
     }
+    function queue(entries,log) {
+      if(entries.length)lastCheckpoint=undefined;
+      for (const item of entries) {
+        let items = scheduled.get(item.tick);
+        if (!items) scheduled.set(item.tick,items = []);
+        items.push(item);
+      }
+      if (log) added.push(...entries);
+    }
     function enqueue(commands, log) {
       check(Array.isArray(commands) && commands.length <= 100000, 'Expected a bounded command list');
       const entries = commands.map(raw => {
@@ -351,12 +362,7 @@
         return command;
       });
       check(entries.length + packCommands().length <= 100000, 'Pending command budget exceeded');
-      for (const item of entries) {
-        let items = scheduled.get(item.tick);
-        if (!items) scheduled.set(item.tick,items = []);
-        items.push(item);
-      }
-      if (log) added.push(...entries);
+      queue(entries,log);
     }
     function readOutputs(name,state,ctx,target) {
       const out = systems[name].output?.(state,ctx) ?? {};
@@ -383,18 +389,38 @@
         dropped:dropped+overflow};
     }
     function save() {
-      return freeze({format:checkpointFormat,version:1,tick,world,states,outputs,manual,delays,history,dropped,
+      if(lastCheckpoint)return lastCheckpoint;
+      lastCheckpoint=freeze({format:checkpointFormat,version:1,tick,world,states,outputs,manual,delays,history,dropped,
         signals:lastSignals,events:lastEvents,pending:packCommands(),scenario,
         ...(lastTransfers.length && {transfers:lastTransfers}),
         ...(weatherTrackState && {weatherTrackState}),
         ...(pendingWrites.length && {dependencyWrites:pendingWrites}),...(rates && {sampling}),
         ...(chunkState&&{simulationChunks:chunkState}),
         ...(Object.keys(spatialSampling).length && {spatialSampling}),...(causalState && {causality:causalState})});
+      savedCheckpoints.add(lastCheckpoint);
+      return lastCheckpoint;
+    }
+    function install(payload) {
+      ({tick,states,outputs,manual,delays,history,dropped,scenario,signals:lastSignals,events:lastEvents}=payload);
+      chunkState=payload.simulationChunks;
+      sampling=payload.sampling;
+      lastTransfers=payload.transfers??[];
+      pendingWrites=payload.dependencyWrites??[];
+      spatialSampling=payload.spatialSampling??{};
+      causalState=payload.causality;
     }
     function restore(saved) {
       check(record(saved) && saved.format === checkpointFormat && saved.version === 1 && equal(saved.world,world) && tickOK(saved.tick),
         'Checkpoint belongs to a different world or version');
-      const payload = freeze(copy(saved));
+      const payload=savedCheckpoints.has(saved)?saved:freeze(copy(saved));
+      if(token===branchToken){
+        for(const name of names)if(systems[name].shareCheckpoint!==true)systems[name].validateState?.(payload.states[name]);
+        install(payload);
+        weatherTrackState=payload.weatherTrackState;
+        queue(payload.pending,false);
+        lastCheckpoint=payload;
+        return;
+      }
       check(record(payload.states) && equal(ordered(payload.states),names) && record(payload.scenario) &&
         Array.isArray(payload.history) && Array.isArray(payload.events) && Number.isSafeInteger(payload.dropped) && payload.dropped>=0 && Array.isArray(payload.pending),
         'Malformed checkpoint state');
@@ -407,36 +433,31 @@
         check(Array.isArray(payload.delays[name]) && payload.delays[name].length === rootDelays[name].length,'Invalid delay buffer ' + name);
         for (const value of payload.delays[name]) portValue(ports.inputs[name],value,name);
       }
-      if(chunks){chunks.validate(payload.simulationChunks,payload.tick);chunkState=payload.simulationChunks;}
+      if(chunks)chunks.validate(payload.simulationChunks,payload.tick);
       else check(!own(payload,'simulationChunks'),'Unexpected simulation chunk checkpoint data');
-      aggregates?.validate(payload.states,chunkState);
+      aggregates?.validate(payload.states,payload.simulationChunks);
       if (rates) {
-        rates.validate(payload.sampling,portValue,payload.tick,chunkState);
-        sampling = payload.sampling;
+        rates.validate(payload.sampling,portValue,payload.tick,payload.simulationChunks);
       }
       for (const name of names) systems[name].validateState?.(payload.states[name]);
       transfers.validateBalances(payload.states);
       if (own(payload,'transfers')) transfers.validateReceipts(payload.transfers,payload.tick);
-      lastTransfers = payload.transfers ?? [];
       if (own(payload,'dependencyWrites')) {
         check(Array.isArray(payload.dependencyWrites),'Invalid saved spatial writes');
         dependencies.begin(payload.dependencyWrites);
-        pendingWrites = payload.dependencyWrites;
       }
       if (own(payload,'spatialSampling')) {
         check(record(payload.spatialSampling),'Malformed spatial sampling buffers');
         for (const [name,notices] of Object.entries(payload.spatialSampling)) {
-          const waiting=chunks?.managed.has(name)?chunkState.clocks[name].lastTick!==payload.tick:payload.tick%slowReaders.get(name);
+          const waiting=chunks?.managed.has(name)?payload.simulationChunks.clocks[name].lastTick!==payload.tick:payload.tick%slowReaders.get(name);
           check(slowReaders.has(name) && waiting && Array.isArray(notices) &&
             dependencies.begin(notices).affected(name).length===notices.length,'Invalid saved spatial notices for '+name);
         }
-        spatialSampling = payload.spatialSampling;
       }
       if (causePolicy) {
         W.causality.validate(payload.causality,payload.tick,ports,incoming,systems,causePolicy);
-        causalState = payload.causality;
       } else check(!own(payload,'causality'),'Unexpected causal checkpoint data');
-      ({tick,states,outputs,manual,delays,history,dropped,scenario,signals:lastSignals,events:lastEvents} = payload);
+      install(payload);
       if (weather) weatherTrackState = weather.validate(payload.weatherTrackState,tick*world.dt);
       else check(!own(payload,'weatherTrackState'),'Unexpected weather track checkpoint data');
       enqueue(payload.pending,false);
@@ -754,6 +775,7 @@
       weatherTrackState = nextWeather;
       scheduled.delete(at);
       currentQuery = undefined;
+      lastCheckpoint=undefined;
       for (const [name,{calls,ms}] of Object.entries(spent)) {
         const value = metrics.get(name) ?? {calls:0,ms:0,maxMs:0};
         metrics.set(name,{calls:value.calls+calls,ms:value.ms+ms,maxMs:Math.max(value.maxMs,ms)});
@@ -790,8 +812,12 @@
         systems:Object.fromEntries(names.filter(name=>jobsBySystem.has(name)).map(name=>[name,jobsBySystem.get(name)]))}),
       dependencies:() => ({declarations:dependencies.describe,
         ...(lastDependencies ?? {changes:[],affected:[],work:[]}),pending:pendingWrites}),
-      fork:() => create(world,{checkpoint:save(),implementations,profile,validated:true,workerPool}),
-      reset:() => create(origin.world,{checkpoint:origin,implementations,profile,validated:true,workerPool})});
+      fork:() => branch(save()),
+      reset:() => branch(origin)});
+    function branch(checkpoint){
+      return create(checkpoint.world,{checkpoint,implementations,profile,validated:true,workerPool},
+        checkpoint.world===plan.world?branchToken:undefined);
+    }
   }
   function replay(log, options) {
     check(record(log) && log.format === runFormat && log.version === 1, 'Invalid world recording');

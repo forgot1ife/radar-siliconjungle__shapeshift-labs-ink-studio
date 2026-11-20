@@ -14,12 +14,16 @@
     const total=a+b+c+d;
     return total?(a*data[i]+b*data[j]+c*data[k]+d*data[l])/total:0;
   }
-  function gridDomain({width,height,cell=0.1,origin=[0,0],mask}={}){
+  function gridSpacing({width,height,cell=0.1,origin=[0,0],mask}={}){
     const spacing=typeof cell==='number'?[cell,cell]:cell;
     if(!integer(width,1,768)||!integer(height,1,768)||width*height>220000||
       !vector(spacing)||!spacing.every(v=>number(v,1e-5,10000))||!vector(origin)||
       (mask!==undefined&&typeof mask!=='function')) throw new Error('Motion grids need finite XZ dimensions and spacing');
-    const [dx,dz]=spacing,[ox,oz]=origin,size=width*height,bounds={min:[ox,oz],max:[ox+dx*width,oz+dz*height]},
+    return spacing;
+  }
+  function gridDomain({width,height,cell,origin=[0,0],mask}={}){
+    const [dx,dz]=gridSpacing({width,height,cell,origin,mask}),[ox,oz]=origin,size=width*height,
+      bounds={min:[ox,oz],max:[ox+dx*width,oz+dz*height]},
       open=new Uint8Array(size),xAt=i=>ox+(i%width+0.5)*dx,zAt=i=>oz+(Math.floor(i/width)+0.5)*dz,
       center=i=>[xAt(i),zAt(i)];
     for(let i=0;i<size;i++)open[i]=Number(!mask||Boolean(mask(xAt(i),zAt(i),i)));
@@ -195,5 +199,5 @@
     }
     return Object.freeze({step,snapshot});
   }
-  Object.assign(M,{stableFluid,gridDomain});
+  Object.assign(M,{stableFluid,gridDomain,gridSpacing});
 })(KIT);

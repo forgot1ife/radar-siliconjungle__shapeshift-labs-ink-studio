@@ -9,7 +9,10 @@
       Number.isSafeInteger(factor)&&factor>=2&&factor<=16&&width%factor===0&&height%factor===0,
     'Water block factor must divide both grid dimensions and be 2–16');
     const across=width/factor, rows=height/factor, blockArea=dx*dz*factor*factor, area=dx*dz, count=factor*factor;
-    const solver=P.motion.shallowWater({width:across,height:rows,cell:[dx*factor,dz*factor],origin,maxDepth});
+    const grid={width:across,height:rows,cell:[dx*factor,dz*factor],origin,maxDepth};
+    P.motion.gridSpacing(grid);
+    let scratchSolver;
+    const getSolver=()=>scratchSolver??=P.motion.shallowWater(grid);
     const block=i=>Math.floor((i%width)/factor)+Math.floor(i/(width*factor))*across;
     function reduce(state){
       const {fluid}=state, {bed,depth,mx,mz}=fluid;
@@ -91,12 +94,13 @@
       validate(state){
         check(Array.isArray(state?.bed)&&state.bed.length===width*height&&
           state.bed.every(n=>Number.isFinite(n)&&Math.abs(n)<=1e7),'Invalid retained detailed water bed');
-        solver.restore(state.fluid);
+        getSolver().restore(state.fluid);
       },
       step(state,ctx){
+        const solver=getSolver();
         solver.restore(state.fluid);
         solver.step(ctx.dt,{rain,drain,friction,...ctx.simulationLOD?.tuning});
-        return freeze({bed:state.bed,fluid:solver.checkpoint()});
+        return freeze({bed:state.bed,fluid:solver.checkpoint({shareBed:true})});
       },
       output(state){
         const out={volume:volume(state)};

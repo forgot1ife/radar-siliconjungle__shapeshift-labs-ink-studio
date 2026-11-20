@@ -251,7 +251,7 @@ function skyTransitionsOption() {
   if (typeof value !== 'string') die('--sky-transitions needs a JSON array file or off');
   return skyTransitionsOverride ??= JSON.parse(fs.readFileSync(path.resolve(value),'utf8'));
 }
-let shadowArtOverride;
+let shadowArtOverride, compositeOverride, renderGraphOverride;
 function shadowArtOption() {
   const value = opt['shadow-art'];
   if (value === undefined) return;
@@ -551,6 +551,10 @@ const view = extra =>
       colored: !!opt.colored,
       splatOrder: opt['splat-order'],
       stableTransparency: onOffOption('stable-transparency'),
+      composite: opt.composite === 'off' ? false : opt.composite === undefined ? undefined :
+        (compositeOverride ??= JSON.parse(fs.readFileSync(path.resolve(opt.composite), 'utf8'))),
+      renderGraph: opt['render-graph'] === 'off' ? false : opt['render-graph'] === undefined ? undefined :
+        (renderGraphOverride ??= JSON.parse(fs.readFileSync(path.resolve(opt['render-graph']), 'utf8'))),
       fine: !!opt.fine,
       clean: !!opt.clean,
       ortho: !!opt.ortho,
@@ -655,6 +659,7 @@ const CMD = {
         '    scene apply <scene> <edits.json> --dry-run   preview edited paths and look targets',
         '  sim run|resume|fork|reset|replay|diff|sweep|render ...  run or compare fixed-tick simulations',
         '    sim run <world> --workers N [--profile]   advance eligible systems in deterministic Node worker partitions',
+        '    sim run <world> --checkpoint file.json --checkpoint-store DIR   reuse snapshot blocks across checkpoints and runs',
         '    sim dependencies <scene|run|driver.js> [--ticks N] [--actions file] [--out report.json]   report spatial rebuilds',
         '    sim sweep <world|run> <cases.json>   use look cases to compare one fixed simulation snapshot',
         '  compare <scene|run> --looks cases.json [--out sheet.png]   compare look variants on the same view',
@@ -760,7 +765,7 @@ const CMD = {
         'layered horizon: --horizon-bands on|off|file.json',
         'art direction: --art-direction on|off|painted-pixel|storm-silhouette|soft-dawn|file.json',
         'effect palette options: --effect-palettes on|off|file.json',
-        'art options: --palette-remap off --color-curves off --lut <file.cube|file.json|off> --color-stack <file.json|off> --ink off --effects off --stable on|off|file.json --snap on|off --dither-space screen|world|object --dither-spacing n --dither-origin x,y,z --resolve native|coverage|clusters --splat-order center|surface --stable-transparency on|off --volume-scale 2 --volume-steps 8 --volume-jitter off|blue-noise|spatiotemporal'
+        'art options: --palette-remap off --color-curves off --lut <file.cube|file.json|off> --color-stack <file.json|off> --ink off --effects off --stable on|off|file.json --snap on|off --dither-space screen|world|object --dither-spacing n --dither-origin x,y,z --resolve native|coverage|clusters --splat-order center|surface --stable-transparency on|off --composite file.json|off --render-graph file.json|off --volume-scale 2 --volume-steps 8 --volume-jitter off|blue-noise|spatiotemporal'
       ].join('\n')
     );
   },

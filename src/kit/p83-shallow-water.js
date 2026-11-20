@@ -14,7 +14,7 @@
       !integer(maxSteps,1,12000)||!integer(maxWork,1,240000000)||
       !number(maxDepth,1e-4,1e5)||!number(maxSpeed,0.001,1e5)||!number(dry,1e-10,0.01))
       throw new Error('Shallow water needs bounded terrain, CFL and physical controls');
-    let bed=new Float64Array(size);
+    let bed=new Float64Array(size), sharedBed;
     const initialDepth=new Float64Array(size),
       initialX=new Float64Array(size),initialZ=new Float64Array(size),cellArea=dx*dz;
     let time=0,added=0,drained=0,moved=0;
@@ -45,18 +45,21 @@
           bed:domain.sample(bedCopy,x,z),velocity:[domain.sample(vx,x,z),domain.sample(vz,x,z)]
         }:null;}});
     }
-    function checkpoint(){
-      return {time,added,drained,moved,startVolume,bed:Array.from(bed),depth:Array.from(layer.depth),
+    function checkpoint({shareBed=false}={}){
+      const terrain=shareBed?(sharedBed??=P.data.freeze(Array.from(bed))):Array.from(bed);
+      return {time,added,drained,moved,startVolume,bed:terrain,depth:Array.from(layer.depth),
         mx:Array.from(layer.x),mz:Array.from(layer.z)};
     }
     function restore(state){
       if(!state||![state.time,state.added,state.drained,state.moved,state.startVolume].every(v=>number(v,0,1e15))||
         ![state.bed,state.depth,state.mx,state.mz].every(values=>Array.isArray(values)&&values.length===size)||
-        !state.bed.every(v=>number(v,-1e7,1e7))||!state.depth.every((v,i)=>number(v,0,maxDepth)&&(open[i]||v===0))||
+        (state.bed!==sharedBed&&!state.bed.every(v=>number(v,-1e7,1e7)))||
+        !state.depth.every((v,i)=>number(v,0,maxDepth)&&(open[i]||v===0))||
         !state.mx.every((v,i)=>Number.isFinite(v)&&Number.isFinite(state.mz[i])&&
           Math.hypot(v,state.mz[i])<=maxSpeed*state.depth[i]+1e-7))
         throw new Error('Invalid shallow-water checkpoint');
-      bed=Float64Array.from(state.bed);
+      if(state.bed!==sharedBed)bed=Float64Array.from(state.bed);
+      sharedBed=P.data.isImmutable(state.bed)?state.bed:undefined;
       layer={depth:Float64Array.from(state.depth),x:Float64Array.from(state.mx),z:Float64Array.from(state.mz)};
       ({time,added,drained,moved,startVolume}=state);
     }
@@ -68,6 +71,7 @@
         return value;
       });
       bed=changed;
+      sharedBed=undefined;
     }
     function step(duration,{rain,drain,friction=0.13,opening,transfers=[],transport,bedOffset,
       cfl:stepCFL=cfl,maxDt:stepLimit=maxDt}={}){
@@ -189,6 +193,7 @@
         elapsed+=dt;substeps++;
       }
       layer={depth,x:mx,z:mz};
+      if(bed!==heightmap)sharedBed=undefined;
       bed=heightmap;
       time+=duration;added+=totalRain;drained+=totalDrain;moved+=totalMoved;
       return snapshot(substeps);

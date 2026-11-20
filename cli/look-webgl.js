@@ -56,7 +56,21 @@ function browserBackend(kit, createRenderer) {
     const debug = gl.getExtension('WEBGL_debug_renderer_info');
     const driver = gl.getParameter(debug ? debug.UNMASKED_RENDERER_WEBGL : gl.RENDERER);
     const pixel = new Uint8Array(4);
+    let target, texture;
+    if (view?.offscreen) {
+      texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, width, height);
+      const framebuffer = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+      if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE)
+        throw new Error('WebGL test framebuffer is incomplete');
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      target = { width, height, framebuffer };
+    }
     function read() {
+      if (target) gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
       const pixels = new Uint8Array(width * height * 4);
       gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
       const error = gl.getError();
@@ -65,7 +79,7 @@ function browserBackend(kit, createRenderer) {
     }
     return {
       driver,
-      draw(world, overrides) { renderer.render(world, { changedRows:[], ...view,...overrides }); },
+      draw(world, overrides) { renderer.render(world, { changedRows:[], target, ...view,...overrides }); },
       fence() { gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel); },
       pick(world, ray, frame) { return renderer.pick(world,ray,frame); },
       sample(points) {
@@ -86,6 +100,10 @@ function browserBackend(kit, createRenderer) {
       },
       close() {
         renderer.dispose();
+        if (target) {
+          gl.deleteFramebuffer(target.framebuffer);
+          gl.deleteTexture(texture);
+        }
         gl.getExtension('WEBGL_lose_context')?.loseContext();
       }
     };

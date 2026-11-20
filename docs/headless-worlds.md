@@ -19,6 +19,9 @@ from explicit inputs, or hold its state in a checkpoint while sleeping.
 [Deterministic simulation workers](simulation-workers.md) run independent
 system steps on Node threads. A checkpoint can move between worker counts.
 
+[Shared simulation checkpoints](simulation-checkpoints.md) let branches
+reuse immutable state in process and content-addressed blocks on disk.
+
 ## Run and compare a watershed
 
 Save the starting checkpoint after the reservoir has settled.

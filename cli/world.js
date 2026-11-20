@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+const CheckpointStore = require('../src/simulation-checkpoint-store.js');
 
 const read = file => JSON.parse(fs.readFileSync(path.resolve(file),'utf8'));
 const parse = input => JSON.parse(String(input));
@@ -19,6 +20,13 @@ function write(file,value) {
   } finally {
     if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
   }
+}
+function readCheckpointFile(file) {
+  const value = read(file);
+  if (value?.format !== CheckpointStore.format) return { value };
+  ensure(typeof value.store === 'string' && value.store.length > 0, 'Checkpoint reference needs a store path');
+  const store = path.resolve(path.dirname(path.resolve(file)), value.store);
+  return { value: CheckpointStore.openCheckpointStore(store).load(value), store };
 }
 function target(opt) {
   if (opt.select !== undefined) {
@@ -59,12 +67,12 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
       return value.format===W.format ? document(value) : value.simulation ? document(value.simulation) : {legacy:file};
     }
     if (/\.json$/i.test(file)) {
-      const value = read(file);
+      const { value,store } = readCheckpointFile(file);
       if (value.format === W.format) return document(value);
       if (!lookPreview && [R.checkpointFormat,R.runFormat].includes(value.format))
         ensure(opt['asset-pack']===undefined,'Recorded runs and checkpoints keep their original asset packs');
-      if (value.format === R.checkpointFormat) return {world:value.world,checkpoint:value};
-      if (value.format === R.runFormat) return {world:value.end.world,checkpoint:value.end,log:value};
+      if (value.format === R.checkpointFormat) return {world:value.world,checkpoint:value,store};
+      if (value.format === R.runFormat) return {world:value.end.world,checkpoint:value.end,log:value,store};
       return {legacy:file,document:value};
     }
     return {legacy:file};
@@ -208,11 +216,21 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
       systems:Object.keys(checkpoint.states),commands:run.commandCounts(),events:checkpoint.history.length,historyDropped:checkpoint.dropped,
       scenario:run.scenario,...(checks?{checks}:{}),...(opt.profile?{profile:run.profile()}:{})};
   }
-  function finish(run) {
+  function finish(run, sourceStore) {
     const checks = opt.assert ? assert(run,read(opt.assert)) : null;
-    if (opt.checkpoint) write(opt.checkpoint,run.checkpoint());
-    if (opt.record) write(opt.record,run.recording());
-    respond(summary(run,checks));
+    const directory=opt['checkpoint-store']==='off'?undefined:opt['checkpoint-store']??sourceStore;
+    const store=directory&&CheckpointStore.openCheckpointStore(directory), storage={};
+    function save(key,file,value){
+      if(!store){write(file,value);return;}
+      ensure(typeof file==='string'&&file.length>0,'Expected an output file');
+      const {reference,...stats}=store.save(value);
+      const location=path.relative(path.dirname(path.resolve(file)),store.directory)||'.';
+      write(file,{...reference,store:location});
+      storage[key]={root:reference.root,...stats};
+    }
+    if (opt.checkpoint) save('checkpoint',opt.checkpoint,run.checkpoint());
+    if (opt.record) save('record',opt.record,run.recording());
+    respond({...summary(run,checks),...(Object.keys(storage).length&&{storage})});
     if (checks?.some(row => !row.pass) || opt.scenario && ['fail','timeout'].includes(run.scenario.status))
       process.exitCode = 2;
   }
@@ -261,6 +279,8 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
       ...(workerPool&&{partitions:run.partitions()})});
   }
   function sim(args) {
+    ensure(opt['checkpoint-store']===undefined||typeof opt['checkpoint-store']==='string'&&
+      opt['checkpoint-store'].length>0,'--checkpoint-store needs a directory or off');
     if(opt.workers!==undefined){
       ensure(typeof opt.workers==='string'&&/^\d+$/.test(opt.workers),'--workers needs a count from 1 to 32');
       workerPool=require('../index.js').createSimulationWorkers(Number(opt.workers));
@@ -282,19 +302,19 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
         const run = runtime(input,!!(opt.profile||opt.assert));
         schedule(run);
         run.advance(to(run),{stopOnOutcome:!!opt.scenario});
-        finish(run);
+        finish(run,input.store);
         break;
       }
       case 'dependencies': return dependencyReport(file);
       case 'reset': {
         const input=load(file);
-        finish(input.log?R.create(input.log.origin.world,{checkpoint:input.log.origin,workerPool}):runtime(input));
+        finish(input.log?R.create(input.log.origin.world,{checkpoint:input.log.origin,workerPool}):runtime(input),input.store);
         break;
       }
       case 'replay': {
         const input=load(file);
         ensure(input.log,'Expected a run recording');
-        finish(R.replay(input.log,{profile:!!(opt.profile||opt.assert),workerPool}));
+        finish(R.replay(input.log,{profile:!!(opt.profile||opt.assert),workerPool}),input.store);
         break;
       }
       case 'diff': {
@@ -514,7 +534,7 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
       return true;
     }
     if (!/\.json$/i.test(file??'')) return false;
-    const raw=read(file);
+    const { value:raw }=readCheckpointFile(file);
     if (raw.format==='ink-studio/authoring') {
       kit.KIT.authoring.data.documentView(raw);
       respond({valid:true,format:raw.format});

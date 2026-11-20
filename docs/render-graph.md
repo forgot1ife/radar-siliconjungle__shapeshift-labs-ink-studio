@@ -1,0 +1,32 @@
+# Editable render graph
+
+Set `look.renderGraph` on a scene or pass `renderGraph` to either renderer. The graph starts from the resolved scene image, including any world and screen-layer composition already configured on the frame. To place a screen layer anywhere in the graph, give it its own composite pass. The CPU and WebGL use the same pass definitions.
+
+The graph contains an ordered `passes` list of up to 32 entries and an optional `output` image ID. Each pass has a unique `id` and a `type`. The built-in image ID `scene` names the starting image. An image pass takes its `input` from the preceding image by default. Named inputs, sources and masks must refer to earlier outputs of the right type. The last image is the default output. Branches that do not contribute to the chosen output are skipped.
+
+| Pass | Controls |
+| --- | --- |
+| `mask` | Outputs coverage for downstream passes. An optional `rect` uses `[x, y, width, height]` and `feather` softens its edges inward. `invert` flips the combined coverage. |
+| `grade` | Applies an RGB `stack` to the input. CPU and WebGL use the same sampled color cube. `cubeSize` defaults to 33 and accepts 2–65. |
+| `reflection` | Mirrors the current image or a named `source` along `axis` (`x` or `y`). `line` sets the reflection line in output pixels and defaults to the midpoint. |
+| `distortion` | Samples the input or a named `source` using an XY `offset` in pixels and optional per-axis wave `amplitude`. `period` is in pixels, and `phase` and `rate` are in cycles and cycles per second. |
+| `composite` | Blends a named `source` image using `over` or `add`, or draws a single [mixed-resolution layer](mixed-resolution.md) from `layer` using its own resolution, filtering and blend settings. |
+
+Screen coordinates are in final output pixels from the top left. Reflected and distorted samples outside the image leave the input pixel unchanged. Graph reflection and distortion work on screen images. Scene-space planar capture, glass refraction and depth-dependent media use the scene renderer.
+
+Passes can set `select` to a named object, entity, material, surface, prefab or tag selector. The selection follows the visible depth-writing splat at each pixel of the world grid. A `mask` reference can narrow the selection further. `opacity` scales the effect from zero to one. A pass with `enabled: false` keeps its image input or supplies zero mask coverage. Requested diagnostic buffers remain on the native world grid.
+
+## Editing a live graph
+
+Call `K.renderGraph.create(definition)` and give the returned editor to the renderer as its graph. Edit the same instance between frames, without rebuilding the world.
+
+| Method | Effect |
+| --- | --- |
+| `move(id, index)` | Moves a pass to a zero-based position. |
+| `update(id, changes)` | Applies a shallow update to a pass. |
+| `insert(pass, index?)` | Inserts a pass or appends it. |
+| `remove(id)` | Removes a pass. |
+| `replace(definition)` | Replaces the graph, including its output. |
+| `snapshot()` | Returns the current read-only definition. |
+
+Edits validate the entire dependency order before they take effect. A rejected edit leaves the previous definition active. JSON graphs can be authored with the scene or passed to the CLI using `--render-graph file.json`. Use `--render-graph off` or `renderGraph: false` for an unmodified comparison.

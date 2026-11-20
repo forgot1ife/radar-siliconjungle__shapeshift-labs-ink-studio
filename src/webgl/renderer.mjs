@@ -1,4 +1,6 @@
 import { waterReflectionPlan, selectReflectionWorld } from './reflections.mjs';
+import { createRenderGraph, graphOwner } from './render-graph.mjs';
+import { createFrameComposite } from './frame-composite.mjs';
 import { createSurfacePipeline } from './surfaces.mjs';
 import { createResources } from './resources.mjs';
 import { createTargets } from './targets.mjs';
@@ -591,7 +593,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       const wantsRelight = lighting && (frame.relighting ?? world.relighting);
       let group = frame.instances;
       // Per-pixel material, palette, and detail rules index the expanded world.
-      if (group && (frame.order || tolerance || wantsRelight || world.opticalSplats || instancePlan(group).hasOpticalSplats || !raw && (constraintDefinition || look.pixel && world.pix ||
+      if (group && (frame[graphOwner] || frame.order || tolerance || wantsRelight || world.opticalSplats || instancePlan(group).hasOpticalSplats || !raw && (constraintDefinition || look.pixel && world.pix ||
           needsDetailFlags || budget?.fineOn || budget?.fineOff))) {
         expandInstances ??= createExpandedInstances();
         const expanded = expandInstances(world,group,frame.changedRows);
@@ -671,7 +673,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
           (waterScene && frame.time !== lastWaterTime)) historyValid = false;
       geometry.resize(rw, rh);
       contours.resize(colored ? width : 1, colored ? height : 1);
-      const ownsPixels = patterned || !!constraints && !coverage || scopedCleanup;
+      const ownsPixels = !!frame[graphOwner] || patterned || !!constraints && !coverage || scopedCleanup;
       owner.resize(ownsPixels ? width : 1, ownsPixels ? height : 1);
       if (scopedCleanup) detailTable ??= table(512, 7, maxSize);
       if (materialStyles) materialStyleTable ??= table(512, 16, maxSize);
@@ -836,6 +838,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       }
       if (ownsPixels)
         drawGeometry(shader, owner, width, height, { u_idx: 1, u_snap: 1, u_hard: 0, tangent,surfaces,surfaceFrame:{...surfaceFrame,index:true} });
+      frame[graphOwner]?.(world, owner.textures[0]);
       if (cover)
         drawGeometry(shader, cover.buffer, width, height,
           { u_idx: 2, u_snap: +(!raw && !colored), u_hard: 0, u_splatPlane: cover.plane, tangent, surfaces, surfaceFrame:{...surfaceFrame,index:true,clip:cover.plane} });
@@ -1030,7 +1033,34 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       gl.activeTexture(gl.TEXTURE0);
     }
     const viewportLimit = gl.getParameter(gl.MAX_VIEWPORT_DIMS);
-    return { render: present, dispose() { surfacePipeline?.dispose(); pipeline.dispose(); resources.dispose(); } };
+    let composite;
+    function presentMixed(world, frame, width, height, output) {
+      const definition = frame.composite ?? world.look?.composite;
+      if (definition === undefined || definition === false) return present(world, frame, width, height, output);
+      const api = toolkit.KIT?.frameComposite;
+      if (!api) throw new Error('Mixed-resolution frames need the Ink Studio KIT');
+      const plan = api.prepare(definition, width, height, world.look?.pixelSize ?? 1);
+      if ([plan, plan.world].some(({ w, h }) => w > Math.min(maxSize, viewportLimit[0]) ||
+          h > Math.min(maxSize, viewportLimit[1])) || plan.layers.some(({ w, h }) => w > maxSize || h > maxSize))
+        throw new RangeError('Composite frame exceeds the WebGL viewport or texture size limit');
+      const layers = api.layers(plan, world, frame.time ?? world.lookSnapshot?.time ?? 0);
+      composite ??= createFrameComposite(gl, { program, resources, target, textureUnit, fullscreen });
+      composite(world, frame, plan, layers, output, present);
+    }
+    let renderGraph;
+    function presentFrame(world, frame, width, height, output) {
+      const definition = frame.renderGraph ?? world.look?.renderGraph;
+      if (definition === false || definition === undefined) return presentMixed(world, frame, width, height, output);
+      const api = toolkit.KIT?.renderGraph;
+      if (!api) throw new Error('Render graphs need the Ink Studio KIT');
+      const plan = api.prepare(definition);
+      if (!plan?.passes.length) return presentMixed(world, frame, width, height, output);
+      if (width > Math.min(maxSize, viewportLimit[0]) || height > Math.min(maxSize, viewportLimit[1]))
+        throw new RangeError('Render graph exceeds the WebGL viewport or texture size limit');
+      renderGraph ??= createRenderGraph(gl, { api, program, resources, target, textureUnit, fullscreen, maxSize });
+      renderGraph(world, frame, plan, width, height, output, presentMixed);
+    }
+    return { render: presentFrame, dispose() { surfacePipeline?.dispose(); pipeline.dispose(); resources.dispose(); } };
   } catch (error) {
     pipeline?.dispose();
     resources.dispose();
