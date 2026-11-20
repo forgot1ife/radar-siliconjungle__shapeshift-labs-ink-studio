@@ -469,6 +469,7 @@ There are several simulation levels:
 | API | Use |
 | --- | --- |
 | `K.breaker`, `K.rubble`, `K.debris` | Breaking, unsupported pieces, falling rubble and loose fragments. |
+| [`K.destruction`](docs/destruction.md) | Named structural groups, current-pose physics handoffs, swept cannonball/catapult impacts, support cascades and exact reset. |
 | `K.jelly`, `K.sand` | Lightweight shape deformation or granular motion. |
 | `K.mpm` | A material-point solver for elastic jelly, yielding clay, granular sand and water. |
 | `K.sandbox` | A cellular material simulation with fluid flow, heat, phase changes and reactions. |
