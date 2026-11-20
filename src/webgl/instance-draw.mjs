@@ -92,7 +92,7 @@ export function createInstanceDraw(table, geometry, maxSize) {
   let previousGroup, atlas, settings, revision;
   let previousBase, previousData, previousCount;
   return {
-    bind(group, world, dirtyRows, reload) {
+    bind(group, world, dirtyRows, reload, data = world.data) {
       const plan = instancePlan(group);
       const fresh = previousGroup !== group || previousBase !== world || previousData !== world.data ||
         previousCount !== world.count;
@@ -101,14 +101,14 @@ export function createInstanceDraw(table, geometry, maxSize) {
         if (Math.ceil(count / (rowSamples * 16)) > maxSize)
           throw new RangeError('Shared splat geometry exceeds the WebGL texture size limit');
         atlas = new Float32Array(count);
-        atlas.set(world.data.subarray(0, world.count * 16));
+        atlas.set(data.subarray(0, world.count * 16));
         for (const asset of plan.assets) atlas.set(asset.data, (world.count + asset.offset) * 16);
       }
       const dirty = baseDirtyRows(world,dirtyRows);
       if (!fresh) {
         for (const row of dirty) {
           const from = row * rowSamples * 16;
-          atlas.set(world.data.subarray(from, Math.min(from + rowSamples * 16, world.count * 16)), from);
+          atlas.set(data.subarray(from, Math.min(from + rowSamples * 16, world.count * 16)), from);
         }
       }
       geometry.upload(atlas, atlas.length, fresh || reload ? undefined : dirty);

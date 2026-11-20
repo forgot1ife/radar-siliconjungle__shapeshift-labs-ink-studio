@@ -51,7 +51,7 @@ const ArtDirection = (() => {
       const w = clamp((far-depth)/(far-near)), amount = (contrast-1)*w*w*(3-2*w);
       return gradeContrast(r,g,b,amount,pivot,out);
     }
-    return Object.freeze({ cloudEdge, bands, foreground: contrast === 1 ? null : foreground,
+    return Object.freeze({ cloudEdge, bands, atmosphereBands:count, cloudHardness:hardness, foreground: contrast === 1 ? null : foreground,
       cadence: Object.freeze({ scene, environment }) });
   }
 

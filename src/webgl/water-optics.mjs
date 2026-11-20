@@ -1,3 +1,5 @@
+import { environmentBackgroundGLSL } from './environment-shaders.mjs';
+
 // Exact ray intervals through the published water columns. Distance is in
 // world units, independently of perspective, ortho, and the scene depth ramp.
 export const waterGLSL = (airPockets, layered, atlas) => `
@@ -368,17 +370,23 @@ vec3 waterPaint(vec3 color, vec2 pixel, vec2 size, float axial, out vec3 mark) {
 }
 `;
 
-export const waterBackgroundShader = (airPockets, layered, atlas) => `#version 300 es
+export const waterBackgroundShader = (airPockets, layered, atlas, environment, layeredGlass) => `#version 300 es
 precision highp float;
 ${waterGLSL(airPockets, layered, atlas)}
 uniform vec2 u_waterViewport;
 uniform vec3 u_waterBackground;
+${environment ? environmentBackgroundGLSL : ''}
 layout(location=0) out vec4 scene;
 layout(location=1) out vec4 depth;
 layout(location=2) out vec4 mask;
+${layeredGlass ? 'layout(location=3) out vec4 back; layout(location=4) out vec4 through;' : ''}
 void main() {
   vec3 mark;
-  scene = vec4(waterPaint(u_waterBackground, gl_FragCoord.xy, u_waterViewport, 400.0, mark), 1);
+  vec3 source = ${environment ? 'envBackdrop(gl_FragCoord.xy,u_waterViewport)' : 'u_waterBackground'};
+  vec3 color = waterPaint(source,gl_FragCoord.xy,u_waterViewport,400.0,mark);
+  ${environment ? 'color = envMedia(color,gl_FragCoord.xy,u_waterViewport,u_envHorizon);' : ''}
+  scene = vec4(color,1);
   depth = vec4(1, 0, 0, 1);
   mask = vec4(mark, 1);
+  ${layeredGlass ? 'back = scene; through = vec4(1);' : ''}
 }`;
