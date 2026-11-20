@@ -125,7 +125,8 @@ test('a baked quadruped trot carries all four pads and a tail through native pup
 test('bakes editable keys through held transitions, spin wraps, and an off-grid terminal pose', () => {
   const profile = { root: 'body', roles: { body: {} } };
   const rig = { puppet: { parts: { body: { pivot: [0, 0, 0] } } } };
-  const clip = K.anim.clip({ id: 'take', dur: 1.14, loop: true, fps: 1, cues: [[0.52, 'beat']], tracks: {
+  const clip = K.anim.clip({ id: 'take', dur: 1.14, loop: true, fps: 1, cues: [[0.52, 'beat']],
+    events: [{ name: 'land', time: 1.14, data: { material: 'stone' } }], tracks: {
     'body.rot': [[0, [0, 0, 0], 'linear'], [1, [0, 360, 0]], [1.14, [10, 370, 3]]],
     'body.pos': [[0, [0, 0, 0], 'step'], [0.52, [2, 0, 0]], [1.14, [3, 0, 1]]]
   } });
@@ -134,6 +135,7 @@ test('bakes editable keys through held transitions, spin wraps, and an off-grid 
   assert.equal(roundTrip.id, 'take');
   assert.equal(roundTrip.loop, true);
   assert.deepEqual(roundTrip.cues, clip.cues);
+  assert.deepEqual(roundTrip.animationEvents, clip.animationEvents);
   near(roundTrip.sample(0.5, {}, { sourceTime: true }).body.pos, [0, 0, 0]);
   near(roundTrip.sample(0.52, {}, { sourceTime: true }).body.pos, [2, 0, 0]);
   near(roundTrip.sample(1.14, {}, { sourceTime: true }).body.pos, [3, 0, 1]);

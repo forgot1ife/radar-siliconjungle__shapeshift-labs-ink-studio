@@ -224,7 +224,7 @@
             step: step.id, clip: step.clip, part: track.part, channel: track.ch, sourceTime, time: authoredTime(sourceTime)
           }));
         }
-        for (const cue of clip.cues) {
+        for (const cue of [...clip.cues, ...(clip.animationEvents ?? [])]) {
           const event = Array.isArray(cue) ? { time: cue[0], id: cue[1] } : cue;
           if (event?.enabled === false || !(event?.time >= step.in && event.time <= step.out)) continue;
           const sourceTime = event.time, time = stepTime(instance, sourceTime);

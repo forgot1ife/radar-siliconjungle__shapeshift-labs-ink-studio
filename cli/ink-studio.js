@@ -757,6 +757,7 @@ const CMD = {
         '  pose-review <id> [--directions 8 --w 96 --h 96]  review named poses at sprite resolution',
         '  motion-review <id> [--finding kind-or-id] [--out report.json]  inspect motion findings and focused playback ranges',
         '  clip-sequence <id> [--handoff 0] [--out report.json]  inspect clip instances, retimed cues, and handoffs',
+        '  animation-graph <graph.json> [--at seconds] [--inputs file.json] [--out report.json]  inspect poses and event responses',
         '  timeline <scene> [--at seconds] [--from seconds --to seconds] [--out report.json]  sample tracks and export cues',
         '  authored-contacts <id> [--at seconds] [--out report.json]  inspect contact ranges and socket transfer timing',
         '  motion-fx <id> [--at seconds] [--out report.json]  inspect keyed FX layers and sampled effect output',
@@ -1249,6 +1250,44 @@ const CMD = {
     const regions = Object.fromEntries(['pin', 'free', 'protected'].map(role => [role, review.regions().filter(value => value === role).length]));
     process.stdout.write(JSON.stringify({ scene: world.id, sourceTime: demo.selected(),
       nu: review.nu, nv: review.nv, regions, ...review.state(), ...(bake && { bake }) }, null, 2) + '\n');
+  },
+  'animation-graph'() {
+    if (!pos[0] || opt.inputs === true || opt.at === true || opt.out === true)
+      throw Error('Use animation-graph <graph.json> [--at seconds] [--inputs file.json] [--out report.json]');
+    const read = file => JSON.parse(fs.readFileSync(path.resolve(file), 'utf8'));
+    const machine = lib().KIT.anim.animationGraph.create(read(pos[0]));
+    const actions = opt.inputs === undefined ? [] : read(opt.inputs);
+    if (!Array.isArray(actions) || actions.length > 10000) throw Error('Expected an ordered list of animation graph inputs');
+    const end = num('at', actions.at(-1)?.time ?? 0);
+    if (!Number.isFinite(end) || end < 0) throw Error('Animation graph needs a finite nonnegative time');
+    const events = [];
+    let time = 0, frame;
+    function advance(at) {
+      frame = machine.advance(at - time);
+      events.push(...frame.events);
+      if (events.length > 10000) throw Error('Animation graph report exceeds its event budget');
+      time = at;
+    }
+    for (const row of actions) {
+      if (!row || !Number.isFinite(row.time) || row.time < time || row.time > end ||
+          (row.set !== undefined && (!row.set || typeof row.set !== 'object' || Array.isArray(row.set))) ||
+          (row.fire !== undefined && !Array.isArray(row.fire)))
+        throw Error('Animation graph inputs need ordered times, set values, and trigger lists');
+      if (row.time > time) advance(row.time);
+      for (const [key, value] of Object.entries(row.set ?? {})) machine.set(key, value);
+      for (const trigger of row.fire ?? []) machine.fire(trigger);
+      advance(time);
+    }
+    advance(end);
+    const layers = frame.layers.map(layer => ({ ...layer, samples: layer.samples.map(sample => ({
+      ...sample, clip: sample.clip.id ?? null
+    })) }));
+    const report = JSON.stringify({ ...frame, layers, events, pose: machine.pose() }, null, 2) + '\n';
+    if (opt.out) {
+      const out = path.resolve(opt.out);
+      fs.mkdirSync(path.dirname(out), { recursive: true });
+      fs.writeFileSync(out, report);
+    } else process.stdout.write(report);
   },
   timeline() {
     return worldCLI().inspectTimeline(pos[0]);

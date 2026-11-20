@@ -298,6 +298,8 @@ The [unified scene timeline](docs/scene-timeline.md) synchronizes camera motion,
 
 Use `K.rig` for tagged rigid parts, `K.creature` for a creature rig, and `K.puppet` for hierarchical parts with deformation. `K.anim` provides clips, easing, layers, state machines, constraints, facial controls and presentation cues. `K.acts` provides ready-made action and reaction clips.
 
+Named clip markers can drive transitions, puppet contacts, sound cues, and presentation effects. [Animation events and state graphs](docs/animation-events.md)
+
 <!-- include: examples/puppet.js -->
 
 ```js

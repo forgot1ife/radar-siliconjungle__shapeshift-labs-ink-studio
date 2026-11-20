@@ -270,7 +270,8 @@
         tracks.push({ part, ch, keys: keys.every(key => same(key[1])) ? [keys[0]] : keys });
       }
       const definition = { ...(id !== undefined && { id }), ...(name !== undefined && { name }),
-        dur: duration, fps, loop: !!clip.loop, tracks, cues: structuredClone(clip.cues ?? []) };
+        dur: duration, fps, loop: !!clip.loop, tracks, cues: structuredClone(clip.cues ?? []),
+        ...(clip.animationEvents?.length && { events: structuredClone(clip.animationEvents) }) };
       return { definition, clip: A.clip(definition), frames: frames.length };
     }
     return Object.freeze({ duration, status, report, sample: time => sample(time), landmarks, bake });

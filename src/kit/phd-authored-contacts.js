@@ -167,10 +167,10 @@
       else puppet.pin(part, point, goal);
       return { goal, assist, normal, align };
     }
-    function applyContacts(t, budget) {
+    function applyContacts(t, budget, selected) {
       const active = [];
       puppet.solve();
-      const engaged = holds.filter(hold => contactStrength(t, hold) > 0);
+      const engaged = holds.filter(hold => (!selected || selected.has(hold.id)) && contactStrength(t, hold) > 0);
       for (const hold of engaged) {
         const strength = contactStrength(t, hold), spec = hold.target;
         const record = { id: hold.id, part: hold.part, strength, point: hold.point };
@@ -274,9 +274,9 @@
       if (t === key.time) return 'transfer';
       return t < key.settleEnd ? 'settle' : 'after';
     }
-    function apply(time) {
+    function apply(time, { active: selected } = {}) {
       if (!Number.isFinite(time)) throw new TypeError('Contact time must be finite');
-      const t = clamp(time, 0, duration), budget = new Map(), active = applyContacts(t, budget), reaches = [];
+      const t = clamp(time, 0, duration), budget = new Map(), active = applyContacts(t, budget, selected), reaches = [];
       for (const [index, key] of keys.entries()) {
         if (!key.reach || t < key.reachStart || t > key.settleEnd) continue;
         const strength = t === key.time ? 1 : t < key.time
@@ -324,7 +324,7 @@
         return start + (offset < 0 ? offset + span : offset);
       } });
     }
-    return Object.freeze({ duration, handoffs, contacts: ranges, pose, focus,
+    return Object.freeze({ duration, handoffs, contacts: ranges, apply, pose, focus,
       inspect: time => D.inspectPoses(puppet, () => pose(time)) });
   }
 

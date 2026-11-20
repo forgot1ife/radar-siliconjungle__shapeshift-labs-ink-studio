@@ -15,9 +15,10 @@
      K.anim.wave(age, dur, speed, damp)   the decaying wave by itself (what follows a landing, a take-off, a blow)
      K.anim.expr(e) / K.anim.run(e, vars)   a small numeric graph as data: ['add', ['var', 'time'], 2] ...
    Clips
-     K.anim.clip(def)                  { id, dur, loop, fps, tracks, cues, tools: { layers, follow }, parents }
+     K.anim.clip(def)                  { id, dur, loop, fps, tracks, cues, events, tools: { layers, follow }, parents }
                                        tracks: { 'part.channel': keys } or [{ part, ch, keys | program }]
                                        .sample(t, pose)  .time(t) (the clip's own clock, after freezes and slow motion)  .ghosts(t, o)
+                                       .eventsBetween(from, to) reads the named source-time markers
      K.anim.influence(item, t, dur)    how much a layer or constraint counts now: start, end, blend, weight (a number or keys), enabled
      K.anim.layers(pose, layers, t, dur, phase)   add pose layers: values, or a source clip masked to some parts; driver; solo
                                                 phase: 'corrective' can also be set without a pose driver
@@ -26,7 +27,7 @@
      K.anim.copy(pose, c, w)           copy or limit a channel from one part to another (see K.puppet for look, reach, pin, distance, path)
    Machines and controls
      K.anim.machine(def)               states that play clips, in layers; inputs (boolean, number, trigger); transitions with conditions, exit
-                                       time, cross-fade; from 'any', to 'exit'.   .set(id, v) .fire(id) .advance(dt) -> frame   .pose(out)
+                                       time, cross-fade, named events; from 'any', to 'exit'. .set(id, v) .fire(id) .advance(dt) -> frame
      K.anim.joystick(def)              a handle in -1..1 each way chooses a pose from two source clips: .pose([x, y], out)
      K.anim.solo(group, clip, t)       which one of a group shows now (drawing swaps)
      K.anim.face(def)                  expression (open, tilt), blinks on a schedule or on demand, gaze that wanders or follows a pointer
@@ -802,6 +803,11 @@
         events: (def.cues || []).filter(q => Array.isArray(q) || !q.type)
       };
     const wrap = t => (c.loop ? ((t % dur) + dur) % dur : clamp(t, 0, dur));
+    if (def.events !== undefined) {
+      c.animationEvents = A.animationEvents.prepare(def.events, dur);
+      c.events.push(...c.animationEvents);
+    }
+    c.eventsBetween = (from, to, options) => A.animationEvents.between(c, from, to, options);
     /* only the keys and programs: no layers, follow-through or time cues */
     const plain = (t, pose) => {
       for (const tr of tracks) {
@@ -880,7 +886,7 @@
     const m = def,
       values = new Map(),
       layers = new Map();
-    let events = [];
+    let events = [], clock = 0, contacts = new Set(), effects = [];
     for (const l of m.layers) {
       if (l.enabled === undefined) l.enabled = true;
       for (const s of l.states) {
@@ -896,12 +902,43 @@
         if (!t.conditions) t.conditions = [];
       });
     }
+    const timed = m.eventBindings !== undefined || m.layers.some(l =>
+      l.states.some(s => s.clip?.animationEvents?.length) || l.transitions.some(t => t.on !== undefined));
+    const eventAPI = timed ? A.animationEvents : null;
+    const plan = eventAPI?.responses(m.eventBindings);
+    const lanes = new Map();
+    const inputs = new Map((m.inputs ?? []).map(input => [input.id, input]));
+    const ops = { number: ['eq', 'ne', 'gt', 'ge', 'lt', 'le'], boolean: ['eq', 'ne'], trigger: ['fired'] };
+    const inputValue = (type, value) => type === 'boolean' ? typeof value === 'boolean' : Number.isFinite(value);
+    if (timed && (inputs.size !== (m.inputs?.length ?? 0) || [...inputs.values()].some(input =>
+      !eventAPI.nameOK(input.id) || !Object.hasOwn(ops, input.type) ||
+      input.type !== 'trigger' && !inputValue(input.type, input.value))))
+      throw new TypeError('Animation graph needs unique, typed inputs');
+    function validCondition(condition) {
+      const input = inputs.get(condition?.input);
+      return input && ops[input.type].includes(condition.op) &&
+        (input.type === 'trigger' || inputValue(input.type, condition.value));
+    }
+    if (timed && (m.layers.some(l => !eventAPI.nameOK(l.id)) || new Set(m.layers.map(l => l.id)).size !== m.layers.length))
+      throw new TypeError('Animation graph layers need unique IDs');
+    if (timed) for (const l of m.layers) {
+      const names = new Set(l.states.map(s => s.id));
+      if (!names.has(l.entry) || names.has('exit') || names.size !== l.states.length ||
+          l.states.some(s => !eventAPI.nameOK(s.id) || !Number.isFinite(s.speed)) ||
+          l.transitions.some(t => !(names.has(t.from) || t.from === 'any') ||
+            !(names.has(t.to) || t.to === 'exit') || !Number.isFinite(t.duration) || t.duration < 0 ||
+            t.exitTime !== null && (!Number.isFinite(t.exitTime) || t.exitTime < 0) ||
+            t.on !== undefined && !eventAPI.nameOK(t.on) ||
+            !Array.isArray(t.conditions) || Array.from(t.conditions).some(c => !validCondition(c))))
+        throw new TypeError('Invalid animation event state or transition in ' + l.id);
+      for (const state of l.states) if (state.clip) lanes.set(state, eventAPI.track(state.clip, state));
+    }
     const stateOf = (l, id) => l.states.find(s => s.id === id),
-      test = c => {
+      test = (c, pulse = true) => {
         const v = values.get(c.input);
         switch (c.op) {
           case 'fired':
-            return v === true;
+            return pulse && v === true;
           case 'eq':
             return v === c.value;
           case 'ne':
@@ -925,7 +962,7 @@
         age = elapsed * Math.abs(s.speed),
         loop = s.playback === 'loop' || (s.playback === 'clip' && c.loop),
         t = loop ? age % c.dur : Math.min(c.dur, age);
-      return { state: id, clip: c, time: s.speed < 0 ? c.dur - t : t, weight };
+      return { state: id, clip: c, time: timed ? lanes.get(s).sample(elapsed) : s.speed < 0 ? c.dur - t : t, weight };
     };
     const eligible = (l, r) => {
       if (r.state === 'exit' || r.blend) return null;
@@ -934,20 +971,25 @@
         t =>
           t.enabled &&
           (t.from === r.state || (t.from === 'any' && t.to !== r.state)) &&
-          t.conditions.every(test) &&
+          t.conditions.every(c => test(c)) &&
           (t.exitTime === null || r.elapsed * Math.abs(s ? s.speed : 1) >= (s && s.clip ? s.clip.dur : 1) * t.exitTime)
       );
     };
-    const enter = (l, r, t) => {
+    const enter = (l, r, t, at) => {
       const from = r.state;
+      if (timed && events.length + 2 > eventAPI.budget) throw new RangeError('Animation graph exceeds its transition budget');
       r.blend = t.duration
         ? { from, elapsed: r.elapsed, time: 0, duration: t.duration, easing: t.easing, id: t.id }
         : null;
       r.state = t.to;
       r.elapsed = 0;
+      if (timed) {
+        if (r.blend) Object.assign(r.blend, { fromEntered: r.entered, started: at });
+        Object.assign(r, { entered: at, index: 0, cycle: 0, pending: null });
+      }
       events.push(
-        { type: 'transition', layer: l.id, transition: t.id, from, to: t.to },
-        { type: t.to === 'exit' ? 'exit' : 'state', layer: l.id, state: t.to }
+        { type: 'transition', layer: l.id, transition: t.id, from, to: t.to, ...(timed && { time: at }) },
+        { type: t.to === 'exit' ? 'exit' : 'state', layer: l.id, state: t.to, ...(timed && { time: at }) }
       );
     };
     /* inputs take effect at the start of a step; a clip that runs past its exit time within the step carries the rest into the next state */
@@ -980,6 +1022,102 @@
         }
       }
     };
+    function advanceTimedLayer(layer, run, end) {
+      const { due, budget } = eventAPI;
+      let at = clock, usedPulse = false, iterations = 0;
+      while (true) {
+        if (++iterations > budget) throw new RangeError('Animation graph exceeds its event or transition budget');
+        const state = stateOf(layer, run.state), motion = lanes.get(state);
+        const nextCue = () => run.entered + (motion?.time(run.index, run.cycle) ?? Infinity);
+        run.elapsed = at - run.entered;
+        if (run.blend) {
+          run.blend.elapsed = at - run.blend.fromEntered;
+          run.blend.time = at - run.blend.started;
+          if (due(run.blend.started + run.blend.duration, at)) run.blend = null;
+        }
+        const names = new Set();
+        while (due(nextCue(), at)) {
+          if (events.length >= budget) throw new RangeError('Animation graph exceeds its event budget');
+          const { event } = motion.rows[run.index], { id, name, time: sourceTime, data } = event;
+          names.add(name);
+          events.push({ type: 'animation', id, name, time: at, sourceTime, cycle: run.cycle,
+            layer: layer.id, state: run.state, clip: state.clip.id ?? null, ...(data !== undefined && { data }) });
+          if (++run.index === motion.rows.length && motion.loop) { run.index = 0; run.cycle++; }
+        }
+        const matches = (rule, pulse) => rule.enabled && run.state !== 'exit' &&
+          (rule.from === run.state || rule.from === 'any' && rule.to !== run.state) &&
+          rule.conditions.every(c => test(c, pulse));
+        function gate(rule) {
+          if (!rule.exitTime) return run.entered;
+          return run.entered + (state?.clip?.dur ?? 1) * rule.exitTime / Math.abs(state?.speed ?? 1);
+        }
+        const pulse = at === clock && !usedPulse;
+        const next = layer.transitions.find(rule => matches(rule, pulse) && due(gate(rule), at) &&
+          (rule.on === undefined ? !run.blend : names.has(rule.on) || run.pending === rule));
+        if (run.blend) {
+          if (next && !run.pending) run.pending = next;
+        } else {
+          run.pending = null;
+          if (next) {
+            if (next.conditions.some(c => c.op === 'fired')) usedPulse = true;
+            enter(layer, run, next, at);
+            continue;
+          }
+        }
+        if (at === end) return;
+        let nextTime = Math.min(end, nextCue(), run.blend ? run.blend.started + run.blend.duration : Infinity);
+        if (!run.blend)
+          for (const rule of layer.transitions) if (rule.on === undefined && matches(rule, false) && !due(gate(rule), at))
+            nextTime = Math.min(nextTime, gate(rule));
+        at = nextTime;
+      }
+    }
+    function timedAdvance(dt) {
+      if (!Number.isFinite(dt) || dt < 0 || !Number.isFinite(clock + dt))
+        throw new RangeError('Animation graph needs a finite nonnegative step');
+      const end = clock + dt, before = new Map([...layers].map(([id, run]) =>
+        [id, { ...run, blend: run.blend && { ...run.blend } }]));
+      const previousEvents = events;
+      events = [];
+      try {
+        for (const l of m.layers) if (l.enabled) advanceTimedLayer(l, layers.get(l.id), end);
+        else {
+          const run = layers.get(l.id);
+          run.entered += dt;
+          if (run.blend) {
+            run.blend.started += dt;
+            run.blend.fromEntered += dt;
+          }
+        }
+        const nextEvents = [], nextContacts = new Set(contacts),
+          nextEffects = effects.filter(x => x.time + x.duration > end);
+        for (const row of events.sort((a, b) => a.time - b.time)) {
+          nextEvents.push(row);
+          if (row.type !== 'animation') continue;
+          for (const response of plan.routes.get(row.name) ?? []) {
+            const { type, effect, settings, ...detail } = response;
+            if (type === 'contact') {
+              if (detail.action === 'plant') nextContacts.add(detail.contact);
+              else nextContacts.delete(detail.contact);
+            }
+            const cue = type === 'effect' ? A.cue(row.id, effect, row.time, settings) : null;
+            if (cue && cue.time + cue.duration > end) nextEffects.push(cue);
+            nextEvents.push({ type, ...detail, ...(cue && { effect, cue }), event: row.name, time: row.time,
+              layer: row.layer, state: row.state, eventId: row.id });
+            if (nextEvents.length > eventAPI.budget || nextEffects.length > eventAPI.budget)
+              throw new RangeError('Animation graph exceeds its active response budget');
+          }
+        }
+        contacts = nextContacts;
+        effects = nextEffects;
+        events = K.procedural.data.freeze(nextEvents);
+        clock = end;
+      } catch (error) {
+        for (const [id, run] of before) layers.set(id, run);
+        events = previousEvents;
+        throw error;
+      }
+    }
     const api = {
       definition: m,
       reset() {
@@ -987,15 +1125,20 @@
         for (const i of m.inputs || []) values.set(i.id, i.type === 'trigger' ? false : i.value);
         layers.clear();
         events = [];
+        clock = 0;
+        contacts = new Set();
+        effects = [];
         for (const l of m.layers) {
-          layers.set(l.id, { state: l.entry, elapsed: 0, blend: null });
-          if (l.enabled) events.push({ type: 'state', layer: l.id, state: l.entry });
+          layers.set(l.id, { state: l.entry, elapsed: 0, blend: null,
+            ...(timed && { entered: 0, index: 0, cycle: 0, pending: null }) });
+          if (l.enabled) events.push({ type: 'state', layer: l.id, state: l.entry, ...(timed && { time: 0 }) });
         }
         return api.frame();
       },
       set(id, value) {
         const i = (m.inputs || []).find(q => q.id === id);
         if (!i || i.type === 'trigger') throw new Error('machine: not a settable input ' + id);
+        if (timed && !inputValue(i.type, value)) throw new TypeError('Invalid animation graph input ' + id);
         values.set(id, value);
         return api;
       },
@@ -1006,17 +1149,25 @@
         values.set(id, true);
         return api;
       },
-      advance(dt) {
-        events = [];
-        for (const l of m.layers) if (l.enabled) advanceLayer(l, layers.get(l.id), dt || 0);
+      advance(dt = 0) {
+        if (timed) timedAdvance(dt);
+        else {
+          events = [];
+          for (const l of m.layers) if (l.enabled) advanceLayer(l, layers.get(l.id), dt || 0);
+        }
         for (const i of m.inputs || []) if (i.type === 'trigger') values.set(i.id, false);
         return api.frame();
       },
       state: layer => layers.get(layer || m.layers[0].id).state,
+      bind(options) {
+        if (!timed) throw new TypeError('Use named events or event bindings to bind an animation machine');
+        return eventAPI.bind(api, plan.contacts, options);
+      },
       frame() {
         return {
           inputs: Object.fromEntries(values),
           events: events.slice(),
+          ...(timed && { time: clock, contacts: [...contacts], presentation: A.present({ cues: effects }, clock) }),
           layers: m.layers
             .filter(l => l.enabled)
             .map(l => {
@@ -1042,7 +1193,7 @@
         out = out || {};
         for (const k in out) delete out[k];
         for (const layer of api.frame().layers) {
-          const parts = layer.samples.map(s => ({ w: s.weight, pose: s.clip.sample(s.time, {}) }));
+          const parts = layer.samples.map(s => ({ w: s.weight, pose: s.clip.sample(s.time, {}, timed ? { sourceTime: true } : undefined) }));
           const names = new Set(parts.flatMap(p => Object.keys(p.pose)));
           for (const part of names) {
             const dst = out[part] || (out[part] = {});
@@ -1052,7 +1203,10 @@
                 base = dst[ch] !== undefined ? dst[ch] : restOf(ch, like),
                 sum = have.reduce((n, p) => n + p.w, 0),
                 rest = Math.max(0, 1 - sum);
-              dst[ch] = Array.isArray(like)
+              dst[ch] = timed && ch === 'rot' && Array.isArray(like)
+                ? (rest ? base : like).map((angle, i) =>
+                  have.reduce((v, p) => v + A.shortAngle(angle, p.pose[part][ch][i]) * p.w, angle))
+                : Array.isArray(like)
                 ? like.map((_, i) => have.reduce((v, p) => v + p.pose[part][ch][i] * p.w, base[i] * rest))
                 : typeof like === 'number'
                   ? have.reduce((v, p) => v + p.pose[part][ch] * p.w, base * rest)

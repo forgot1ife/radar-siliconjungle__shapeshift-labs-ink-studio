@@ -241,7 +241,7 @@
       if (!current) throw new Error('The timeline no longer owns this puppet pose sampler');
       return current;
     }
-    const cues = () => (sequence?.cues ?? source?.cues ?? []).slice();
+    const cues = () => sequence?.cues.slice() ?? [...(source?.cues ?? []), ...(source?.animationEvents ?? [])];
     function report({ before = false } = {}) {
       const motion = motionReview(), authored = contactSpec && plan('spline', []);
       return { duration, state: snapshot(), sprite: framing,
