@@ -123,6 +123,16 @@ function makeSculpt(B, rest) {
     if (p.mat.omitFromProxy && !o.ghost && !o.neg) hasOptionalProxy = true;
     return p;
   }
+  // Capture a multi-piece recipe as operands for a sculpt operation.
+  S.takeSolids = build => {
+    const start = pos.length;
+    try {
+      build();
+      return pos.slice(start);
+    } finally {
+      pos.length = start;
+    }
+  };
   // Transform the geometry registered by one recipe, or its held boolean operand.
   S.transformSolids = ({ point, inverse, direction, scale }, build) => {
     const lists = [pos, neg, ghosts], starts = lists.map(list => list.length);

@@ -94,8 +94,8 @@ function dataScene(file, override, { installedPacks = false } = {}) {
     spec.finish = { ...spec.finish, look: { ...K.diorama.sceneLook(spec), shadowArt: shadowArtOption() } };
   if (!installedPacks && opt['asset-pack'] !== undefined)
     spec.assetPacks = require('./asset-pack.js').install(K.authoring.assetPacks, spec.assetPacks, opt['asset-pack']);
-  for (const s of spec.solids || [])
-    if (s && s.kind === 'mesh' && typeof s.asset === 'string' && !assets[s.asset]) {
+  for (const s of K.diorama.solids(spec))
+    if (s.kind === 'mesh' && typeof s.asset === 'string' && !assets[s.asset]) {
       const f = ['', '.obj', '.glb', '.gltf']
         .map(e => path.join(dir, s.asset + e))
         .find(q => fs.existsSync(q) && fs.statSync(q).isFile());

@@ -3,8 +3,17 @@
   const A = K.authoring, DIO = K.diorama;
   const { clone, freeze } = K.procedural.data;
   const modes = ['replace', 'add', 'toggle', 'remove'];
-  const childrenOf = solid => Object.entries(DIO.kinds[solid.kind].need)
-    .filter(([, type]) => type === 'solid').map(([key]) => key);
+  const encodeSlot = key => key.replaceAll('~', '~0').replaceAll('/', '~1');
+  const record = value => value && typeof value === 'object' && !Array.isArray(value);
+  const stack = solid => Array.isArray(solid.modifiers) ? solid.modifiers : [];
+  function patchFields(original, patch) {
+    const result = { ...original };
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === null) delete result[key];
+      else result[key] = value;
+    }
+    return result;
+  }
 
   function sceneIndex(scene) {
     const nodes = new Map(), byEntity = new Map(), roots = [], parts = new Map(), groups = new Map();
@@ -26,11 +35,15 @@
       roots.push(node);
     }
 
-    function solidNode(solid, path, operand) {
+    function solidNode(solid, path, operand, modifier) {
       const key = solid.id === undefined ? 'slot:' + path.join('/') : 'solid:' + solid.id;
-      const node = { key, kind: 'solid', shape: solid.kind, ...(operand && { operand }),
-        name: solid.id ?? solid.kind, solid,
-        children: childrenOf(solid).map(child => solidNode(solid[child], [...path, child], child)) };
+      const operands = DIO.operandFields(solid).filter(field => record(solid[field]));
+      const modifierOperands = stack(solid).filter(entry => typeof entry?.id === 'string' && record(entry.shape));
+      const node = { key, kind: 'solid', shape: solid.kind, ...(operand && { operand }), ...(modifier && { modifier }),
+        name: solid.id ?? solid.kind, solid, children: [
+          ...operands.map(field => solidNode(solid[field], [...path, field], field)),
+          ...modifierOperands.map(({ id, shape }) => solidNode(shape, [...path, 'modifiers', encodeSlot(id), 'shape'], 'shape', id))
+        ] };
       nodes.set(key, node);
       if (solid.id !== undefined) byEntity.set(solid.id, key);
       return node;
@@ -58,7 +71,9 @@
   }
 
   function create(source, { env, historyLimit } = {}) {
-    const scene = clone(typeof source === 'string' ? JSON.parse(source) : source);
+    const baked = source?.data instanceof Float32Array;
+    if (baked && !source.spec) throw new TypeError('This splat bake has no retained diorama source');
+    const scene = clone(baked ? source.spec : typeof source === 'string' ? JSON.parse(source) : source);
     function validate(candidate) {
       const problems = DIO.check(candidate, env);
       if (problems.some(problem => problem.level === 'error')) {
@@ -90,9 +105,14 @@
       return [...new Set(requested)];
     }
 
+    function selectedKeys() {
+      const { nodes } = current();
+      return freeze(selection.filter(key => nodes.get(key)?.kind === 'solid'));
+    }
+
     function select(requested, { mode = 'replace' } = {}) {
       if (!modes.includes(mode)) throw new RangeError('Selection mode must be replace, add, toggle or remove');
-      const next = new Set(mode === 'replace' ? [] : selection);
+      const next = new Set(mode === 'replace' ? [] : selectedKeys());
       for (const key of keys(requested)) {
         if (mode === 'remove' || mode === 'toggle' && next.has(key)) next.delete(key);
         else next.add(key);
@@ -105,12 +125,19 @@
       const selected = new Set(keys(targets).map(key => current().nodes.get(key).solid));
       if (!selected.size) return false;
       function rewrite(solid) {
-        let next = selected.has(solid) ? update(solid) : solid;
-        for (const field of childrenOf(solid)) {
+        let next = solid;
+        for (const field of DIO.operandFields(solid)) {
+          if (!record(solid[field])) continue;
           const child = rewrite(solid[field]);
           if (child !== solid[field]) next = { ...next, [field]: child };
         }
-        return next;
+        const modifiers = stack(solid).map(entry => {
+          if (!record(entry?.shape)) return entry;
+          const shape = rewrite(entry.shape);
+          return shape === entry.shape ? entry : { ...entry, shape };
+        });
+        if (modifiers.some((entry, i) => entry !== solid.modifiers[i])) next = { ...next, modifiers };
+        return selected.has(solid) ? update(next) : next;
       }
       const write = () => document.setEnvironment({ solids: snapshot().solids.map(rewrite) });
       if (document.pending()) write();
@@ -118,14 +145,45 @@
       return true;
     }
 
-    function setTransform(patch, targets = selection) {
+    function setTransform(patch, targets = selectedKeys()) {
       const values = clone(patch);
       if (!values || typeof values !== 'object' || Array.isArray(values))
         throw new TypeError('A transform edit needs an object');
       if (!Object.keys(values).length) return false;
       return edit('Transform solids', targets, solid => ({ ...solid, transform: { ...solid.transform, ...values } }));
     }
-    function setMaterial(material, targets = selection) {
+    function updateShape(patch, targets = selectedKeys()) {
+      const fields = clone(patch);
+      if (!record(fields)) throw new TypeError('A shape edit needs an object');
+      return edit('Edit shape', targets, solid => {
+        const { need, may } = DIO.kinds[solid.kind];
+        for (const field of Object.keys(fields)) {
+          if (!Object.hasOwn(need, field) && !Object.hasOwn(may ?? {}, field))
+            throw new RangeError('Unknown ' + solid.kind + ' shape parameter: ' + field);
+        }
+        return patchFields(solid, fields);
+      });
+    }
+
+    function setModifiers(modifiers, targets = selectedKeys()) {
+      const list = clone(modifiers);
+      if (!Array.isArray(list)) throw new TypeError('Modifiers must be an ordered list');
+      return edit('Set sculpt modifiers', targets, solid =>
+        list.length ? { ...solid, modifiers: list } : patchFields(solid, { modifiers: null }));
+    }
+
+    function updateModifier(id, patch, targets = selectedKeys()) {
+      const fields = clone(patch);
+      if (!TargetSelectors.name(id) || !record(fields) || Object.hasOwn(fields, 'id') || Object.hasOwn(fields, 'kind'))
+        throw new TypeError('A modifier edit needs an ID and parameter fields');
+      return edit('Edit sculpt modifier', targets, solid => {
+        const modifiers = stack(solid);
+        if (!modifiers.some(entry => entry?.id === id)) throw new RangeError('Unknown modifier: ' + id);
+        return { ...solid, modifiers: modifiers.map(entry => entry?.id === id ? patchFields(entry, fields) : entry) };
+      });
+    }
+
+    function setMaterial(material, targets = selectedKeys()) {
       const value = clone(material);
       return edit('Set solid material', targets, solid => ({ ...solid, mat: value }));
     }
@@ -138,7 +196,7 @@
       else document.transact('Edit material role ' + name, write);
     }
 
-    const build = () => DIO.build(current().preview, env);
+    const build = () => Object.assign(DIO.build(current().preview, env), { spec: snapshot() });
     function pick(ray, { world, time, reconstruction, sampleWithdrawal } = {}) {
       const { byEntity, byTag } = current();
       const rendered = world ?? (previewWorld ??= build());
@@ -166,7 +224,7 @@
       serialize: (space = 2) => JSON.stringify(snapshot(), null, space),
       tree: () => current().tree,
       node: key => current().nodes.get(key),
-      selection: () => selection,
+      selection: selectedKeys,
       select,
       pick,
       selectRay(ray, { mode = 'replace', ...options } = {}) {
@@ -175,6 +233,9 @@
         return result;
       },
       setTransform,
+      updateShape,
+      setModifiers,
+      updateModifier,
       setMaterial,
       setRole,
       materials: () => freeze(clone(DIO.sceneMaterials(snapshot()))),

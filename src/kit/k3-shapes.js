@@ -87,7 +87,8 @@
         op = JOIN[kind],
         r = o.r === undefined ? 0.2 : o.r,
         n = o.n || 3,
-        bd = bound(A.concat(Bl));
+        left = o.mask && bound(A), right = o.mask && kind === 'common' && bound(Bl),
+        bd = left ? right && right.br < left.br ? right : left : bound(A.concat(Bl));
       if (!op) throw new Error('no join called ' + kind);
       const ma = A[0].mat,
         mb = Bl[0].mat,
@@ -101,12 +102,25 @@
         br: bd.br + r,
         sd: (x, y, z) => op(fa(x, y, z), fb(x, y, z), r, n),
         sample(f) {
-          for (const q of A.concat(Bl)) {
-            const keep = q.res;
-            q.res = this.res;
-            q.sample(f);
-            q.res = keep;
-          }
+          const res = this.res;
+          const sample = (list, rejected) => {
+            for (const q of list) {
+              const keep = q.res, margin = res + q.reach;
+              q.res = res;
+              try {
+                q.sample(rejected ? (x, y, z) => {
+                  if (rejected(x, y, z) <= margin) f(x, y, z);
+                } : f);
+              } finally {
+                q.res = keep;
+              }
+            }
+          };
+          if (o.mask) {
+            // The opposite field clips candidate points before refinement can pull them onto a cap.
+            sample(A, kind === 'cut' ? (x, y, z) => -fb(x, y, z) : fb);
+            sample(Bl, fa);
+          } else sample(A.concat(Bl));
         }
       };
       return S.add(p, mat, Object.assign({ reach: r * 1.1 }, o));
