@@ -74,6 +74,7 @@ The scene's `instances` map stores each placement. An instance names its `prefab
 In Node, pass the shared map as `env.prefabs`. `setPrefabInstance(id, record)` creates or replaces an instance and accepts `null` to remove it. Instances appear in the scene tree and can be picked by ray. Use `refreshPrefabs(prefabs, { assets })` to load a replacement library without rewriting the scene. The editor validates local overrides before accepting the new library. The CLI reads the shared library each time it loads a diorama.
 
 See [shared parameter bindings](parameter-bindings.md) for named controls, expressions, fields, and signals in editor builds.
+See the [unified scene timeline](scene-timeline.md) for animating those builds and inspecting their markers and audio cues.
 
 ## History
 

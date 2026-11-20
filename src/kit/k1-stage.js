@@ -245,14 +245,14 @@
         dirty[b] = 1;
       };
       // the same for a child: A and where its joint has gone are worked out from the parent's matrix
-      rig.child = (b, parent, A, o) => {
+      rig.child = (b, parent, A, o, local = o) => {
         if (typeof parent === 'string') parent = ids[parent];
         const k = parent * 12,
           P = Mx.subarray(k, k + 9),
           q = [
-            P[0] * o[0] + P[1] * o[1] + P[2] * o[2] + Mx[k + 9],
-            P[3] * o[0] + P[4] * o[1] + P[5] * o[2] + Mx[k + 10],
-            P[6] * o[0] + P[7] * o[1] + P[8] * o[2] + Mx[k + 11]
+            P[0] * local[0] + P[1] * local[1] + P[2] * local[2] + Mx[k + 9],
+            P[3] * local[0] + P[4] * local[1] + P[5] * local[2] + Mx[k + 10],
+            P[6] * local[0] + P[7] * local[1] + P[8] * local[2] + Mx[k + 11]
           ];
         rig.set(b, K.M.mul(P, A), o, q);
       };

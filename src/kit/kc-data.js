@@ -232,6 +232,7 @@
     solids: 'list',
     brushRegion: 1,
     motion: 'list',
+    timeline: 'obj',
     effects: 'list',
     tap: 'obj',
     spare: 'pos'
@@ -317,11 +318,12 @@
     const { spec: expanded } = K.authoring.scenePrefabs.expand(source, env);
     if (expanded?.parameterBindings === undefined) return { spec: expanded };
     try {
-      const { parameterBindings, ...base } = expanded, program = K.parameters.prepare(parameterBindings);
+      const { parameterBindings, timeline, ...base } = expanded, program = K.parameters.prepare(parameterBindings);
       for (const { path } of program.targets) if (!parameterRoots.includes(path[0]) || path.length < 2)
         throw new RangeError('Unsupported diorama parameter path: ' + path.join('/'));
       const inputs = { ...env?.parameterInputs };
-      const { document: spec, values } = program.apply(base, inputs);
+      const { document, values } = program.apply(base, inputs);
+      const spec = timeline === undefined ? document : { ...document, timeline };
       return { spec, program, values, inputs };
     } catch (error) {
       error.problems = [{ level: 'error', path: 'parameterBindings', problem: error.message, hint: '' }];
@@ -338,7 +340,7 @@
     }
     return checkResolved(resolved.spec, env);
   };
-  function checkResolved(spec, env) {
+  function checkResolved(spec, env, presentation = {}) {
     const out = [],
       bad = (path, problem, hint) => out.push({ level: 'error', path, problem, hint: hint || '' }),
       warn = (path, problem, hint) => out.push({ level: 'warning', path, problem, hint: hint || '' });
@@ -979,6 +981,13 @@
     };
     listOf('motion', MOTION);
     listOf('effects', EFFECT);
+    if (spec.timeline !== undefined) {
+      try {
+        presentation.timeline = dioramaTimeline(spec, parts);
+      } catch (error) {
+        bad('timeline', error.message);
+      }
+    }
     if (spec.tap !== undefined) {
       keys(spec.tap, 'tap', { do: 1, colours: 1, n: 1 });
       if (!['dust', 'sparks', 'embers'].includes(spec.tap.do)) bad('tap.do', 'a tap can raise dust, sparks or embers');
@@ -1022,7 +1031,7 @@
       m.keys
         ? K.kf(t % m.loop, m.keys)
         : (m.amount === undefined ? 0.3 : m.amount) * Math.sin(TAU * (t / (m.period || 3) + (m.phase || 0)));
-    return (t, tracks = motion) => {
+    return (t, tracks = motion, poses) => {
       for (const p of order) {
         let A = M.id(),
           off = [0, 0, 0];
@@ -1034,10 +1043,16 @@
           else if (m.do === 'bob') off = V.mad(off, ax, wave(m, t));
           else if (m.do === 'squash') A = M.mul(M.stretch(ax, 1 + wave(m, t), true), A);
         }
-        const j = joint[p];
+        const pose = poses?.[p];
+        if (pose?.rotation || pose?.scale !== undefined) {
+          const [x, y, z] = pose.rotation ?? [0, 0, 0];
+          const rotation = M.mul(M.rot([0, 0, 1], z), M.mul(M.rot([0, 1, 0], y), M.rot([1, 0, 0], x)));
+          A = M.mul(rotation, A).map(value => value * (pose.scale ?? 1));
+        }
+        const j = joint[p], delta = pose?.translation ?? [0, 0, 0];
         if (PI[p] && PI[p].parent) {
-          rig.child(p, PI[p].parent, A, j);
-        } else rig.set(p, A, j, V.add(j, off));
+          rig.child(p, PI[p].parent, A, j, pose?.translation ? V.add(j, delta) : j);
+        } else rig.set(p, A, j, V.add(V.add(j, off), delta));
       }
     };
   }
@@ -1049,6 +1064,40 @@
     dust: ['at', 'n', 'every', 'spread'], embers: ['at', 'n', 'every'],
     smoke: ['at', 'n', 'every'], sparks: ['at', 'n', 'every', 'dir', 'speed']
   };
+  function dioramaTimeline(spec, parts) {
+    const poses = { translation: { size: 3 }, rotation: { size: 3, mode: 'radians' }, scale: { mode: 'positive' } };
+    return K.timeline.compile(spec.timeline, { channel([root, name, field, ...rest]) {
+      if (root === 'camera' && field === undefined && Object.hasOwn(K.timeline.camera, name)) return K.timeline.camera[name];
+      if (rest.length || spec.brushRegion != null) return null;
+      if (root === 'poses' && parts.has(name) && Object.hasOwn(poses, field)) return poses[field];
+      const effect = root === 'effects' && /^(0|[1-9][0-9]*)$/.test(name) ? spec.effects?.[name] : undefined;
+      if (!effect || !dynamicEffect[effect.do]?.includes(field)) return null;
+      if (field === 'at' || field === 'dir') return { size: 3 };
+      if (field === 'box') return { size: 6 };
+      if (['r', 'every', 'spread', 'speed'].includes(field)) return { mode: 'positive' };
+      return { mode: 'number', validate: value => value >= 0 && (field !== 'flicker' || value <= 1) };
+    } });
+  }
+  function timelineFrame(timeline, time, effects) {
+    const camera = {}, poses = Object.create(null), changes = new Map();
+    for (const { path: [root, name, field], value } of timeline.sample(time).edits) {
+      if (root === 'camera') camera[name] = value;
+      else if (root === 'poses') (poses[name] ??= {})[field] = value;
+      else {
+        if (!changes.has(name)) changes.set(name, { ...effects[name] });
+        changes.get(name)[field] = field === 'box' ? [value.slice(0, 3), value.slice(3)] :
+          field === 'n' ? Math.floor(value) : value;
+      }
+    }
+    return { camera, poses, effects: changes.size ? effects.map((effect, i) => changes.get(String(i)) ?? effect) : effects };
+  }
+  function timelineCamera(world, timeline) {
+    world.timeline = timeline;
+    const names = timeline.targets.filter(path => path[0] === 'camera').map(path => path[1]);
+    const base = Object.fromEntries(names.map(name => [name, world.cam[name]]));
+    if (names.length) world.cam = { ...world.cam };
+    return frame => Object.assign(world.cam, base, frame.camera);
+  }
   function boundRuntime(source, env, resolved) {
     const { spec, program, inputs } = resolved;
     if (!program) return null;
@@ -1106,11 +1155,12 @@
   DIO.brushField = (spec, env) => DIO.build(spec, env, { [brushField]: true });
   DIO.build = (source, env, modelOptions) => {
     env = env || {};
+    const presentation = {};
     let resolved;
     let problems;
     try {
       resolved = resolveParameters(source, env);
-      problems = checkResolved(resolved.spec, env);
+      problems = checkResolved(resolved.spec, env, presentation);
     } catch (error) {
       if (!error.problems) throw error;
       problems = error.problems;
@@ -1130,7 +1180,7 @@
       e.problems = problems;
       throw e;
     }
-    const { spec } = resolved, dynamics = boundRuntime(source, env, resolved);
+    const { spec } = resolved, { timeline } = presentation, dynamics = boundRuntime(source, env, resolved);
     const st0 = styleOf(spec), catalog = lookCatalog(spec),
       seed = spec.seed === undefined ? 1 : spec.seed,
       effects = spec.effects || [],
@@ -1140,9 +1190,19 @@
     if (spec.brushRegion != null) {
       if (modelOptions) throw new TypeError('Brush regions are baked as splat geometry');
       const { palette, roles, sun } = st0;
-      const world = (env.brushSession ?? K.authoring.brushRegions.create()).build(spec, env, { palette, roles, sun });
+      const { timeline: authoredTimeline, ...geometry } = spec;
+      const world = (env.brushSession ?? K.authoring.brushRegions.create()).build(geometry, env, { palette, roles, sun });
       world.spec = source;
       if (dynamics) world.parameters = dynamics.api;
+      if (timeline) {
+        const apply = timelineCamera(world, timeline);
+        if (timeline.targets.length) {
+          apply(timelineFrame(timeline, 0, effects));
+          K.stage(world).add({ update(dt, t, stage) {
+            apply(timelineFrame(timeline, t + stage.t0, effects));
+          } });
+        }
+      }
       return world;
     }
     st0.finish = K.authoring.environments.apply(st0.finish,spec.environmentPreset,catalog,st0.palette);
@@ -1341,7 +1401,7 @@
     }
     if (modelOptions) {
       const groups = new Map(), meshes = [];
-      const { duration = 4, fps = 30, resolution, method, bounds, targetTriangles } = modelOptions;
+      const { duration = timeline?.duration || 4, fps = 30, resolution, method, bounds, targetTriangles } = modelOptions;
       for (const solid of spec.solids) {
         // Ground is an infinite half-space in the sculpt API. Ghosts are render overlays.
         if (solid.kind === 'ground' || (solid.ghost && !solid.separate)) continue;
@@ -1389,9 +1449,11 @@
           meshes.push(...K.model.mapModelMeshes(mesh, part => ({ ...part, weights: part.points.map(() => [[index, 1]]) })));
         }
       }
-      const pose = motion.length && partMotion(B, previewRig, names, joint, parts, motion);
+      const pose = names.length && (motion.length || timeline?.targets.some(path => path[0] === 'poses')) &&
+        partMotion(B, previewRig, names, joint, parts, motion);
       const animations = pose ? K.model.sampleClips([{ name: 'Scene motion', duration, fps,
-        pose: time => pose(time, dynamics?.active ? dynamics.update(time).motion : motion) }], (pose, time) => {
+        pose: time => pose(time, dynamics?.active ? dynamics.update(time).motion : motion,
+          timeline && timelineFrame(timeline, time, effects).poses) }], (pose, time) => {
         pose(time);
         return names.map(name => {
           const index = previewRig.names.indexOf(name);
@@ -1445,14 +1507,26 @@
           ...(spec.light?.surfaceDirection !== undefined && { surfaceLight: spec.light.surfaceDirection }) }
       )
     );
-    if (!moving.length && !effects.length && !spec.tap) return W;
+    const applyCamera = timeline && timelineCamera(W, timeline);
+    const timelineActive = !!timeline?.targets.length;
+    const liveLamps = dynamics?.lamps || timeline?.targets.some(([root, index]) =>
+      root === 'effects' && effects[index].do === 'lamp');
+    if (timelineActive) applyCamera(timelineFrame(timeline, 0, effects));
+    if (!moving.length && !effects.length && !spec.tap && !timelineActive) return W;
     const st = K.stage(W);
     rig.bind(st);
-    let tracks = motion, activeEffects = effects;
-    if (dynamics?.active) st.add({ update(dt, t, stage) {
-      const frame = dynamics.update(t + stage.t0);
-      tracks = frame.motion ?? motion;
-      activeEffects = frame.effects ?? effects;
+    let tracks = motion, activeEffects = effects, poses;
+    if (dynamics?.active || timelineActive) st.add({ update(dt, t, stage) {
+      const at = t + stage.t0;
+      const frame = dynamics?.active ? dynamics.update(at) : undefined;
+      tracks = frame?.motion ?? motion;
+      activeEffects = frame?.effects ?? effects;
+      if (timelineActive) {
+        const keyed = timelineFrame(timeline, at, activeEffects);
+        applyCamera(keyed);
+        poses = keyed.poses;
+        activeEffects = keyed.effects;
+      }
     } });
     const partNames = [...new Set(moving.map(s => s.part))],
       PI = spec.parts || {},
@@ -1477,7 +1551,7 @@
     if (partNames.length)
       st.add({
         update(dt, t) {
-          poseParts(t, tracks);
+          poseParts(t, tracks, poses);
           rig.apply();
         }
       });
@@ -1486,16 +1560,16 @@
       const L = lamps.map(e => ({ p: e.at.slice(), r: e.r ?? 6, s: e.strength ?? 0.9, e,
         s0: e.strength ?? 0.9, index: effects.indexOf(e) }));
       lit = K.light.system(st, cap, L, { sun: { dir: S.sun, amb: S.amb, sky: S.sky, k: S.sunK, parts: partNames } });
-      if (!dynamics?.lamps) st.add(lit);
+      if (!liveLamps) st.add(lit);
       let acc = 0;
       st.add({
         update(dt, t) {
           acc += dt;
-          if (!dynamics?.lamps && acc < 1 / 12) return;
+          if (!liveLamps && acc < 1 / 12) return;
           acc = 0;
           let moved = false;
           L.forEach((l, i) => {
-            if (dynamics?.lamps) {
+            if (liveLamps) {
               const e = activeEffects[l.index], position = e.follow ? rig.at(e.follow, e.at) : e.at;
               const strength = (e.strength ?? .9) * (1 - (e.flicker ?? 0) *
                 (.5 + .5 * Math.sin(t * 9.1 + i * 2.3) * Math.sin(t * 5.3 + i)));
@@ -1518,7 +1592,7 @@
           if (moved) lit.touch();
         }
       });
-      if (dynamics?.lamps) st.add(lit);
+      if (liveLamps) st.add(lit);
     }
     let ps = null;
     if (loose) {

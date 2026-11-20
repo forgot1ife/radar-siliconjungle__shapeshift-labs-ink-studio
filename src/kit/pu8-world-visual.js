@@ -23,6 +23,27 @@
     const config = world.visual ?? {};
     return K.authoring.environments.apply(config,config.environmentPreset,catalog,config.palette ?? palette);
   }
+  const timelines = new WeakMap();
+  function sceneTimeline(world) {
+    if (world.timeline === undefined) return;
+    const cached = timelines.get(world);
+    if (cached) return cached;
+    const { read } = W.data;
+    const timeline = K.timeline.compile(world.timeline, { channel(path) {
+      const [root, field] = path;
+      if (root === 'camera' && path.length === 2 && Object.hasOwn(K.timeline.camera, field))
+        return K.timeline.camera[field];
+      if (root !== 'visual' || path.length < 2 || ['camera', 'parameterBindings'].includes(field)) return null;
+      const value = read(world, path);
+      if (Number.isFinite(value)) return { validate: Number.isFinite };
+      if (typeof value === 'boolean' || typeof value === 'string')
+        return { mode: 'step', validate: next => typeof next === typeof value };
+      if (Array.isArray(value) && value.length && value.every(Number.isFinite)) return { size: value.length };
+      return null;
+    } });
+    if (K.procedural.data.isImmutable(world)) timelines.set(world, timeline);
+    return timeline;
+  }
   function visualLooks(world, catalog, config = visualEnvironment(world,catalog)) {
     const entities = world.entities;
     const assets = K.authoring.looks, paletteOptions = { palette: config.palette ?? palette,
@@ -87,7 +108,10 @@
 
   function visual({makeBuilder,makeSculpt},view,query,{ controls } = {}) {
     const time = view.time ?? view.tick * view.world.dt;
-    const { world, values } = visualParameters(view.world, { time, query, controls });
+    const timeline = sceneTimeline(view.world), frame = timeline?.sample(time);
+    const { world: bound, values } = visualParameters(view.world, { time, query, controls });
+    const edits = frame?.edits.filter(edit => edit.path[0] === 'visual');
+    const world = edits?.length ? W.apply(bound, edits, { validate: false }).world : bound;
     if (world !== view.world) view = { ...view, world };
     const catalog = W.materials.catalog(world), config = visualEnvironment(world,catalog);
     const volume=config.volume&&query.renderVolume(config.volume);
@@ -357,7 +381,10 @@
     const surfaceEffects = (hasSurface || config.surfaceEffects || looks.look?.paletteConstraints || looks.look?.renderStages) &&
       { ...config.surfaceEffects, query };
     const airborne=config.air&&W.ventilation.render(query,config.air);
-    const cam=config.camera??{target:[mid[0],.05,mid[2]],dist:span*1.48,yaw:.62,pitch:.8};
+    const defaultCam={target:[mid[0],.05,mid[2]],dist:span*1.48,yaw:.62,pitch:.8};
+    const camera = frame?.edits.filter(edit => edit.path[0] === 'camera');
+    const cam = camera?.length ? { ...defaultCam, ...config.camera,
+      ...Object.fromEntries(camera.map(({ path, value }) => [path[1], value])) } : config.camera ?? defaultCam;
     const contacts=fields.contactEffects&&query.probe(fields.contactEffects,cam.target).value;
     if(contacts?.particles.length){
       const colors=new Map();
@@ -372,6 +399,7 @@
       }
     }
     const baked=B.finish({lookSnapshot: { time, tick: view.tick, query }, cam,
+      ...(timeline && { timeline }),
       ...(values && { parameterValues: values }),
       ...(contacts?.kick.some(Boolean)&&{anim:{kick:contacts.kick}}),
       radius:span,detail:30,dither:.22,look:looks.look,paletteRoles:config.paletteRoles,
@@ -384,6 +412,7 @@
     return volume?SplatProvenance.join([...volume.parts,baked],baked):baked;
   }
   W.visual = visual;
+  W.sceneTimeline = sceneTimeline;
   W.visualEnvironment = visualEnvironment;
   W.validateLooks = (world, catalog) => {
     const { world: presentation } = visualParameters(world);

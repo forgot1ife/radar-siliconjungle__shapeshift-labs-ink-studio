@@ -294,6 +294,8 @@ The larger [lab/data-shrine.json](lab/data-shrine.json) demonstrates joins, fold
 
 ## Animation and puppets
 
+The [unified scene timeline](docs/scene-timeline.md) synchronizes camera motion, rig poses, lights, effects, audio cues, and world events through keyframes and nested sequences.
+
 Use `K.rig` for tagged rigid parts, `K.creature` for a creature rig, and `K.puppet` for hierarchical parts with deformation. `K.anim` provides clips, easing, layers, state machines, constraints, facial controls and presentation cues. `K.acts` provides ready-made action and reaction clips.
 
 <!-- include: examples/puppet.js -->

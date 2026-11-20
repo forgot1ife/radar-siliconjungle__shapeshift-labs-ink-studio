@@ -165,6 +165,14 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
   function inspectLook(file) {
     return view(file).inspectLook({renderer:opt.renderer});
   }
+  function inspectTimeline(file) {
+    const input = load(file);
+    const timeline = input.world ? W.sceneTimeline(input.world) : build(input.legacy).timeline;
+    ensure(timeline, 'This scene has no unified timeline');
+    const at = Number(opt.at ?? 0), from = Number(opt.from ?? -1), to = Number(opt.to ?? timeline.duration);
+    ensure(![opt.at, opt.from, opt.to].includes(true), 'Timeline times need numeric values');
+    respond({ duration: timeline.duration, targets: timeline.targets, frame: timeline.sample(at), cues: timeline.between(from, to) });
+  }
   function assert(run,rules) {
     ensure(Array.isArray(rules) && rules.length<=10000,'Expected an assertion list');
     const out=[], temporal=[];
@@ -682,5 +690,5 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
     respond({valid:true,format:raw.format});
     return true;
   }
-  return {execute,validate,inspectLook,lookSnapshot,environmentSnapshot};
+  return {execute,validate,inspectLook,lookSnapshot,environmentSnapshot,inspectTimeline};
 };
