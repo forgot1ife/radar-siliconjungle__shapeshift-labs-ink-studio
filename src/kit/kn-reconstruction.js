@@ -12,7 +12,7 @@
     if (definition === false || definition === undefined) return [];
     const rules = Array.isArray(definition) ? definition : [definition];
     if (rules.length > 16) throw new RangeError('Use up to 16 reconstruction tracks');
-    return rules.map((rule, index) => {
+    return Array.from(rules, (rule, index) => {
       if (!record(rule) || Object.keys(rule).some(field => !ruleFields.includes(field)))
         throw new TypeError('Invalid reconstruction track ' + index);
       const { select, cell = .35, distance = 1, spin = Math.PI / 3, seed = 0, origin, keys } = rule;
@@ -22,7 +22,7 @@
           !Array.isArray(keys) || !keys.length || keys.length > 256)
         throw new RangeError('A reconstruction track needs bounded fragment controls, an optional XYZ origin and 1 to 256 keys');
       let previous = -Infinity;
-      const timeline = keys.map(key => {
+      const timeline = Array.from(keys, key => {
         if (!record(key) || Object.keys(key).some(field => !keyFields.includes(field)) ||
             !Number.isFinite(key.time) || key.time <= previous ||
             (key.state !== undefined && (typeof key.state !== 'string' || !Object.hasOwn(states, key.state))) ||
@@ -244,7 +244,7 @@
   }
 
   function frame(world, time, definition = world.look?.reconstruction) {
-    if (definition === false || definition === undefined) return world;
+    if (world.reconstructionPose || definition === false || definition === undefined) return world;
     if (!Number.isFinite(time)) throw new RangeError('Reconstruction time must be finite');
     const signature = JSON.stringify(definition);
     const base = world.rest?.length >= world.count * 16 ? world.rest : world.data;

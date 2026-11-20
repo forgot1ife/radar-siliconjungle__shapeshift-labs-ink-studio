@@ -67,6 +67,7 @@ test('reconstruction seeks deterministically and carries paint and texture frame
   assert([0, 1, 2, 3].some(i => row(partial, i)[3] === 0));
   assert([0, 1, 2, 3].some(i => row(partial, i)[3] > 0));
   assert.equal(reconstruction.frame(world, 3), world);
+  assert.equal(reconstruction.frame(broken, 1), broken);
   assert.deepEqual(world.data, original);
   assert.deepEqual(reconstruction.frame(world, 1).data, broken.data);
   const take = kit.SplatProvenance.subset(world, [legacy.index, 3]);
@@ -85,6 +86,8 @@ test('headless drawing, picking and overrides use the same world-space pose', ()
   assert.notDeepEqual(draw(1), draw(0));
   assert.notDeepEqual(draw(1), draw(1, { paintCorrections: false }));
   assert.notDeepEqual(draw(2), draw(1));
+  const resolved = reconstruction.frame(world, 1);
+  assert.deepEqual(studio.render(resolved, { w: 96, h: 64, px: 1, raw: true, ortho: true, t: 1 }).rgb, draw(1));
   assert.deepEqual(draw(3), draw(0));
   assert.deepEqual(draw(1, { reconstruction: false }), draw(0));
   assert.throws(() => reconstruction.prepare({ ...world.look.reconstruction, keys: [{ time: 1, state: 'missing' }] }), /increasing finite times/);
