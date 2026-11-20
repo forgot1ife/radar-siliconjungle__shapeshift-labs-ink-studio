@@ -46,6 +46,7 @@ tone mapping, and grading are inactive. Pass `reuseOrder: false` or
 | Frame control | Effect |
 | --- | --- |
 | `raw` | Show the directly blended RGB instead of the palette resolve. |
+| `renderGraph` | Run ordered, scoped screen passes after the scene draw. See [the render graph](render-graph.md). |
 | `composite` | Choose independent resolutions for the world and ordered screen layers. See [mixed-resolution compositing](mixed-resolution.md). |
 | `colored` | Use higher-resolution contours over native-size interiors. On by default for scenes without per-pixel materials. |
 | `outline`, `dither`, `tone` | Control outline and palette treatment. Use `tone: false` to disable an authored tone. |

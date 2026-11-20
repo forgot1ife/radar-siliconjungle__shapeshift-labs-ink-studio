@@ -1,3 +1,21 @@
+export const layerSamplingGLSL = `
+vec4 layerTexel(sampler2D image, ivec2 pos, ivec2 size, bool topDown) {
+  if (!topDown) pos.y = size.y - 1 - pos.y;
+  return texelFetch(image, pos, 0);
+}
+
+vec4 layerAt(sampler2D image, vec2 pixel, vec2 outputSize, bool topDown, bool linear) {
+  ivec2 size = textureSize(image, 0);
+  vec2 uv = pixel * vec2(size) / outputSize;
+  if (!linear) return layerTexel(image, min(ivec2(uv), size - 1), size, topDown);
+  vec2 pos = clamp(uv - 0.5, vec2(0.0), vec2(size) - 1.0);
+  ivec2 p = ivec2(pos), q = min(p + 1, size - 1);
+  vec2 f = fract(pos);
+  return mix(mix(layerTexel(image, p, size, topDown), layerTexel(image, ivec2(q.x, p.y), size, topDown), f.x),
+    mix(layerTexel(image, ivec2(p.x, q.y), size, topDown), layerTexel(image, q, size, topDown), f.x), f.y);
+}
+`;
+
 const fragment = `#version 300 es
 precision highp float;
 precision highp int;
@@ -7,22 +25,11 @@ uniform bool u_topDown, u_linear, u_opaque;
 uniform float u_opacity;
 out vec4 color;
 
-vec4 at(ivec2 pos, ivec2 size) {
-  if (!u_topDown) pos.y = size.y - 1 - pos.y;
-  return texelFetch(u_layer, pos, 0);
-}
+${layerSamplingGLSL}
 
 void main() {
-  ivec2 size = textureSize(u_layer, 0);
   vec2 pixel = vec2(gl_FragCoord.x, u_outputSize.y - gl_FragCoord.y);
-  vec2 uv = pixel * vec2(size) / u_outputSize;
-  if (u_linear) {
-    vec2 pos = clamp(uv - 0.5, vec2(0.0), vec2(size) - 1.0);
-    ivec2 p = ivec2(pos), q = min(p + 1, size - 1);
-    vec2 f = fract(pos);
-    color = mix(mix(at(p, size), at(ivec2(q.x, p.y), size), f.x),
-      mix(at(ivec2(p.x, q.y), size), at(q, size), f.x), f.y);
-  } else color = at(min(ivec2(uv), size - 1), size);
+  color = layerAt(u_layer, pixel, u_outputSize, u_topDown, u_linear);
   if (u_opaque) color.a = 1.0;
   color *= u_opacity;
 }`;

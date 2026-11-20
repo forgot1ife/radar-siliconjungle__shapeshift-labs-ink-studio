@@ -188,24 +188,36 @@ const FrameComposite = (() => {
     });
   }
 
-  function resample(layer, w, h, visit) {
-    const { data, w: width, h: height } = layer, sample = new Float64Array(4);
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-      const u = (x + .5) * width / w, v = (y + .5) * height / h;
-      if (layer.filter === 'linear') {
-        const nx = Math.max(0, Math.min(width - 1, u - .5)), ny = Math.max(0, Math.min(height - 1, v - .5));
-        const ix = Math.floor(nx), iy = Math.floor(ny), dx = nx - ix, dy = ny - iy;
-        const aa = (iy * width + ix) * 4, ba = ix + 1 < width ? aa + 4 : aa;
-        const ab = iy + 1 < height ? aa + width * 4 : aa, bb = ab + ba - aa;
-        for (let c = 0; c < 4; c++)
-          sample[c] = ((1 - dx) * data[aa + c] + dx * data[ba + c]) * (1 - dy) +
-            ((1 - dx) * data[ab + c] + dx * data[bb + c]) * dy;
-      } else {
-        const q = (Math.floor(v) * width + Math.floor(u)) * 4;
-        for (let c = 0; c < 4; c++) sample[c] = data[q + c];
-      }
-      visit((y * w + x) * 4, sample);
+  function sample(layer, u, v, out) {
+    const { data, w: width, h: height } = layer;
+    if (layer.filter === 'linear') {
+      const nx = Math.max(0, Math.min(width - 1, u - .5)), ny = Math.max(0, Math.min(height - 1, v - .5));
+      const ix = Math.floor(nx), iy = Math.floor(ny), dx = nx - ix, dy = ny - iy;
+      const aa = (iy * width + ix) * 4, ba = ix + 1 < width ? aa + 4 : aa;
+      const ab = iy + 1 < height ? aa + width * 4 : aa, bb = ab + ba - aa;
+      for (let c = 0; c < 4; c++)
+        out[c] = ((1 - dx) * data[aa + c] + dx * data[ba + c]) * (1 - dy) +
+          ((1 - dx) * data[ab + c] + dx * data[bb + c]) * dy;
+    } else {
+      const q = (Math.floor(v) * width + Math.floor(u)) * 4;
+      for (let c = 0; c < 4; c++) out[c] = data[q + c];
     }
+  }
+
+  function resample(layer, w, h, visit) {
+    const color = new Float64Array(4);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      sample(layer, (x + .5) * layer.w / w, (y + .5) * layer.h / h, color);
+      visit((y * w + x) * 4, color);
+    }
+  }
+
+  function blend(data, p, source, amount, add) {
+    const remaining = 1 - source[3] * amount / 255;
+    const a = Math.round(data[p + 3] * remaining + source[3] * amount);
+    for (let c = 0; c < 3; c++)
+      data[p + c] = Math.min(a, Math.round(data[p + c] * (add ? 1 : remaining) + source[c] * amount));
+    data[p + 3] = a;
   }
 
   function compose(base, overlays, w, h, filter) {
@@ -215,15 +227,13 @@ const FrameComposite = (() => {
     });
     for (const layer of overlays) {
       const add = layer.blend === 'add', opacity = layer.opacity;
-      resample(layer, w, h, (p, sample) => {
-        const remaining = 1 - sample[3] * opacity / 255;
-        const a = Math.round(data[p + 3] * remaining + sample[3] * opacity);
-        for (let c = 0; c < 3; c++)
-          data[p + c] = Math.min(a, Math.round(data[p + c] * (add ? 1 : remaining) + sample[c] * opacity));
-        data[p + 3] = a;
-      });
+      resample(layer, w, h, (p, sample) => blend(data, p, sample, opacity, add));
     }
-    const rgb = new Uint8Array(w * h * 3), alpha = base.alpha && new Uint8Array(w * h);
+    return straight(data, w, h, base.alpha);
+  }
+
+  function straight(data, w, h, transparent) {
+    const rgb = new Uint8Array(w * h * 3), alpha = transparent && new Uint8Array(w * h);
     for (let p = 0; p < w * h; p++) {
       const a = data[p * 4 + 3];
       if (alpha) alpha[p] = a;
@@ -232,6 +242,6 @@ const FrameComposite = (() => {
     return { w, h, rgb, ...(alpha && { alpha }) };
   }
 
-  return Object.freeze({ settings, prepare, layers, compose });
+  return Object.freeze({ settings, prepare, layers, compose, pixels, sample, blend, straight });
 })();
 if (typeof module !== 'undefined') module.exports = FrameComposite;

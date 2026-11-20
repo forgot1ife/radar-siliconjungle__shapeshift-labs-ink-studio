@@ -32,3 +32,5 @@ A raster `source` supplies `{ w, h, rgba }` or `{ w, h, rgb, alpha? }` with top-
 The CPU returns the composed color at output resolution with `px: 1`. `worldSize` records the size of the world raster, and requested diagnostic passes retain their native world dimensions. Existing CPU transparent exports preserve alpha through composition.
 
 The CLI accepts scene-authored composite settings and `--composite file.json` for an override. JSON supports drawing commands. Use `--composite off` to render the scene with its regular world settings.
+
+Use a composite pass in the [editable render graph](render-graph.md) to place a layer before or after other screen effects.

@@ -754,6 +754,7 @@ Common rendering controls:
 | `--splat-order center\|surface` | Choose global center ordering or local ordering using the sampled surface plane. |
 | `--stable-transparency on\|off` | Stabilize close translucent layers through camera motion. |
 | `--composite file.json\|off` | Set independent world and screen-layer resolutions. See [mixed-resolution compositing](docs/mixed-resolution.md). |
+| `--render-graph file.json\|off` | Order and scope screen-space passes. See [the render graph](docs/render-graph.md). |
 | `--volume-scale`, `--volume-steps`, `--volume-jitter` | Override the atmosphere volume's sampling settings. |
 | `--seed` | Override the scene seed. |
 | `--colored` | Use palette-aware smoothing of silhouettes and body-colored contours. |

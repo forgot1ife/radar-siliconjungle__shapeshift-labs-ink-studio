@@ -15,6 +15,8 @@ const ArtDirection = require('../src/art-direction.js');
 const SilhouetteProtection = require('../src/silhouette-protection.js');
 const DetailBudgets = require('../src/detail-budgets.js');
 const ShadowArt = require('../src/shadow-art.js');
+const RenderGraph = require('../src/render-graph.js');
+const runGraph = require('./render-graph.js');
 const FrameComposite = require('../src/frame-composite.js');
 const SplatOrder = require('../src/splat-order.js');
 const OpticalMaterials = require('../src/optical-materials.js');
@@ -105,6 +107,21 @@ function viewMatrix(yaw, pitch, dist, T) {
 }
 // o: t (seconds), yaw, pitch, dist, target, w, h (the size of the stage in screen pixels), zoom (1 = the diorama's own distance), raw (skip the palette)
 function render(world, o, preparedPalettes) {
+  const graph = !o?.samples && !o?.captureCoverage && RenderGraph.prepare(o?.renderGraph ?? world.look?.renderGraph);
+  if (graph?.passes.length) {
+    const start = o?.renderStats ? performance.now() : 0;
+    const requested = ArtPasses.select(o?.passes);
+    const passes = graph.needsOwner ? [...new Set([...requested, 'splatId'])] : o?.passes;
+    const base = render(world, { ...o, renderGraph: false, passes }, preparedPalettes);
+    const time = o?.t ?? world.lookSnapshot?.time ?? 0;
+    const frame = { ...base, ...runGraph(graph, base, world, time, require('../index.js').load().KIT.poly2.text) };
+    if (base.passes && graph.needsOwner) {
+      if (requested.length) frame.passes = ArtPasses.subset(base.passes, requested);
+      else delete frame.passes;
+    }
+    if (frame.renderStats) frame.renderStats.frameMs = performance.now() - start;
+    return frame;
+  }
   const definition = o?.composite ?? world.look?.composite;
   if (definition !== undefined && definition !== false && !o?.samples && !o?.captureCoverage) {
     const start = o?.renderStats ? performance.now() : 0;

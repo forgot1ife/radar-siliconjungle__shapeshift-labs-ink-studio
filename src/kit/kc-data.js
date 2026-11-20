@@ -416,6 +416,11 @@
       bad('finish.look.composite', error.message);
     }
     try {
+      RenderGraph.prepare(look?.renderGraph);
+    } catch (error) {
+      bad('finish.look.renderGraph', error.message);
+    }
+    try {
       SilhouetteProtection.prepare(look?.silhouetteProtection);
     } catch (error) {
       bad('finish.look.silhouetteProtection', error.message);
