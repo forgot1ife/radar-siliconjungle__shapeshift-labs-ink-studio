@@ -106,7 +106,21 @@ function viewMatrix(yaw, pitch, dist, T) {
   ];
 }
 // o: t (seconds), yaw, pitch, dist, target, w, h (the size of the stage in screen pixels), zoom (1 = the diorama's own distance), raw (skip the palette)
+const afterimageRows = Symbol('afterimage rows');
+
 function render(world, o, preparedPalettes) {
+  if (o?.afterimageHistory && !o[afterimageRows] && !o.samples && !o.captureCoverage) {
+    const definition = o.afterimages ?? world.look?.afterimages;
+    if (o.resetAfterimages || definition === false || definition === undefined) o.afterimageHistory.clear();
+    if (definition !== false && definition !== undefined) {
+      const rules = require('../index.js').load().KIT.afterimages.prepare(definition);
+      const time = o.t ?? world.lookSnapshot?.time ?? 0;
+      const direction = ArtDirection.prepare(world.look?.artDirection, o.artDirection);
+      o = { ...o, [afterimageRows]: o.afterimageHistory.frame(world, time, rules, {
+        poseTime: ArtDirection.time(direction, time), withdrawal: o.sampleWithdrawal ?? world.sampleWithdrawal ?? 0
+      }) };
+    }
+  }
   const graph = o?.samples || o?.captureCoverage ? null : RenderGraph.prepare(o?.renderGraph ?? world.look?.renderGraph);
   if (graph?.passes.length) {
     const start = o?.renderStats ? performance.now() : 0;
@@ -394,14 +408,21 @@ function renderFrame(world, o, preparedPalettes) {
     }
   });
   const splatCount = fields?.count ?? 0, emittedCount = emitted?.count ?? 0;
-  const N = baseCount + splatCount + emittedCount;
+  const afterimages = o[afterimageRows];
+  const afterimageStart = baseCount + splatCount + emittedCount;
+  const N = afterimageStart + (afterimages?.length ?? 0) / 16;
   const birthIds = N > baseCount && captureMotion ? new Float64Array(N) : undefined;
-  let d = world.data;
+  // The CLI normally supplies posed data. A Node host can pass its active
+  // bone matrices directly when using the same afterimage history.
+  const baseData = afterimages && !world.rest && an.bones ?
+    require('../index.js').load().KIT.bones.posed({ ...world, posedBuf: undefined }) : world.data;
+  let d = baseData;
   if (N > baseCount) {
     d = new Float32Array(N * 16);
-    d.set(world.data.subarray(0, baseCount * 16));
+    d.set(baseData.subarray(0, baseCount * 16));
     if (splatCount) fields.write(d, baseCount, t, { birthIds, travel });
     if (emittedCount) emitted.write(d, baseCount + splatCount, birthIds);
+    if (afterimages?.length) d.set(afterimages, afterimageStart * 16);
   }
   if (paint) {
     if (d === world.data) d = d.slice(0, baseCount * 16);

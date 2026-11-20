@@ -1,6 +1,11 @@
 /* Native splat frames for authored surface sampling and lighting. */
 const SplatFrames = (() => {
   const surface = typeof SurfaceLook === 'undefined' ? require('./surface-look.js') : SurfaceLook;
+  function covariance(data, q, basis, M, transpose = M.tr(basis)) {
+    const [xx, xy, xz, yy, yz, zz] = [4, 5, 6, 8, 9, 10].map(k => data[q + k]);
+    return M.mul(M.mul(basis, [xx, xy, xz, xy, yy, yz, xz, yz, zz]), transpose);
+  }
+
   function create(world, time, M) {
       const { renderMetadata, pix, surfaceData, anim, data, rest } = world;
     const rig = anim?.rig, bones = anim?.bones;
@@ -17,19 +22,19 @@ const SplatFrames = (() => {
 
       const packed = Math.round(data[q + 11]), kind = packed % 16;
       const part = rig?.free?.[i] ? 0 : rig?.bid[i] || 0;
-      const restKind = Math.round(rest?.[q + 11] || 0) % 16;
+      const restData = rest || data, restKind = Math.round(restData[q + 11]) % 16;
       const skinned = bones && (restKind === 12 || restKind === 13);
       const matrix = part ? rig.M : skinned ? bones : null;
-      const bone = part || (skinned ? rest[q + 12] : 0);
-      const blend = skinned ? rest[q + 14] : 0;
-      const second = blend ? rest[q + 13] : 0;
+      const bone = part || (skinned ? restData[q + 12] : 0);
+      const blend = skinned ? restData[q + 14] : 0;
+      const second = blend ? restData[q + 13] : 0;
       if (matrix) {
         const key = [part ? 'rig' : 'bones', bone, second, blend].join(',');
         if (!matrices.has(key)) {
           const rows = matrix.slice(bone * 12, bone * 12 + 9);
           if (blend) for (let j = 0; j < 9; j++) rows[j] += (matrix[second * 12 + j] - rows[j]) * blend;
           const inverse = Math.abs(M.det(rows)) > 1e-8 ? M.inv(rows) : null;
-          matrices.set(key, inverse && { inverse, normal: M.tr(inverse) });
+          matrices.set(key, inverse && { basis: rows, inverse, normal: M.tr(inverse) });
         }
       }
       const transform = matrix ? matrices.get([part ? 'rig' : 'bones', bone, second, blend].join(',')) : null;
@@ -39,7 +44,7 @@ const SplatFrames = (() => {
       if (normal && angle) normal = [c * normal[0] + s * normal[2], normal[1], c * normal[2] - s * normal[0]];
       const length = normal && Math.hypot(...normal);
       return { normal: length > 1e-8 ? normal.map(value => value / length) : null,
-        rest: (skinned ? rest : anim?.base instanceof Float32Array ? anim.base : rest || data).subarray(q, q + 3),
+        rest: (skinned ? restData : anim?.base instanceof Float32Array ? anim.base : rest || data).subarray(q, q + 3),
         position() {
           let x = data[q], y = data[q + 1], z = data[q + 2];
           const ph = data[q + 12], sp = data[q + 13], rg = data[q + 14], ex = data[q + 15];
@@ -82,6 +87,12 @@ const SplatFrames = (() => {
           }
           return [x, y, z];
         },
+        basis() {
+          const orbit = angle ? [c, 0, s, 0, 1, 0, -s, 0, c] : null;
+          const posed = transform?.basis;
+          return { anchor: orbit && posed ? M.mul(orbit, posed) : orbit || posed || M.id(),
+            covariance: kind === 12 || kind === 13 ? posed : orbit };
+        },
         localOffset(x, y, z) {
           const offset = [c * x - s * z, y, c * z + s * x];
           return transform ? M.app(transform.inverse, offset) : offset;
@@ -90,6 +101,6 @@ const SplatFrames = (() => {
     }
     return sample;
   }
-  return Object.freeze({ create });
+  return Object.freeze({ create, covariance });
 })();
 if (typeof module !== 'undefined') module.exports = SplatFrames;

@@ -421,6 +421,11 @@
       bad('finish.look.renderGraph', error.message);
     }
     try {
+      K.afterimages.prepare(look?.afterimages);
+    } catch (error) {
+      bad('finish.look.afterimages', error.message);
+    }
+    try {
       SilhouetteProtection.prepare(look?.silhouetteProtection);
     } catch (error) {
       bad('finish.look.silhouetteProtection', error.message);

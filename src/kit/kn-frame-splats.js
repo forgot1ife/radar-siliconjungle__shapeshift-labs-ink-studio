@@ -102,15 +102,8 @@
           D[o + 1] = y + at[1];
           D[o + 2] = z + at[2];
           D[o + 3] = rows[r + 3] * opacity;
-          const c00 = rows[r + 4],
-            c01 = rows[r + 5],
-            c02 = rows[r + 6];
-          const c11 = rows[r + 8],
-            c12 = rows[r + 9],
-            c22 = rows[r + 10];
-          const covariance = [c00, c01, c02, c01, c11, c12, c02, c12, c22];
           const linear = deform ? M.mul(matrix, K.deform.jac(deform, p)) : matrix;
-          const C = M.mul(M.mul(linear, covariance), deform ? M.tr(linear) : transpose);
+          const C = K.splatFrames.covariance(rows, r, linear, M, deform ? M.tr(linear) : transpose);
           D[o + 4] = C[0];
           D[o + 5] = C[1];
           D[o + 6] = C[2];

@@ -37,7 +37,7 @@ uniform mat4 u_view, u_proj;
 uniform bool u_geometryDepth;
 uniform vec2 u_viewport;
 uniform float u_focal, u_time, u_scale, u_snap, u_dilate, u_near, u_ortho, u_idx;
-uniform float u_paintMarker; flat out int v_paint;
+uniform float u_paintMarker; uniform int u_afterimageStart; flat out int v_paint;
 ${relighting ? relightTable + 'flat out vec4 v_relight;' : ''}
 ${layeredGlass ? 'uniform float u_glassTolerance; flat out float v_glassNearDepth;' : ''}
 ${optical ? `uniform highp sampler2D u_optical;
@@ -89,7 +89,8 @@ void main(){
   vec4 t1 = texelFetch(u_data, ivec2(col + 1, row), 0);
   vec4 t2 = texelFetch(u_data, ivec2(col + 2, row), 0);
   vec4 t3 = ${instances ? 'a_instance != 0 ? vec4(0.0) : ' : ''}texelFetch(u_data, ivec2(col + 3, row), 0);
-  v_paint = u_paintMarker != 0.0 && t3.z == u_paintMarker ? 1 : 0;
+  v_paint = (u_paintMarker != 0.0 && t3.z == u_paintMarker ||
+    u_afterimageStart > 0 && a_index >= u_afterimageStart) ? 1 : 0;
   ${materialStyles ? 'v_pixelStyle = texelFetch(u_materialStyles, ivec2(record & 511, row), 0);' : ''}
   vec3 pos = t0.xyz; float alpha = t0.w;
   if (alpha <= 0.0 || pos.y < -30.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }   // (what is put away is put far below: it is not drawn from there)

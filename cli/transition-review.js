@@ -110,7 +110,8 @@ function evidence(from, to, thresholds, comparison, flag = true) {
 }
 
 function stream(camera) {
-  return { ...camera, artHistory:ArtEffects.history({ frames:24 }), volumeHistory:volumeHistory(), transparencyHistory:transparencyHistory() };
+  return { ...camera, artHistory:ArtEffects.history({ frames:24 }), volumeHistory:volumeHistory(),
+    transparencyHistory:transparencyHistory(), afterimageHistory:require('../index.js').load().KIT.afterimages.history() };
 }
 
 function capture(world, settings, { rows, fps, neighbors, preroll }, pose) {
@@ -140,6 +141,8 @@ function capture(world, settings, { rows, fps, neighbors, preroll }, pose) {
           incoming.volumeHistory.clear();
           outgoing.transparencyHistory.reset();
           incoming.transparencyHistory.reset();
+          outgoing.afterimageHistory.clear();
+          incoming.afterimageHistory.clear();
         }
         const image = draw(incoming && offset >= 0 ? playback : outgoing);
         if (offset === -1 && incoming) {
@@ -152,6 +155,7 @@ function capture(world, settings, { rows, fps, neighbors, preroll }, pose) {
           active.artHistory.clear();
           active.volumeHistory.clear();
           active.transparencyHistory.reset();
+          active.afterimageHistory.clear();
         }
       });
     }

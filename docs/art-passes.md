@@ -109,6 +109,8 @@ Set `finish.look.effects`, or pass `artEffects` to `render`. Each effect accepts
 | `cycle` | `colors`, discrete `rate` and `phase`, with an optional named `material`. Multiple cycle rules can be supplied. |
 | `trail`, `smear` | Independent palettes and timing, prior frame count, duration and depth bias. Smears also expose discrete `steps` and maximum `reach`. |
 
+For trails that follow the camera and a moving object or surface, use [motion-aware afterimages](motion-afterimages.md).
+
 Call `studio.load().ArtEffects.history()` and reuse the result as `artHistory` for consecutive frames of the same view. The CLI creates a history for sheets and animation clips. Call `clear()` after a camera cut. Art effects leave the source emission and geometry passes available for inspection.
 
 ## Local splat ordering

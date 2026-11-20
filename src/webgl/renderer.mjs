@@ -128,6 +128,8 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
     const rasterKeys = new WeakMap();
     let rasterKey = 0;
     const sort = createDepthSorter(), transparencyAPI = toolkit.KIT?.procedural?.splatOrder;
+    const afterimagesAPI = toolkit.KIT?.afterimages;
+    const afterimageHistory = afterimagesAPI?.history(), portalAfterimages = afterimagesAPI?.history();
     const mainTransparency = new WeakMap(), portalTransparency = new WeakMap();
     let surfacePipeline;
     let simple, simpleUnavailable = false, keyProgram, damp, copy, spriteProgram, spriteEnvProgram, spriteLayer, spriteTable, anchors;
@@ -553,14 +555,31 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       const constraintDefinition = frame.paletteConstraints ?? look.paletteConstraints;
       const wantsRelight = lighting && (frame.relighting ?? world.relighting);
       let group = frame.instances;
+      const afterimageDefinition = frame.afterimages ?? look.afterimages;
+      const trails = !frame.order && afterimageDefinition !== undefined && afterimageDefinition !== false;
+      if (trails && !afterimagesAPI) throw new Error('Afterimages need the Ink Studio KIT');
+      const rules = trails ? afterimagesAPI.prepare(afterimageDefinition) : [];
       // Per-pixel material, palette, and detail rules index the expanded world.
-      if (group && (frame[graphOwner] || frame.order || tolerance || wantsRelight || world.opticalSplats || instancePlan(group).hasOpticalSplats || !raw && (constraintDefinition || look.pixel && world.pix ||
+      if (group && (rules.length || frame[graphOwner] || frame.order || tolerance || wantsRelight || world.opticalSplats || instancePlan(group).hasOpticalSplats || !raw && (constraintDefinition || look.pixel && world.pix ||
           needsDetailFlags || budget?.fineOn || budget?.fineOff))) {
         expandInstances ??= createExpandedInstances();
         const expanded = expandInstances(world,group,frame.changedRows);
         world = expanded.world;
         frame = { ...frame, changedRows:expanded.changedRows };
         group = undefined;
+      }
+      const trailHistory = frame.afterimageHistory ?? (plane === zero ? afterimageHistory : portalAfterimages);
+      let trailStart = 0;
+      if (frame.resetAfterimages || !rules.length) trailHistory?.clear();
+      if (rules.length) {
+        const time = frame.time ?? world.lookSnapshot?.time ?? 0;
+        const poseTime = frame.stepAnimation !== false && look.pixel ? Math.floor(time * 10) / 10 : time;
+        const rows = trailHistory.frame(world, time, rules, { source, layout: frame.instances, poseTime, bornAt: frame.bornAt,
+          withdrawal: frame.sampleWithdrawal ?? world.sampleWithdrawal ?? 0 });
+        if (rows.length) {
+          trailStart = world.count;
+          world = afterimagesAPI.append(world, rows);
+        }
       }
       const constraints = !raw && prepareConstraints(world, constraintDefinition, frame.lookMasks === false);
       const coverage = !raw && (frame.coverageAware ?? look.coverageAware) === true;
@@ -660,7 +679,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       if ((paintView || lastPaintView) && (!paintView || !lastPaintView || !sameValues(paintView, lastPaintView)))
         historyValid = false;
       lastPaintView = paintView;
-      const paintOnPatterns = patterned && (paintActive || !!world.opticalSplats);
+      const paintOnPatterns = patterned && (paintActive || !!trailStart || !!world.opticalSplats);
       if (paintOnPatterns) {
         paintOverlay ??= target(2);
         paintOverlay.resize(width, height);
@@ -774,7 +793,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         u_sampleWithdrawal: sampleCoverage?.amount(frame.sampleWithdrawal ?? world.sampleWithdrawal ?? 0) ?? 0,
         u_born: [frame.bornAt ?? 0, growth.rate ?? 1, growth.fade ?? 0.5, growth.loop ?? 0],
         u_crisp: +!raw, u_dilate: raw ? 0.3 : 0.15, u_near: camera.clipNear,
-        u_paintMarker: paint?.marker ?? 0,
+        u_paintMarker: paint?.marker ?? 0, u_afterimageStart: trailStart,
         ...(opticalMaterials && { u_optical: opticalUnit }),
         ...(relighting && { u_relight: relightUnit }),
         u_fog: rgb(world.pal[fog.c ?? 0] ?? 0),
