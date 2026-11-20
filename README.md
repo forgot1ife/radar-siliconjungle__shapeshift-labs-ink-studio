@@ -531,6 +531,10 @@ const heat = voxels.get('heat', 0, 1, 0);
 
 The channels are created on demand. Fire behavior depends on the sampled scene's fuel/material properties. See `burn` for fire and frost, `idol` for destruction, `bench` for the lightweight solvers, and `stuff` for the material-point solver.
 
+## Optional textured surfaces
+
+Use `TexturedSurface.heightfield`, `TexturedSurface.sweep` and `TexturedSurface.grid` to author optional pixel-textured patches alongside SDF solids and splats. Add patches with `SpriteSurface.make().mesh(...)` and attach the finished atlas as `world.spriteSurfaces`. Attachment samples use the same triangles as the visible patch. Both the software renderer and WebGL renderer accept mixed scenes and entirely textured scenes. See the [textured surface guide](docs/textured-surfaces.md) and [mixed example](examples/textured-surfaces.js).
+
 ## Importing meshes
 
 ```sh

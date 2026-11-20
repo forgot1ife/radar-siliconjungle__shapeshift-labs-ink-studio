@@ -10,7 +10,7 @@ const KIT_DIR = path.join(__dirname, 'src', 'kit'),
   read = f => fs.readFileSync(f, 'utf8').replace(/\nif \(typeof module[^\n]*\n?$/, '\n');
 const files = () =>
   [
-    'src/frame-budget.js', 'src/ink-veil.js', 'src/sprite-surface.js', 'src/atlas-sprites.js', 'src/target-selectors.js', 'src/splat-provenance.js',
+    'src/frame-budget.js', 'src/ink-veil.js', 'src/textured-surface.js', 'src/sprite-surface.js', 'src/atlas-sprites.js', 'src/target-selectors.js', 'src/splat-provenance.js',
     'src/art-passes.js', 'src/art-direction.js', 'src/art-ink.js', 'src/art-effects.js', 'src/art-stability.js',
     'src/color-space.js', 'src/color-curves.js', 'src/color-lut.js', 'src/color-stack.js', 'src/pixel-look.js', 'src/reflection-plane.js', 'src/airflow.js', 'src/wind-field.js', 'src/light-schedule.js',
     'src/route-visibility.js', 'src/sample-coverage.js', 'src/sample-visibility.js', 'src/swept-disc.js', 'src/splat-order.js', 'src/splat-codec.js', 'src/ripple-field.js',
@@ -28,7 +28,7 @@ const files = () =>
 const demoFiles = () => [path.join(__dirname, 'demos', 'labscenes.js')];
 // the names the bundle defines at top level (add them to your own module.exports)
 const EXPORTS =
-  'makeBuilder, makeSculpt, basis, flame, motes, pondMat, lilies, courses, PALETTES, PAL_HEX, KIT, FrameBudget, InkVeil, SpriteSurface, TargetSelectors, SplatProvenance, ColorSpace, ColorCurves, ColorLUT, ColorStack, PixelLook, LookInputs, RenderStages, SurfaceLook, SceneOptics, SceneExposure, SkyEnvironment, CelestialTracks, CloudField, Lightning, VOX, SplatEffects, ArtPasses, ArtDirection, ArtInk, EffectPalettes, SilhouetteProtection, HorizonBands, ArtStability, ArtEffects, VolumeField, VolumeLight';
+  'makeBuilder, makeSculpt, basis, flame, motes, pondMat, lilies, courses, PALETTES, PAL_HEX, KIT, FrameBudget, InkVeil, TexturedSurface, SpriteSurface, TargetSelectors, SplatProvenance, ColorSpace, ColorCurves, ColorLUT, ColorStack, PixelLook, LookInputs, RenderStages, SurfaceLook, SceneOptics, SceneExposure, SkyEnvironment, CelestialTracks, CloudField, Lightning, VOX, SplatEffects, ArtPasses, ArtDirection, ArtInk, EffectPalettes, SilhouetteProtection, HorizonBands, ArtStability, ArtEffects, VolumeField, VolumeLight';
 module.exports = {
   files,
   demoFiles,

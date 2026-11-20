@@ -1,3 +1,4 @@
+import { createSurfacePipeline } from './surfaces.mjs';
 import { createResources } from './resources.mjs';
 import { createTargets } from './targets.mjs';
 import { createSplatPipeline } from './pipeline.mjs';
@@ -105,6 +106,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
     let constraintRows, constraintSlots, constraintPlan, constraintKey, constraintWorld, constraintMetadata, constraintCount, constraintMap;
     let constrainedPost;
     const sort = createDepthSorter();
+    let surfacePipeline;
     let simple, simpleUnavailable = false, keyProgram, damp, copy, spriteProgram, spriteLayer, spriteTable, anchors;
     let lastWorld, lastData, lastCount, lastOutput, fineValues, materials, anchorCount = 0;
     let packed = empty, historyIndex = 0, historyValid = false, previousVP, previousColorGrade;
@@ -304,13 +306,24 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
       }
+      if(options.surfaces){
+        surfacePipeline??=createSurfacePipeline(gl);
+        buffer.ensureDepth();
+        gl.enable(gl.DEPTH_TEST);gl.depthFunc(gl.LEQUAL);gl.depthMask(true);
+        gl.clearBufferfv(gl.DEPTH,0,[1]);gl.disable(gl.BLEND);
+        surfacePipeline.draw(options.surfaces,options.surfaceFrame);
+        data.bind();
+        gl.depthMask(false);
+        if(!options.u_idx){gl.enable(gl.BLEND);gl.blendFunc(gl.ONE,gl.ONE_MINUS_SRC_ALPHA);}
+      }else gl.disable(gl.DEPTH_TEST);
       gl.useProgram(shader.p);
       shader.set({
-        ...options,
+        ...options,u_geometryDepth:+Boolean(options.surfaces),
         u_viewport: [width, height],
         u_focal: height / 2 / options.tangent
       });
       pipeline.draw();
+      gl.disable(gl.DEPTH_TEST);gl.depthMask(true);
     }
 
     function drawSprites(camera, world, width, height, time, pixelOutline, water, pal, wet, clip, foreground) {
@@ -472,14 +485,17 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         u_fogp: [fog.start ?? 1, fog.max ?? 0, ...camera.depthRange], ...water
       });
       const background = [...rgb(world.pal[0]), 1], tangent = camera.tangent;
-      drawGeometry(shader, geometry, rw, rh, { u_idx: 0, u_snap: +(!raw && !colored), u_hard: 0, background, tangent }, water, wet);
+      const surfaces=frame.spriteSurfaces===false?null:world.spriteSurfaces;
+      const surfaceFrame={view:camera.view,projection:camera.projection,range:[...camera.depthRange,fog.start??1,fog.max??0],
+        fog:rgb(world.pal[fog.c??0]??0),arrivalPlane:plane,clip};
+      drawGeometry(shader, geometry, rw, rh, { u_idx: 0, u_snap: +(!raw && !colored), u_hard: 0, background, tangent, surfaces, surfaceFrame }, water, wet);
       if (colored)
-        drawGeometry(shader, contours, width, height, { u_idx: 0, u_snap: 1, u_hard: 0, background, tangent }, water, wet);
+        drawGeometry(shader, contours, width, height, { u_idx: 0, u_snap: 1, u_hard: 0, background, tangent, surfaces, surfaceFrame }, water, wet);
       if (patterned || constraints)
-        drawGeometry(shader, owner, width, height, { u_idx: 1, u_snap: 1, u_hard: 0, tangent });
+        drawGeometry(shader, owner, width, height, { u_idx: 1, u_snap: 1, u_hard: 0, tangent, surfaces, surfaceFrame:{...surfaceFrame,index:true} });
       if (cover)
         drawGeometry(shader, cover.buffer, width, height,
-          { u_idx: 2, u_snap: +(!raw && !colored), u_hard: 0, u_splatPlane: cover.plane, tangent });
+          { u_idx: 2, u_snap: +(!raw && !colored), u_hard: 0, u_splatPlane: cover.plane, tangent, surfaces, surfaceFrame:{...surfaceFrame,index:true,clip:cover.plane} });
       gl.disable(gl.BLEND);
       textureUnit(1, geometry.textures[0]);
       textureUnit(2, geometry.textures[1]);
@@ -652,7 +668,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       gl.activeTexture(gl.TEXTURE0);
     }
     const viewportLimit = gl.getParameter(gl.MAX_VIEWPORT_DIMS);
-    return { render: present, dispose() { pipeline.dispose(); resources.dispose(); } };
+    return { render: present, dispose() { surfacePipeline?.dispose(); pipeline.dispose(); resources.dispose(); } };
   } catch (error) {
     pipeline?.dispose();
     resources.dispose();

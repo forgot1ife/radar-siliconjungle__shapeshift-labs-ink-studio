@@ -813,6 +813,13 @@ const CMD = {
       if (kr % 16) moving++;
       if (Math.sqrt((d[q + 4] + d[q + 8] + d[q + 10]) / 3) > 0.4) big++;
     }
+    if(w.spriteSurfaces){
+      const surface=w.spriteSurfaces;
+      for(let i=0;i<surface.vertices.length;i+=5)for(let k=0;k<3;k++){
+        lo[k]=Math.min(lo[k],surface.vertices[i+k]);hi[k]=Math.max(hi[k],surface.vertices[i+k]);
+      }
+      console.log('surfaces    '+surface.vertices.length/15+' triangles, '+surface.width+'×'+surface.height+' atlas');
+    }
     console.log(w.id + '  "' + w.name + '"   built in ' + w.buildMs + ' ms');
     console.log(
       'splats      ' +

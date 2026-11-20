@@ -49,6 +49,7 @@ const Precipitation = require('./precipitation.js');
 const RainImpacts = require('./rain-impacts.js');
 const AtlasSprites = require('../src/atlas-sprites.js');
 const AtlasRaster = require('./atlas-sprites.js');
+const SurfaceRaster = require('./sprite-surfaces.js');
 let SplatFields, AtmosphereEmitters;
 const { cameraRays, surfacePoint, reflectionSampler, atmosphereQuality, mediaSampler, applyAtmosphere } = require('./scene-optics.js');
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x),
@@ -218,7 +219,7 @@ function render(world, o, preparedPalettes) {
   const globalPaletteMark = passSelection.has('target') && (tone || grade) ?
     { assetId: look.colorStackAssetId, stackName: tone ? 'Tone' : (o.colorStack ?? look.colorStack)?.name } : null;
   const rel = c.dist / dist0,
-    rho = world.detail * Math.pow(rel, rel > 1 ? 0.5 : 0.25),
+    rho = (world.detail ?? 12) * Math.pow(rel, rel > 1 ? 0.5 : 0.25),
     preferred = look.pixelSize || clamp(Math.round(ch / (2 * tangent * rho * dist0)), 1, 18),
     px = o.px || frameBudget.artScale(cw, ch, preferred, o.raw || o.samples || o.captureCoverage ? null : look.pixelBudget),
     W = Math.ceil(cw / px),
@@ -388,6 +389,10 @@ function render(world, o, preparedPalettes) {
     cloudDisplacement, o.cloudRepresentation ?? world.cloudRepresentation, flash?.light, cutouts?.cloud, direction?.cloudEdge) : null;
   const cloudShadow = clouds?.shadow;
   const spriteAtlases=AtlasSprites.placements(world.spriteAtlases,o.spriteAtlases);
+  const surfaceFragments=o.spriteSurfaces===false?[]:SurfaceRaster.rasterize(world.spriteSurfaces,{V,W,H,focal,ortho,near,
+    clip:reflectionPlane && (p=>SceneOptics.planeDistance(reflectionPlane,...p)>reflectionPlane.bias)});
+  const surfaceDepth=surfaceFragments.length?new Float32Array(W*H).fill(Infinity):null;
+  for(const sample of surfaceFragments)surfaceDepth[sample.p]=sample.z;
   const sprites=AtlasRaster.rasterize(spriteAtlases,{
     eye,V,W,H,focal,ortho,near,rayAt,time:t,override:o.spriteAtlasMode,sun,
     objectDither: anchoring && stable.anchorSpaces.has('object'),
@@ -395,6 +400,8 @@ function render(world, o, preparedPalettes) {
     visibility:(position)=>(cloudShadow?.(...position)??1)*(exposure?.light?.(...position)??1),
     clip:reflectionPlane && (position=>SceneOptics.planeDistance(reflectionPlane,...position)>reflectionPlane.bias)
   });
+  for(const sample of surfaceFragments)sprites.push(sample);
+  sprites.sort((a,b)=>b.z-a.z);
   const cloudEye = ortho ? eye.map((value, i) => value - (eyeD - dist) * V[2 + i * 4]) : eye;
   const cloudView = clouds?.view?.(cloudEye, ortho ? [V[2],V[6],V[10]] : null);
   const axialDepth = volumes.length || water || aerial || cloudView ? new Float32Array(W * H).fill(Infinity) : null;
@@ -755,6 +762,7 @@ function render(world, o, preparedPalettes) {
   const foregroundDepth = z => z - (eyeD-dist);
   function composite(p, i, z, dn, a, pr, pg, pb, wd, emits, highlight, paletteId, detailParticle, projected, coat, glass, mark,
     opticalDepth = z, sprite, haze = 0, rule) {
+    if(surfaceDepth&&!sprite?.surface&&opticalDepth>surfaceDepth[p]+1e-5)return;
     const p3 = p * 3, ia = 1 - a;
     if (foreground && wd && (i < 0 ? !sprite?.emission : !(d[i*16+11] & 32)))
       [pr,pg,pb] = foreground(foregroundDepth(opticalDepth),pr,pg,pb,contrastColor);

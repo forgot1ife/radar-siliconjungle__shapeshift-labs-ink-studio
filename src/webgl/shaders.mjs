@@ -16,6 +16,7 @@ export function splatShaderSources(ascii, sampleCoverage, {
 precision highp float; precision highp int;
 uniform highp sampler2D u_data;
 uniform mat4 u_view, u_proj;
+uniform bool u_geometryDepth;
 uniform vec2 u_viewport;
 uniform float u_focal, u_time, u_scale, u_snap, u_dilate, u_near, u_ortho, u_idx;
 uniform vec4 u_actor; uniform float u_reveal, u_fade; uniform vec3 u_camdir; uniform ivec2 u_dyn;
@@ -238,7 +239,7 @@ ${water && !portal ? '  v_waterAxial = -cam.z;' : ''}
   v_as = (flags & 128) != 0 ? 1.0 : 0.0; v_ast = v_as > 0.5 ? float(((kraw >> 12) & 1) | (((kraw >> 14) & 1) << 1)) : 0.0;   // text (K.ascii): the dab asks for it (and maybe for a set of its own), or it lies inside a zone (0.5 on the zone's surface)
   for (int i = 0; i < 4; i++) { if (i >= u_azn) break; vec4 z4 = u_az[i]; float zm = clamp(0.5 + (z4.w - distance(pos, z4.xyz)) / (2.0 * u_asoft), 0.0, 1.0); if (zm > v_as) { v_as = zm; v_ast = u_azst; } }
 
-${ascii ? ascii.vsMain : ''}  gl_Position = vec4(ndc + a_corner * extN, 0.0, 1.0);
+${ascii ? ascii.vsMain : ''}  gl_Position = vec4(ndc + a_corner * extN, u_geometryDepth ? clip.z/clip.w : 0.0, 1.0);
 }`;
   const SPLAT_FS = `#version 300 es
 precision highp float;
