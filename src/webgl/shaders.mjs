@@ -535,7 +535,7 @@ bool constrainPalette(ivec2 p, vec3 inputColor, out vec3 color) {
 
 export function pixelShaderSources(PixelLook, { water = false, airPockets = false, layered = false, atlas = false,
   paletteConstraints = false, masked = false, contributions = false, layeredGlass = false, materialStyles = false,
-  environment = false, relighting = false } = {}) {
+  environment = false, relighting = false, packedTone = false } = {}) {
   const waterPixelGLSL = `
 uniform highp sampler2D u_waterMask;
 ivec2 waterPixel(ivec2 p) {
@@ -562,7 +562,8 @@ uniform float u_edge;
 // the tone look (a diorama's look.tone, or the Tone option: PixelLook's stipple): brightness below the cutoff is black, the rest
 // mapped onto the stops (u_toneStops: colour, and its place in .a), each pixel between two stops taking one or the other by its rank
 // in a fixed pattern (Bayer or blue noise) on the screen's art grid
-uniform float u_toneOn, u_toneCut, u_toneAmt; uniform int u_toneN; uniform highp sampler2D u_toneStops, u_toneTh;
+uniform float u_toneOn, u_toneCut, u_toneAmt; uniform int u_toneN; uniform highp sampler2D u_toneStops;
+${packedTone ? 'uniform ivec2 u_toneThSize;' : 'uniform highp sampler2D u_toneTh;'}
 uniform vec3 u_pal[64], u_out[64], u_outl[64];   // (u_outl: what each colour is shown as where a carried light falls on it)
 uniform int u_n;
 uniform float u_grade; uniform float u_bars; uniform int u_remapLine;
@@ -1040,8 +1041,10 @@ ${paletteConstraints ? '    vec3 constrained; if (constrainPalette(p, c, constra
   ${contributions ? '' : '}'}
   if (u_toneOn > 0.5) { float lu = dot(c, vec3(0.30, 0.55, 0.15)); if (lu <= u_toneCut) return vec3(0.0);
     float v = (lu - u_toneCut) / (1.0 - u_toneCut); int lo = 0; for (int i = 0; i < 46; i++) { if (lo >= u_toneN - 2 || v <= texelFetch(u_toneStops, ivec2(lo + 1, 0), 0).a) break; lo++; }
-    vec4 s0 = texelFetch(u_toneStops, ivec2(lo, 0), 0), s1 = texelFetch(u_toneStops, ivec2(lo + 1, 0), 0); ivec2 th = textureSize(u_toneTh, 0), sz = textureSize(u_depth, 0);
-    float share = (v - s0.a) / max(1e-5, s1.a - s0.a), rank = texelFetch(u_toneTh, ivec2(p.x % th.x, (sz.y - 1 - p.y) % th.y), 0).r;
+    vec4 s0 = texelFetch(u_toneStops, ivec2(lo, 0), 0), s1 = texelFetch(u_toneStops, ivec2(lo + 1, 0), 0); ivec2 th = ${packedTone ? 'u_toneThSize' : 'textureSize(u_toneTh, 0)'}, sz = textureSize(u_depth, 0);
+    ivec2 rankAt = ivec2(p.x % th.x, (sz.y - 1 - p.y) % th.y);
+    float share = (v - s0.a) / max(1e-5, s1.a - s0.a),
+      rank = ${packedTone ? 'texelFetch(u_toneStops, rankAt + ivec2(0, 1), 0).r' : 'texelFetch(u_toneTh, rankAt, 0).r'};
     return share >= 0.5 + (rank - 0.5) * u_toneAmt ? s1.rgb : s0.rgb; }
   vec3 best = u_pal[0]; float bd = 1e9; int bi = 0;
   for (int i = 0; i < 64; i++) {
