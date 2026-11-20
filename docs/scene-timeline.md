@@ -18,7 +18,7 @@ Each clip maps track samples, cue ranges, and point events through the same trim
 ## Dioramas
 
 - `/camera/<field>` keys `target`, `dist`, `yaw`, `pitch`, or `sway`. Camera angles use radians.
-- `/poses/<part>/<field>` keys local `translation`, XYZ Euler `rotation` in radians, or positive uniform `scale`. Pose offsets compose with existing procedural motion around each part's joint. Children inherit the parent's transform. GLB export samples the same pose tracks and defaults to the timeline duration.
+- `/poses/<part>/<field>` keys local `translation`, XYZ Euler `rotation` in radians, rigid `orientation` as a row-major 3×3 rotation matrix, or positive uniform `scale`. Orientation keys interpolate along the shortest rotation. Pose offsets compose with existing procedural motion around each part's joint. Children inherit the parent's transform. GLB export samples the same pose tracks and defaults to the timeline duration.
 - `/effects/<index>/<field>` uses the index in the expanded diorama's effects list. Key lamp position (`at`), radius (`r`), `strength`, or `flicker`. Key rain `rate` or `box` as six coordinates containing the two XYZ corners. Key emitter position (`at`), count (`n`), or interval (`every`), dust `spread`, and spark `dir` and `speed`. Particle counts are rounded down when emitted. Keyed effects override shared parameter bindings while their tracks are active.
 
 Advance `world.anim.update(dt, time)` on the timeline's clock to apply the live tracks. Stateful particles still use forward stage steps. `render --t` and `clip` step the stage through their usual paths. A clip with a positive timeline duration uses that duration as its default end time.
@@ -36,3 +36,5 @@ Diorama builds, simulation runs, and visual snapshots expose the compiled progra
 - `sample(time)` returns the active property edits and playing audio clips, including each clip's current source `position`, playback `rate`, and `gain`. Use this when seeking.
 - `between(from, to)` returns markers, world events, and audio cues in `(from, to]`. Use a negative initial time to include cues at zero. Positive-duration audio produces `start` and `end` phases. Zero-duration cues fire once. The host resolves and plays the referenced audio.
 - `markers`, `events`, and `audio` expose the flattened schedule. `ink-studio timeline <scene> --at <seconds>` exports a sampled frame and cue report. Use `--from` and `--to` to limit the cue interval, and `--out` to write JSON.
+
+[Simulation scrubbing and takes](simulation-scrubbing.md) describes recording simulated poses and field values into timeline tracks.

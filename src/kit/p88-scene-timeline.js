@@ -7,6 +7,7 @@
     yaw: { mode: 'radians' }, pitch: { mode: 'number' }, sway: { mode: 'number' } });
   const own = (obj, key) => Object.hasOwn(obj, key);
   const has = (a, b) => Object.keys(a).every(key => b.includes(key));
+  const maxItems = 10000;
 
   function compile(definition, { channel } = {}) {
     const { record, check, id, selector } = K.world.data;
@@ -17,10 +18,10 @@
     let budget = 0;
     function spend(count = 1) {
       budget += count;
-      check(budget <= 10000, 'Timeline exceeds its expanded item budget');
+      check(budget <= maxItems, 'Timeline exceeds its expanded item budget');
     }
     function list(value, name) {
-      check(value === undefined || Array.isArray(value) && value.length <= 10000, 'Expected a bounded timeline ' + name + ' array');
+      check(value === undefined || Array.isArray(value) && value.length <= maxItems, 'Expected a bounded timeline ' + name + ' array');
       return value ?? [];
     }
     function items(input, type, parse) {
@@ -43,9 +44,9 @@
       const first = raw[0].value;
       const mode = settings.mode ?? row.mode ?? (settings.size || vector(first) ? 'vector' :
         Number.isFinite(first) ? 'number' : 'step');
-      check(['number', 'positive', 'radians', 'vector', 'step'].includes(mode) &&
+      check(['number', 'positive', 'radians', 'vector', 'step', 'orientation'].includes(mode) &&
         (row.mode === undefined || row.mode === mode), 'Invalid interpolation for timeline target ' + target.join('/'));
-      const size = settings.size ?? (vector(first) ? first.length : 0);
+      const size = settings.size ?? (mode === 'orientation' ? 9 : vector(first) ? first.length : 0);
       const discrete = mode === 'step', split = size && (mode === 'radians' || mode === 'positive');
       check(size <= 64, 'Timeline vectors support up to 64 components');
       const components = split ? Array.from({ length: size }, (_, i) => String(i)) : [];
@@ -185,5 +186,5 @@
       }
     });
   }
-  K.timeline = Object.freeze({ compile, camera });
+  K.timeline = Object.freeze({ compile, camera, maxItems });
 })(KIT);

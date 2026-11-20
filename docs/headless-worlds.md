@@ -22,6 +22,8 @@ system steps on Node threads. A checkpoint can move between worker counts.
 [Shared simulation checkpoints](simulation-checkpoints.md) let branches
 reuse immutable state in process and content-addressed blocks on disk.
 
+[Simulation scrubbing and takes](simulation-scrubbing.md) seeks through recorded or live simulation states and exports editable timeline keys.
+
 [Region revisions](region-revisions.md) project selected chunks into
 local snapshots and bounded changes against an applied cursor.
 

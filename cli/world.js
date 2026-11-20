@@ -77,13 +77,15 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
     }
     return {legacy:file};
   }
-  function runtime(input, profile = false, regionRevisions) {
+  function sourceWorld(input) {
     ensure(input.world,'The scene must expose an Ink Studio world manifest');
-    const source = !input.checkpoint && (opt.seed !== undefined || opt.dt !== undefined)
+    if (input.checkpoint) ensure(opt.seed===undefined && opt.dt===undefined,'A resumed run uses its checkpoint seed and timestep');
+    return !input.checkpoint && (opt.seed !== undefined || opt.dt !== undefined)
       ? {...input.world,...(opt.seed===undefined?{}:{seed:Number(opt.seed)}),...(opt.dt===undefined?{}:{dt:Number(opt.dt)})}
       : input.world;
-    if (input.checkpoint) ensure(opt.seed===undefined && opt.dt===undefined,'A resumed run uses its checkpoint seed and timestep');
-    return R.create(source,{checkpoint:input.checkpoint,profile,workerPool,regionRevisions,traceSteps:traceRetention()});
+  }
+  function runtime(input, profile = false, regionRevisions) {
+    return R.create(sourceWorld(input),{checkpoint:input.checkpoint,profile,workerPool,regionRevisions,traceSteps:traceRetention()});
   }
   function traceRetention(){
     const value=opt['trace-steps'];
@@ -105,6 +107,16 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
   function schedule(run) {
     if (opt.actions) run.schedule(read(opt.actions));
   }
+  function snapshotRun(input, run, tick) {
+    if (input.log && tick < run.view().tick) {
+      const { origin, commands } = input.log;
+      ensure(tick >= origin.tick, 'Tick precedes the start of the recording');
+      run = runtime({ world: origin.world, checkpoint: origin });
+      run.schedule(commands);
+    }
+    schedule(run);
+    return run;
+  }
   function advanceVisual(run, tick) {
     const emitters = kit.KIT.atmosphere.emitters;
     const { world, tick: start } = run.view();
@@ -124,14 +136,9 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
     return history.at;
   }
   function visualSnapshot(input) {
-    let run = runtime(input);
-    const tick = opt.steps === undefined && opt.ticks === undefined && opt.t === undefined ? run.view().tick : to(run);
-    if (input.log && tick < run.view().tick) {
-      const origin = input.log.origin;
-      run = runtime({ world: origin.world, checkpoint: origin });
-      run.schedule(input.log.commands);
-    }
-    schedule(run);
+    const initial = runtime(input);
+    const tick = opt.steps === undefined && opt.ticks === undefined && opt.t === undefined ? initial.view().tick : to(initial);
+    const run = snapshotRun(input, initial, tick);
     const atmospherePose = advanceVisual(run,tick);
     const view = run.view(), Preview = require('./look-preview.js');
     const world = Preview.withAlbedo(() => W.visual(kit, view, run.query()));
@@ -149,10 +156,11 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
   function view(file) {
     const input = load(file);
     if (input.world) {
-      const run = runtime(input);
+      let run = runtime(input);
       if (opt.actions || opt.ticks !== undefined || opt.steps !== undefined || opt.t !== undefined) {
-        schedule(run);
-        run.advance(to(run));
+        const tick = to(run);
+        run = snapshotRun(input, run, tick);
+        run.advance(tick);
       }
       return run.query();
     }
@@ -167,7 +175,8 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
   }
   function inspectTimeline(file) {
     const input = load(file);
-    const timeline = input.world ? W.sceneTimeline(input.world) : build(input.legacy).timeline;
+    const timeline = input.world ? W.sceneTimeline(input.world) :
+      input.document?.format === W.scrub.takeFormat ? W.scrub.openTake(input.document) : build(input.legacy).timeline;
     ensure(timeline, 'This scene has no unified timeline');
     const at = Number(opt.at ?? 0), from = Number(opt.from ?? -1), to = Number(opt.to ?? timeline.duration);
     ensure(![opt.at, opt.from, opt.to].includes(true), 'Timeline times need numeric values');
@@ -233,18 +242,21 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
       systems:Object.keys(checkpoint.states),commands:run.commandCounts(),events:checkpoint.history.length,historyDropped:checkpoint.dropped,
       scenario:run.scenario,...(checks?{checks}:{}),...(opt.profile?{profile:run.profile()}:{})};
   }
-  function finish(run, sourceStore) {
-    const checks = opt.assert ? assert(run,read(opt.assert)) : null;
+  function saveCheckpoints(sourceStore) {
     const directory=opt['checkpoint-store']==='off'?undefined:opt['checkpoint-store']??sourceStore;
     const store=directory&&CheckpointStore.openCheckpointStore(directory), storage={};
-    function save(key,file,value){
+    return { storage, save(key,file,value) {
       if(!store){write(file,value);return;}
       ensure(typeof file==='string'&&file.length>0,'Expected an output file');
       const {reference,...stats}=store.save(value);
       const location=path.relative(path.dirname(path.resolve(file)),store.directory)||'.';
       write(file,{...reference,store:location});
       storage[key]={root:reference.root,...stats};
-    }
+    } };
+  }
+  function finish(run, sourceStore) {
+    const checks = opt.assert ? assert(run,read(opt.assert)) : null;
+    const { storage, save } = saveCheckpoints(sourceStore);
     if (opt.checkpoint) save('checkpoint',opt.checkpoint,run.checkpoint());
     if (opt.record) save('record',opt.record,run.recording());
     respond({...summary(run,checks),...(Object.keys(storage).length&&{storage})});
@@ -258,10 +270,58 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
     ensure(input.log,'Earlier ticks require a recording');
     const at=Number(opt.ticks);
     ensure(Number.isSafeInteger(at)&&at>=input.log.origin.tick&&at<=input.log.end.tick,'Tick lies outside the recording');
-    const run = R.create(input.log.origin.world,{checkpoint:input.log.origin,workerPool});
-    run.schedule(input.log.commands);
-    run.advance(at);
-    return run.checkpoint();
+    const session = W.scrub.create(input.log, { checkpointCache: 0, runtime: { workerPool } });
+    session.seek(at);
+    return session.checkpoint();
+  }
+  function scrubSession(input) {
+    const world = sourceWorld(input);
+    const number = key => opt[key] === undefined ? undefined :
+      typeof opt[key] === 'string' && /^\d+$/.test(opt[key]) ? Number(opt[key]) : NaN;
+    return W.scrub.create(input.log ?? input.checkpoint ?? world, {
+      checkpointEvery: number('checkpoint-every'), checkpointCache: number('checkpoint-cache'),
+      commands: opt.actions === undefined ? [] : read(opt.actions), runtime: { workerPool }
+    });
+  }
+  function scrubSimulation(file) {
+    const input = load(file), session = scrubSession(input);
+    const value = opt.ticks ?? opt.t;
+    ensure(!(opt.ticks !== undefined && opt.t !== undefined) && typeof value === 'string' &&
+      value.split(',').every(item => item.trim()), 'Give an ordered seek list using --ticks N,N or --t seconds,seconds');
+    const times = numbers(value);
+    ensure(times.length <= 1000, 'Scrub supports up to 1000 seeks per report');
+    const frames = times.map(at => {
+      const view = opt.ticks === undefined ? session.seekTime(at) : session.seek(at);
+      const { checkpointTick, replayedTicks } = session.status(), query = session.query();
+      return { tick: view.tick, time: view.time, ...(opt.ticks === undefined && { requestedTime: at }),
+        checkpointTick, replayedTicks, events: session.events(),
+        ...(opt.field ? { sample: query.probe(opt.field, target(opt), args()) } :
+          opt.entity ? { pose: query.frame(target(opt)) ?? null } : {}) };
+    });
+    let stored = {};
+    if (opt.checkpoint !== undefined) {
+      ensure(typeof opt.checkpoint === 'string' && (!opt.out || path.resolve(opt.checkpoint) !== path.resolve(opt.out)),
+        'Use separate paths for the scrub report and checkpoint');
+      const { storage, save } = saveCheckpoints(input.store);
+      save('checkpoint', opt.checkpoint, session.checkpoint());
+      if (storage.checkpoint) stored = { storage };
+    }
+    respond({ id: session.view().world.id, ...session.status(), frames, ...stored });
+  }
+  function captureTake(file) {
+    const input = load(file), session = scrubSession(input);
+    const tick = (key, fallback) => {
+      const value = opt[key];
+      if (value === undefined) return fallback;
+      ensure(typeof value === 'string' && /^\d+$/.test(value), '--' + key + ' needs a tick number');
+      return Number(value);
+    };
+    ensure(opt.t === undefined && opt.steps === undefined, 'Use --from and --ticks to set the take range');
+    ensure(opt.tracks === undefined || typeof opt.tracks === 'string' && opt.entity === undefined && opt.part === undefined,
+      'Use --tracks FILE or --entity ID with an optional --part ID');
+    const tracks = opt.tracks ? read(opt.tracks) : W.scrub.motionTracks(opt.entity, opt.part);
+    respond(session.recordTake({ tracks, from: tick('from', session.status().fromTick),
+      to: tick('ticks', input.log?.end.tick), every: tick('every', 1) }));
   }
   function dependencyReport(file) {
     ensure(typeof file==='string','Supply a world, recording or retained dependency driver');
@@ -388,6 +448,8 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
         break;
       }
       case 'dependencies': return dependencyReport(file);
+      case 'scrub': return scrubSimulation(file);
+      case 'take': return captureTake(file);
       case 'regions': return regionUpdate(file);
       case 'regions-apply': return applyRegionUpdate(file,other);
       case 'reset': {
@@ -444,14 +506,16 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
       }
       case 'render': {
         const recording=shotReplay?.runtime;
-        const run=recording ? R.create(recording.origin.world,{checkpoint:recording.origin,workerPool}) : runtime(load(file));
+        const input=recording ? null : load(file);
+        const initial=recording ? R.create(recording.origin.world,{checkpoint:recording.origin,workerPool}) : runtime(input);
+        const tick=recording?.end.tick ?? to(initial);
+        const run=recording ? initial : snapshotRun(input,initial,tick);
         if (recording) run.schedule(recording.commands);
-        else schedule(run);
         ensure(typeof opt.out==='string','Simulation render needs --out image.png');
         const output=path.resolve(opt.out), diagnostics=require('./look-preview.js').preview(opt);
         const suffixes=diagnostics?.suffixes ?? [];
         shot?.destination(output,suffixes);
-        const atmospherePose=advanceVisual(run,recording?.end.tick ?? to(run));
+        const atmospherePose=advanceVisual(run,tick);
         if (recording) ensure(W.data.equal(run.checkpoint(),recording.end),
           'Shot simulation checkpoint diverged at tick '+recording.end.tick);
         if (shot) {
@@ -480,7 +544,7 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
         shot?.finish(output,{suffixes});
         break;
       }
-      default: throw Error('Use sim run|resume|fork|reset|replay|diff|sweep|render|dependencies|regions|regions-apply');
+      default: throw Error('Use sim run|resume|fork|reset|replay|scrub|take|diff|sweep|render|dependencies|regions|regions-apply');
     }
   }
   function applyEdits(input, edits, { dryRun = false } = {}) {

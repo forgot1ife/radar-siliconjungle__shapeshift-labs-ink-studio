@@ -5,7 +5,8 @@
   const factories = new Map();
   const bundledPartitions = new Set();
   const clock = () => typeof performance === 'undefined' ? Date.now() : performance.now();
-  const tickOK = value => Number.isSafeInteger(value) && value >= 0 && value <= 10000000;
+  const maxTick = 10000000;
+  const tickOK = value => Number.isSafeInteger(value) && value >= 0 && value <= maxTick;
   const ordered = value => Object.keys(value).sort();
   const worldActions = ['input','patch','event','transfer'];
   const checkpointFormat = 'ink-studio/checkpoint', runFormat = 'ink-studio/run';
@@ -867,5 +868,5 @@
     return {tick:a.tick,time:{before:a.tick*a.world.dt,after:b.tick*b.world.dt},edits:Q.keyedChanges(a,b)};
   }
   W.runtime = Object.freeze({register,validate,create,replay,diff,firstDivergence:W.stepDebug.firstDivergence,
-    checkpointFormat,runFormat,partitionKernel,prefabInterfaces:(world,{implementations}={})=>compile(world,implementations,true)});
+    checkpointFormat,runFormat,maxTick,partitionKernel,prefabInterfaces:(world,{implementations}={})=>compile(world,implementations,true)});
 })(KIT);

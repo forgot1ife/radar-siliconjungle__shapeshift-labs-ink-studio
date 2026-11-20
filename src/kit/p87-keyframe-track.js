@@ -1,11 +1,14 @@
 /* Validated, renderer-independent keyframe tracks on a seconds-based clock. */
 (function (K) {
-  const modes = ['number', 'vector', 'radians', 'positive'];
+  const modes = ['number', 'vector', 'radians', 'positive', 'orientation'];
   const eases = Object.freeze(['linear', 'smooth', 'step', 'in-sine', 'out-sine', 'in-out-sine']);
   const turn = 2 * Math.PI;
   const record = value => value && typeof value === 'object' && !Array.isArray(value);
   const angle = value => Math.atan2(Math.sin(value), Math.cos(value));
   const blend = (a, b, t) => (1 - t) * a + t * b;
+  const orientation = value => Array.isArray(value) && value.length === 9 &&
+    Array.from(value).every(Number.isFinite) && Math.abs(K.M.det(value) - 1) < 1e-4 &&
+    K.M.mul(K.M.tr(value), value).every((n, i) => Math.abs(n - (i % 4 === 0 ? 1 : 0)) < 1e-4);
 
   function create(schema, input = []) {
     if (!record(schema) || !Array.isArray(input)) throw Error('Expected channel modes and a keyframe array');
@@ -21,7 +24,8 @@
       if (!eases.includes(ease)) throw Error('Unknown keyframe easing');
       const pairs = entries.map(([name, mode]) => {
         const value = Object.hasOwn(key.value, name) ? key.value[name] : undefined;
-        if (mode === 'vector') {
+        if (mode === 'vector' || mode === 'orientation') {
+          if (mode === 'orientation' && !orientation(value)) throw Error('Invalid orientation channel: ' + name);
           if (!Array.isArray(value) || !value.length || !Array.from(value).every(Number.isFinite) ||
               (lengths.has(name) && lengths.get(name) !== value.length))
             throw Error('Invalid vector channel: ' + name);
@@ -66,6 +70,11 @@
       return Object.fromEntries(columns.map(({ name, mode, values }) => {
         const start = values[low], end = values[high];
         if (mode === 'vector') return [name, start.map((v, i) => blend(v, end[i], u))];
+        if (mode === 'orientation') {
+          if (u === 0 || u === 1) return [name, (u === 0 ? start : end).slice()];
+          const { axis, angle } = K.M.axisAngle(K.M.mul(end, K.M.tr(start)));
+          return [name, K.M.mul(K.M.rot(axis, angle * u), start)];
+        }
         if (u === 0 || u === 1) return [name, u === 0 ? start : end];
         if (mode === 'positive') return [name, Math.exp(blend(Math.log(start), Math.log(end), u))];
         return [name, blend(start, end, u)];
@@ -74,5 +83,5 @@
     return Object.freeze({ keys: Object.freeze(keys), duration, sample });
   }
 
-  K.anim.keyframeTrack = Object.freeze({ create, eases });
+  K.anim.keyframeTrack = Object.freeze({ create, eases, orientation });
 })(KIT);

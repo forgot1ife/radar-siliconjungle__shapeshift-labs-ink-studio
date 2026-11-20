@@ -7,6 +7,8 @@ solver instances. A saved snapshot stays readable after a branch advances.
 Plain shallow-water steps reuse the terrain array until it is edited.
 Sediment and thermal transport can replace it.
 
+[Simulation scrubbing and takes](simulation-scrubbing.md) uses these snapshots for backward and forward seeks and recording editable motion.
+
 The default checkpoint and recording are still standalone version 1 JSON.
 For experiments with several saved runs, use a shared block directory.
 

@@ -1044,6 +1044,7 @@
           else if (m.do === 'squash') A = M.mul(M.stretch(ax, 1 + wave(m, t), true), A);
         }
         const pose = poses?.[p];
+        if (pose?.orientation) A = M.mul(pose.orientation, A);
         if (pose?.rotation || pose?.scale !== undefined) {
           const [x, y, z] = pose.rotation ?? [0, 0, 0];
           const rotation = M.mul(M.rot([0, 0, 1], z), M.mul(M.rot([0, 1, 0], y), M.rot([1, 0, 0], x)));
@@ -1065,7 +1066,8 @@
     smoke: ['at', 'n', 'every'], sparks: ['at', 'n', 'every', 'dir', 'speed']
   };
   function dioramaTimeline(spec, parts) {
-    const poses = { translation: { size: 3 }, rotation: { size: 3, mode: 'radians' }, scale: { mode: 'positive' } };
+    const poses = { translation: { size: 3 }, rotation: { size: 3, mode: 'radians' },
+      orientation: { size: 9, mode: 'orientation' }, scale: { mode: 'positive' } };
     return K.timeline.compile(spec.timeline, { channel([root, name, field, ...rest]) {
       if (root === 'camera' && field === undefined && Object.hasOwn(K.timeline.camera, name)) return K.timeline.camera[name];
       if (rest.length || spec.brushRegion != null) return null;
