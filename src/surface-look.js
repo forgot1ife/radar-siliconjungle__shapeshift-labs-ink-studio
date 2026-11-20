@@ -491,7 +491,7 @@ const SurfaceLook = (() => {
   /* Inputs are RGB in 0..1 and a world-space sample. Output packs RGB, the opacity
      multiplier, a glint mask and, for projected paint, an optional local palette.
      Supply a normal Array when you want to retain the palette reference. */
-  function shade(prepared, sample, base, output = [0, 0, 0, 1, 0], trace, visit, onClip) {
+  function shade(prepared, sample, base, output = [0, 0, 0, 1, 0], trace, visit, onClip, reflected) {
     const { settings, layers } = prepared;
     const sun = sample.lightDirection ?? prepared.sun;
     const { position, normal, view } = sample;
@@ -536,6 +536,7 @@ const SurfaceLook = (() => {
     const tl = dot(t, sun),
       bl = dot(b, sun);
     const rgb = [0, 0, 0];
+    reflected?.fill(0);
     for (let i = 0; i < 3; i++) output[i] = base[i];
     output[3] = settings.opacity
       ? clamp(
@@ -576,6 +577,7 @@ const SurfaceLook = (() => {
           const value = mix(output[i], next, amount);
           if (onClip && (value < 0 || value > 1)) (clipped ??= [0, 0, 0])[i] = value;
           output[i] = clamp(value);
+          if (reflected && layer.blend !== 'add') reflected[i] *= mix(1, layer.blend === 'multiply' ? result[i] : 0, amount);
         }
         if (clipped) onClip(...clipped);
         if (step) Object.assign(step, { applied: amount > 0, effectiveWeight: amount, output: output.slice(0, 3) });
@@ -596,6 +598,10 @@ const SurfaceLook = (() => {
       const steps = layer.steps ?? settings.steps ?? 0;
       const amount = steps > 1 ? Math.round(weight * steps) / steps : weight;
       for (let i = 0; i < 3; i++) output[i] = mix(output[i], rgb[i], amount);
+      if (reflected && amount) {
+        const reflection = layer.type === 'reflection' || layer.type === 'planarReflection';
+        for (let i = 0; i < 3; i++) reflected[i] = mix(reflected[i], reflection ? rgb[i] : 0, amount);
+      }
     }
     if (prepared.paletteConstraint) output[5] = prepared.paletteConstraint.swatches;
     return output;

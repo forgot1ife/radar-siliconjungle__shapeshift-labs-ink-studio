@@ -3,7 +3,7 @@ const test = require('node:test');
 const ink = require('..');
 const { KIT: K, makeBuilder, makeSculpt, SurfaceLook } = ink.load();
 
-const view = { w: 100, h: 80, px: 1, raw: true, passes: ['materialId', 'coverage'] };
+const view = { w: 100, h: 80, px: 1, raw: true, passes: ['materialId', 'coverage', 'reflections'] };
 const fill = color => ({ zenith: color, horizon: color, ground: color, sunStrength: 0 });
 const profiles = K.skyEnvironment.compile({
   profiles: { day: fill('#2548ce'), dusk: fill('#de6333') },
@@ -11,6 +11,7 @@ const profiles = K.skyEnvironment.compile({
   tracks: [{ id: 'light', sequence: 'cycle' }]
 });
 const rgb = (frame, p) => [...frame.rgb.subarray(p * 3, p * 3 + 3)];
+const rgbFromPass = (frame,p) => [...frame.passes.reflections.subarray(p*3,p*3+3)].map(v=>Math.round(v*255));
 
 function scene({ planar = false, pixel = false } = {}) {
   const B = makeBuilder(4, [0x182332, 0x294854, 0xf2d22b]);
@@ -41,8 +42,8 @@ function site(frame, name) {
   assert(p >= 0, 'visible material ' + name);
   return p;
 }
-function close(a,b) {
-  assert(a.every((n, i) => Math.abs(n - b[i]) <= 6), a + ' vs ' + b);
+function close(a,b,tolerance=6) {
+  assert(a.every((n, i) => Math.abs(n - b[i]) <= tolerance), a + ' vs ' + b);
 }
 
 test('backdrop and bound material share one sky profile in both projections', () => {
@@ -53,6 +54,9 @@ test('backdrop and bound material share one sky profile in both projections', ()
     const pixel = site(dusk, 'scene'), local = site(dusk, 'material');
     close(rgb(day,pixel),rgb(day,0));
     close(rgb(dusk,pixel),rgb(dusk,0));
+    close(rgbFromPass(dusk,pixel),rgb(dusk,0),10);
+    close(rgbFromPass(day,pixel),rgb(day,0),10);
+    assert.deepEqual(rgbFromPass(dusk,0),[0,0,0]);
     assert(rgb(day,pixel)[2] > rgb(day,pixel)[0] + 90);
     assert(rgb(dusk,pixel)[0] > rgb(dusk,pixel)[2] + 120);
     close(rgb(day,local), rgb(dusk,local));
@@ -79,7 +83,10 @@ test('planar captures still show local geometry over the shared sky', () => {
   for (let p = 0; p < materialId.length; p++) {
     if (materialId[p] !== water || coverage[p] < .985) continue;
     const delta = rgb(layered,p).reduce((diff, n, i) => diff + Math.abs(n - rgb(sky,p)[i]),0);
-    if (delta > 30) capturePixels++;
+    if (delta > 30) {
+      capturePixels++;
+      assert.notDeepEqual(rgbFromPass(layered,p),rgbFromPass(sky,p));
+    }
     if (delta <= 3 && Math.abs(rgb(sky,p)[0] - rgb(layered,0)[0]) < 3) skyPixels++;
   }
   assert(capturePixels > 10, 'reflected local geometry remains visible');

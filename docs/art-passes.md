@@ -2,7 +2,7 @@
 
 `ink-studio passes <scene>` writes CPU-rendered color and diagnostic PNGs on the same art grid. Use `--channels depth,normal,emission` to select passes, `--px1` for native resolution, and `--out directory` to choose the destination.
 
-In Node, call the library's `render(world, { passes: true })` or supply an array of channel names. The result includes `frame.passes` with `w`, `h`, and typed arrays in top-down row-major order. A caller can request any subset. A render without passes skips the per-pixel buffers. `--colored` returns passes from its native render grid.
+In Node, call the library's `render(world, { passes: true })` or supply an array of channel names. The result includes `frame.passes` with `w`, `h`, and typed arrays in top-down row-major order. A caller can request any subset. `passes: true` requests the standard art passes. Request environment passes by name or with `['environment']`. A render without passes skips the per-pixel buffers. `--colored` returns passes from its native render grid.
 
 | Channel | Data |
 | --- | --- |
@@ -30,6 +30,25 @@ For motion channels, request `captureMotion: true` on the prior frame and pass i
 The PNG writer includes a `passes.json` manifest with the art dimensions,
 image scale, and available previews. Read `position` and `objectPosition`
 directly from Node's typed arrays for floating-point coordinates.
+
+## Environment passes for compositing
+
+```sh
+ink-studio passes examples/weather-front.js --t 5.8 --channels environment --px1 --out weather-passes
+ink-studio clip examples/weather-front.js --from 4 --to 6 --fps 12 --passes environment --px1 --out storm.png
+```
+
+Use `environment` to request all five passes. Replace it with a comma-separated list to select individual channels. `render`, `sheet`, `clip`, and `sim render` write the requested passes beside the main export when you use `--passes`. Clips write synchronized animated PNGs. [Shot recipes](shot-recipes.md) verify each sidecar when replaying a render or clip.
+
+| Channel | Node data per pixel | Export |
+| --- | --- | --- |
+| `sky` | RGB of the unobstructed backdrop, including authored sky, celestial objects, clouds, and horizon art. | RGB image |
+| `fogTransmittance` | Fraction of light transmitted through fog and aerial perspective to the resolved surface or background. | Grayscale, white is fully clear |
+| `precipitation` | Premultiplied RGBA of visible rain and falling snow, with depth occlusion and particle lighting. | Straight-alpha RGBA |
+| `reflections` | Premultiplied RGB contributed by visible material, scene sky, and planar reflection layers. | RGB image with zero where no reflection contributes |
+| `foregroundCoverage` | Coverage of scene splats and sprites, with falling precipitation and ray-traced media omitted. | Grayscale, white is fully covered |
+
+Node returns these buffers as `Float32Array` values on the native art grid. PNGs encode each channel at 8 bits and the manifest records the encodings. Color passes are captured before volume fog, final palette mapping, and frame-wide effects. The fog channel excludes water absorption, cloud extinction, and the legacy per-splat haze tint.
 
 ## Selective ink and stable pixels
 

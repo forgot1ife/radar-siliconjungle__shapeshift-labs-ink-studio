@@ -325,8 +325,9 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
         if (recording) run.schedule(recording.commands);
         else schedule(run);
         ensure(typeof opt.out==='string','Simulation render needs --out image.png');
-        const output=path.resolve(opt.out);
-        shot?.destination(output);
+        const output=path.resolve(opt.out), diagnostics=require('./look-preview.js').preview(opt);
+        const suffixes=diagnostics?.suffixes ?? [];
+        shot?.destination(output,suffixes);
         const atmospherePose=advanceVisual(run,recording?.end.tick ?? to(run));
         if (recording) ensure(W.data.equal(run.checkpoint(),recording.end),
           'Shot simulation checkpoint diverged at tick '+recording.end.tick);
@@ -347,10 +348,13 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
           atmosphere:opt.atmosphere==='off'?false:undefined, atmosphereEmitters:atmosphereEmittersOption?.(),
           coverageAware:opt['coverage-aware']===undefined?undefined:opt['coverage-aware']!=='off',
           lookMasks:opt['look-masks']==='off'?false:undefined,
-          colorStack:require('./color-stack.js').override(opt['color-stack']),t:run.view().time,...shotRender});
+          colorStack:require('./color-stack.js').override(opt['color-stack']),t:run.view().time,
+          ...diagnostics?.settings,...shotRender});
         fs.mkdirSync(path.dirname(output),{recursive:true});
         require('./png.js').write(output,image.w,image.h,image.rgb);
-        shot?.finish(output);
+        diagnostics?.capture(image,1);
+        diagnostics?.write(output,{times:[run.view().time]});
+        shot?.finish(output,{suffixes});
         break;
       }
       default: throw Error('Use sim run|resume|fork|reset|replay|diff|sweep|render|dependencies');

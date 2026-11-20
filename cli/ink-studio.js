@@ -700,6 +700,8 @@ const CMD = {
         '    [--bake clip.json] [--preview directory] [--at seconds|--frames count] [--direction index] [--out report.json]',
         '  retarget --profiles  show built-in role templates',
         '  passes <id> [--channels coverage,depth,normal,objectId,materialId,emission]  save art-pixel render pass previews',
+        '  passes <id> --channels environment --px1   export sky, fog transmittance, precipitation, reflections and foreground coverage',
+        '  render|sheet|clip <id> or sim render <file> --passes environment   write environment passes beside the export',
         '  render|sheet|clip <id> --look pack/look|file.json|off [--passes target,mask,materialId]',
         '    --look-select JSON --look-params JSON --look-strength N   override an asset binding for the preview',
         '  shimmer <id> [--mode orbit|zoom|pan|still --frames 24]  how many pixels flicker over a move, and a GIF of it',

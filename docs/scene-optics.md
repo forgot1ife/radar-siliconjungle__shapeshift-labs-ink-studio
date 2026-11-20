@@ -37,6 +37,8 @@ Use [Conditional weather tracks](conditional-weather.md) to drive sky transition
 
 Use the [environment inspector](environment-inspector.md) to report which keys, profiles, and regional overrides contribute at a world position.
 
+Export [environment passes](art-passes.md#environment-passes-for-compositing) for downstream compositing of sky, fog, precipitation, reflections, and foreground coverage.
+
 ## Planar reflections
 
 ```js

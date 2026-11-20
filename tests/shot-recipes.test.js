@@ -117,7 +117,7 @@ test('a simulation recipe embeds checkpoint history and replays scheduled weathe
   const {base,files}=folders(t);
   fs.writeFileSync(files('commands.json'),JSON.stringify([{tick:4,action:'world/event',args:{kind:'cue',cue:'warning-bell'}}]));
   run(repo,'sim','render','examples/world-conditional-weather.json','--asset-pack','examples/coastal-environment-pack.json',
-    '--actions',files('commands.json'),'--ticks','20','--w','60','--h','40',
+    '--actions',files('commands.json'),'--ticks','20','--w','60','--h','40','--passes','environment',
     '--out',files('sim.png'),'--recipe',files('sim-shot.json'));
   const shot=read(files('sim-shot.json'));
   assert.equal(shot.runtime.origin.tick,0);
@@ -125,7 +125,8 @@ test('a simulation recipe embeds checkpoint history and replays scheduled weathe
   assert.equal(shot.runtime.commands[0].tick,4);
   assert(shot.runtime.end.weatherTrackState.firings.some(event=>event.id==='warning-bell' && event.at===1));
   run(base,'shot','replay',files('sim-shot.json'),'--out',files('replayed.png'));
-  assert.deepEqual(fs.readFileSync(files('replayed.png')),fs.readFileSync(files('sim.png')));
+  for (const suffix of ['.png','-sky.png','-precipitation.png','-fogTransmittance.png','-reflections.png','-foregroundCoverage.png'])
+    assert.deepEqual(fs.readFileSync(files('replayed'+suffix)),fs.readFileSync(files('sim'+suffix)));
 });
 
 test('surface weather can resume from a portable checkpoint and reject incompatible grids',()=>{

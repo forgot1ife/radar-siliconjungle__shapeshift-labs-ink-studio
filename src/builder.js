@@ -979,11 +979,14 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     stick(x, y, z, [1, 0, 0], s2, s2 * 0.12 + 0.012, P[c], 3, an);
     stick(x, y, z, UP, s2, s2 * 0.12 + 0.012, P[c], 3, an);
   }
-  const precipitationRanges = [];
-  function describePrecipitation(first, end, profile = false) {
-    if (![first, end].every(Number.isSafeInteger) || first < 0 || end < first || end > n || typeof profile !== 'boolean')
+  const precipitationRanges = [], fallingSnowRanges = [];
+  function describePrecipitation(first, end, profile = false, spatial = true) {
+    if (![first, end].every(Number.isSafeInteger) || first < 0 || end < first || end > n || typeof profile !== 'boolean' || typeof spatial !== 'boolean')
       throw new RangeError('Expected a valid precipitation row range');
-    if (end > first) precipitationRanges.push({ first, end, profile });
+    if (end > first) {
+      if (spatial) precipitationRanges.push({ first, end, profile });
+      else fallingSnowRanges.push({ first, end });
+    }
   }
   function finish(meta) {
     /* paint-over decals (ink-studio paint): pixels painted over a view of the diorama, each pinned where it fell on the surface, as a
@@ -1003,6 +1006,7 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
         count: n,
         renderMetadata: renderRows(),
         ...(precipitationRanges.length && { precipitationRanges: precipitationRanges.slice() }),
+        ...(fallingSnowRanges.length && { fallingSnowRanges: fallingSnowRanges.slice() }),
         ...(materialAlbedo && { materialAlbedo: materialAlbedo.slice(0, n) }),
         ...(materialPixelStyles && { materialPixelStyles: materialPixelStyles.slice(0, n * 4) }),
         attr: attr ? Float32Array.from({ length: n * 4 }, (_, i) => attr[i] || 0) : undefined,
@@ -1071,7 +1075,7 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     targetNames.length = 1;
     targetValues = new WeakMap();
     ownerNames.length = materialNames.length = 1;
-    precipitationRanges.length = 0;
+    precipitationRanges.length = fallingSnowRanges.length = 0;
     moving.length = 0;
     back.length = 0;
     return out;

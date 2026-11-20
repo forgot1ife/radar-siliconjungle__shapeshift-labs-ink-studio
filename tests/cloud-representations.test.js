@@ -83,11 +83,13 @@ function renderScene() {
 test('Ink composites the cloud between near and far splats in both camera modes', () => {
   const world=renderScene();
   for (const ortho of [false,true]) {
-    const options={ ortho, w:112,h:80,px:1,raw:true,passes:['materialId','coverage'] };
+    const options={ ortho, w:112,h:80,px:1,raw:true,passes:['materialId','coverage','sky','fogTransmittance'] };
     const base=ink.render({...world,cloudField:false},options);
     for (const mode of ['card','impostor','volume','auto']) {
       const rendered=ink.render(world,{...options,cloudRepresentation:mode});
-      const { coverage,materialId,materials }=rendered.passes;
+      const { coverage,materialId,materials,sky,fogTransmittance }=rendered.passes;
+      assert(sky.some((value,i)=>value-base.passes.sky[i]>.1), 'cloud appears in the backdrop pass');
+      assert(fogTransmittance.every(value=>value===1), 'cloud extinction is separate from fog');
       let front=0, back=0;
       for (let p=0;p<materialId.length;p++) {
         if (coverage[p]<.985) continue;
