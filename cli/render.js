@@ -107,7 +107,7 @@ function viewMatrix(yaw, pitch, dist, T) {
 }
 // o: t (seconds), yaw, pitch, dist, target, w, h (the size of the stage in screen pixels), zoom (1 = the diorama's own distance), raw (skip the palette)
 function render(world, o, preparedPalettes) {
-  const graph = !o?.samples && !o?.captureCoverage && RenderGraph.prepare(o?.renderGraph ?? world.look?.renderGraph);
+  const graph = o?.samples || o?.captureCoverage ? null : RenderGraph.prepare(o?.renderGraph ?? world.look?.renderGraph);
   if (graph?.passes.length) {
     const start = o?.renderStats ? performance.now() : 0;
     const requested = ArtPasses.select(o?.passes);

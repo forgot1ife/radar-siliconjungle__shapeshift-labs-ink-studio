@@ -57,6 +57,8 @@ test('live graph edits change ordering without rebuilding the world', () => {
   const { world, editor } = fixture(kit, 'edit');
   world.look.renderGraph = editor;
   assert.deepEqual(pixel(ink.render(world, view), 0, 0), blue);
+  const sample = ink.render(world, { ...view, samples: true });
+  assert.deepEqual(Array.from(sample.color.subarray(0, 3)), [16, 32, 48]);
   editor.move('grade', 0);
   assert.deepEqual(pixel(ink.render(world, view), 0, 0), red);
   editor.update('paint', { enabled: false });

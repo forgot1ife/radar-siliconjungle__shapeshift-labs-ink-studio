@@ -1,9 +1,17 @@
 /* Ordered screen-space passes and named image and mask dependencies. */
 const RenderGraph = (() => {
-  const stacks = typeof ColorStack === 'undefined' ? require('./color-stack.js') : ColorStack;
-  const luts = typeof ColorLUT === 'undefined' ? require('./color-lut.js') : ColorLUT;
-  const targets = typeof TargetSelectors === 'undefined' ? require('./target-selectors.js') : TargetSelectors;
-  const compositor = typeof FrameComposite === 'undefined' ? require('./frame-composite.js') : FrameComposite;
+  let stacks, luts, targets, compositor;
+  try {
+    stacks = ColorStack;
+    luts = ColorLUT;
+    targets = TargetSelectors;
+    compositor = FrameComposite;
+  } catch {
+    stacks = require('./color-stack.js');
+    luts = require('./color-lut.js');
+    targets = require('./target-selectors.js');
+    compositor = require('./frame-composite.js');
+  }
   const operations = Object.freeze({ mask: 1, grade: 2, reflection: 3, distortion: 4, composite: 5 });
   const fields = {
     mask: ['rect', 'feather', 'invert'],
