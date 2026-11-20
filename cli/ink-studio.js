@@ -126,7 +126,8 @@ function scene(id) {
   return s;
 }
 const paintDirectory = id => path.resolve(CWD, opt.dir || path.join(cfg.paint || 'studio/paint', id));
-function build(id, seedOverride) {
+const readPaint = file => fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+function build(id, seedOverride, { paint = true } = {}) {
   if (opt.focus) {
     const f = list('focus'); // uneven detail: x,y,z then near, far, coarse
     globalThis.INK_FOCUS = { p: [f[0] || 0, f[1] || 0, f[2] || 0], near: f[3], far: f[4], coarse: f[5] };
@@ -142,14 +143,14 @@ function build(id, seedOverride) {
   // Load paint by scene ID so rendering the same file from another path finds its decals.
   const decalFile = path.join(paintDirectory(s.id), 'decals.json');
   shot?.dependency(decalFile);
-  globalThis.INK_DECAL_NEXT = fs.existsSync(decalFile)
-    ? JSON.parse(fs.readFileSync(decalFile, 'utf8')).decals
-    : (globalThis.INK_PAINT || {})[s.id] || null;
-  const t0 = Date.now(),
-    seed = seedOverride ?? (opt.seed === undefined ? s.seed : +opt.seed);
-  shot?.seed(seed);
+  const savedPaint = paint && (fs.existsSync(decalFile) ? readPaint(decalFile) : globalThis.INK_PAINT?.[s.id]);
+  globalThis.INK_DECAL_NEXT = savedPaint?.layers !== undefined || Array.isArray(savedPaint) ?
+    savedPaint : savedPaint?.decals ?? null;
+  const t0 = Date.now();
   const controls = opt.params ? JSON.parse(String(opt.params)) : undefined;
   const snapshot = opt.authoring ? JSON.parse(fs.readFileSync(path.resolve(opt.authoring), 'utf8')) : undefined;
+  const seed = seedOverride ?? (opt.seed === undefined ? snapshot?.seed ?? s.seed : +opt.seed);
+  shot?.seed(seed);
   const assemble = () => {
     const built = s.build(seed, { controls, snapshot });
     return (s.animate && s.animate(built, seed)) || built;
@@ -526,6 +527,7 @@ const view = extra =>
       lookMasks: opt['look-masks'] === 'off' ? false : undefined,
       ignoreLookGrade: opt.look === 'off',
       raw: !!opt.raw,
+      paintCorrections: opt['paint-corrections'] !== 'off',
       colored: !!opt.colored,
       splatOrder: opt['splat-order'],
       fine: !!opt.fine,
@@ -677,8 +679,10 @@ const CMD = {
         '  check [id ...]              draw again and compare with the reference pictures',
         '  render <id> [--text ascii|symbols|braille|blocks --tg 2 --tcolour scene|ink|mono]  drawn as text, with the characters as <id>.txt',
         '  compare <id> <ref.png> [--px 2 --colours 32]  a diorama beside a reference at true pixel size, both measured',
-        '  paint export <id> [view options]   a view at true pixel size to paint over (paint.png), with where each pixel lies',
-        '  paint absorb <id> [--png file]     the painted pixels kept as decals pinned to the surface (#ff00ff erases); paint clear <id>',
+        '  paint export <id> [--layer name] [view options]  capture a view and the surface under each pixel',
+        '  paint absorb <id> [--layer name] [--png file] [--paint-mask file]  pin the painted pixels to the surface',
+        '  paint layers|tune|clear <id> [--layer name]  list, adjust or clear corrections',
+        '    layer controls: --angle degrees --feather degrees --opacity fraction --region JSON|file|off',
         '  lint <id ...> [--map]              pixel-art lint: orphans, doubles, jaggies, banding, pillow shading, noise, colours',
         '  review <id> [--ref pic --px 2]     a sheet of fixed shots (four sides, top, low, far, near, close), beside the last one',
         '  variants <id> --seeds 3,7,12 [--group silhouette|openness|wear --motion]  render a ranked seed contact sheet',
@@ -700,6 +704,7 @@ const CMD = {
         '    [--bake clip.json] [--preview directory] [--at seconds|--frames count] [--direction index] [--out report.json]',
         '  retarget --profiles  show built-in role templates',
         '  passes <id> [--channels coverage,depth,normal,objectId,materialId,emission]  save art-pixel render pass previews',
+        '  environment-parity [--fixture observatory --out directory --chrome executable]  compare matched CLI and WebGL environment frames',
         '  passes <id> --channels environment --px1   export sky, fog transmittance, precipitation, reflections and foreground coverage',
         '  render|sheet|clip <id> or sim render <file> --passes environment   write environment passes beside the export',
         '  render|sheet|clip <id> --look pack/look|file.json|off [--passes target,mask,materialId]',
@@ -807,8 +812,12 @@ const CMD = {
           resolution: num('res', undefined), method: opt.method, targetTriangles: num('triangles', undefined),
           duration: num('duration', undefined), fps: num('fps', undefined)
         };
+        if (opt.authoring !== undefined) {
+          if (typeof opt.authoring !== 'string') throw Error('--authoring needs a file path');
+          options.snapshot = JSON.parse(fs.readFileSync(path.resolve(opt.authoring), 'utf8'));
+        }
         if (box) options.bounds = { min: box.slice(0, 3), max: box.slice(3) };
-        source = authored.model(num('seed', authored.seed), options);
+        source = authored.model(num('seed', options.snapshot?.seed ?? authored.seed), options);
       }
       const result = require('../index.js').exportGlb(source, {
         out: opt.out, textureSize: num('texture-size', 1024), uvMargin: num('uv-margin', 0.008)
@@ -1245,6 +1254,14 @@ const CMD = {
   },
   retarget() {
     require('./retarget.js').run({ K: lib().KIT, build, pos, options: opt, view: view() });
+  },
+  'environment-parity'() {
+    const parity = require('./environment-parity.js');
+    const result = parity.compare({chrome:opt.chrome,hardware:opt.hardware,fixture:opt.fixture});
+    const directory = opt.out ? path.resolve(opt.out) : path.join(OUT,'environment-parity');
+    parity.write(directory,result);
+    for (const {id,mean,p95} of result.frames) console.log(id,mean.toFixed(3),'mean RGB byte error, p95',p95);
+    console.log('wrote',directory);
   },
   passes() {
     const w = buildPreview(), t = num('t', 0);
@@ -1897,16 +1914,65 @@ const CMD = {
      them in the page, and the CLI draws them at once */
   paint() {
     const [sub, id] = pos;
-    if (!['export', 'absorb', 'clear'].includes(sub) || !id)
+    if (!['export', 'absorb', 'clear', 'layers', 'tune'].includes(sub) || !id)
       die(
-        'paint export <id> [view options] | paint absorb <id> [--png painted.png] | paint clear <id>   [--dir studio/paint/<id>]'
+        'paint export|absorb|layers|tune|clear <id> [--layer name] [--dir studio/paint/<id>]'
       );
-    const world = sub === 'export' ? build(id) : null,
+    const Paint = require('../src/paint-corrections.js'), name = opt.layer;
+    if (name !== undefined && !Paint.idOK(name)) die('Paint layer needs a lowercase ID');
+    if (sub === 'tune' && name === undefined) die('Paint tune needs --layer name');
+    if (sub === 'absorb' && !name && ['angle', 'feather', 'opacity', 'region'].some(key => opt[key] !== undefined))
+      die('Paint controls need a named layer');
+    const world = sub === 'export' ? build(id, undefined, { paint: name === undefined }) : null,
       dir = paintDirectory(opt.dir ? id : world ? world.id : scene(id).id),
-      dfile = path.join(dir, 'decals.json');
+      dfile = path.join(dir, 'decals.json'),
+      capture = name ? path.join(dir, 'layers', name) : dir;
+    function save(doc) {
+      const tmp = dfile + '.' + require('node:crypto').randomUUID() + '.tmp';
+      try {
+        fs.writeFileSync(tmp, JSON.stringify(doc), { flag: 'wx' });
+        fs.renameSync(tmp, dfile);
+      } finally {
+        fs.rmSync(tmp, { force: true });
+      }
+    }
+    function controls(prior) {
+      const value = option => {
+        if (opt[option] === true) throw Error('--' + option + ' needs a number');
+        return num(option);
+      };
+      const angle = value('angle') ?? prior?.angle;
+      const feather = value('feather') ?? (prior && Math.min(prior.feather, angle));
+      const opacity = value('opacity') ?? prior?.opacity;
+      let region = prior?.region;
+      if (opt.region !== undefined) {
+        if (typeof opt.region !== 'string') throw Error('--region needs JSON, a file, or off');
+        region = opt.region === 'off' ? undefined :
+          JSON.parse(fs.existsSync(opt.region) ? fs.readFileSync(opt.region, 'utf8') : opt.region);
+      }
+      return { angle, feather, opacity, region };
+    }
+    if (sub === 'layers') {
+      const { decals = [], ...doc } = readPaint(dfile);
+      console.log(JSON.stringify({ permanent: decals.length, layers: Paint.layers(doc).map(({ decals, ...layer }) =>
+        ({ ...layer, samples: decals.length })) }, null, 2));
+      return;
+    }
     if (sub === 'clear') {
-      if (fs.existsSync(dfile)) fs.unlinkSync(dfile);
+      if (name) {
+        const doc = readPaint(dfile), layers = Paint.layers(doc);
+        if (!layers.some(layer => layer.id === name)) die('Unknown paint layer ' + name);
+        save({ ...doc, layers: layers.filter(layer => layer.id !== name) });
+      } else if (fs.existsSync(dfile)) fs.unlinkSync(dfile);
       console.log('cleared', dfile);
+      return;
+    }
+    if (sub === 'tune') {
+      const doc = readPaint(dfile), layers = Paint.layers(doc), slot = layers.findIndex(layer => layer.id === name);
+      if (slot < 0) die('Unknown paint layer ' + name);
+      layers[slot] = Paint.layer({ ...layers[slot], ...controls(layers[slot]) });
+      save({ ...doc, layers });
+      console.log('updated paint layer', name);
       return;
     }
     if (sub === 'export') {
@@ -1914,11 +1980,11 @@ const CMD = {
         w = world;
       pose(w, t);
       const pick = {},
-        vw = view({ t, pick }),
+        vw = view({ t, pick, ...(name && { paintCorrections: false }) }),
         im = R.render(w, vw);
       if (!pick.W)
         die('paint: ' + id + ' is not drawn per pixel (its look.pixel), so there is nothing to pin paint to');
-      fs.mkdirSync(dir, { recursive: true });
+      fs.mkdirSync(capture, { recursive: true });
       const { W, H } = pick,
         buf = new Float32Array(W * H * 6).fill(NaN);
       for (let r = 0; r < H; r++)
@@ -1931,23 +1997,24 @@ const CMD = {
             (r * W + x) * 6
           );
         }
-      PNG.write(path.join(dir, 'view.png'), im.w, im.h, im.rgb);
-      PNG.write(path.join(dir, 'paint.png'), im.w, im.h, im.rgb);
-      fs.writeFileSync(path.join(dir, 'view.bin'), Buffer.from(buf.buffer));
+      PNG.write(path.join(capture, 'view.png'), im.w, im.h, im.rgb);
+      PNG.write(path.join(capture, 'paint.png'), im.w, im.h, im.rgb);
+      fs.writeFileSync(path.join(capture, 'view.bin'), Buffer.from(buf.buffer));
       fs.writeFileSync(
-        path.join(dir, 'view.json'),
+        path.join(capture, 'view.json'),
         JSON.stringify(
           {
             id,
             w: W,
             h: H,
             t,
+            camera: pick.camera,
             view: { yaw: vw.yaw, pitch: vw.pitch, zoom: vw.zoom, target: vw.target, ortho: vw.ortho },
             detail: w.detail,
             pal: w.pal.map(c => '#' + c.toString(16).padStart(6, '0')),
             how:
               'paint over paint.png in the palette colours (#ff00ff takes paint off), then: ink-studio paint absorb ' +
-              id
+              id + (name ? ' --layer ' + name : '')
           },
           null,
           1
@@ -1955,22 +2022,28 @@ const CMD = {
       );
       console.log(
         'wrote',
-        path.join(dir, 'paint.png'),
+        path.join(capture, 'paint.png'),
         W + 'x' + H,
-        '(paint over it, then: ink-studio paint absorb ' + id + ')'
+        '(paint over it, then: ink-studio paint absorb ' + id + (name ? ' --layer ' + name : '') + ')'
       );
       return;
     }
     // absorb
-    const meta = JSON.parse(fs.readFileSync(path.join(dir, 'view.json'), 'utf8')),
-      raw = fs.readFileSync(path.join(dir, 'view.bin')),
+    const meta = JSON.parse(fs.readFileSync(path.join(capture, 'view.json'), 'utf8')),
+      raw = fs.readFileSync(path.join(capture, 'view.bin')),
       buf = new Float32Array(raw.buffer, raw.byteOffset, raw.byteLength / 4),
-      a = PNG.read(path.join(dir, 'view.png')),
-      b = PNG.read(path.resolve(opt.png || path.join(dir, 'paint.png'))),
+      a = PNG.read(path.join(capture, 'view.png')),
+      b = PNG.read(path.resolve(opt.png || path.join(capture, 'paint.png'))),
       W = meta.w,
       H = meta.h;
     if (b.w !== a.w || b.h !== a.h)
       die('paint: the painted picture is ' + b.w + 'x' + b.h + ', the view ' + a.w + 'x' + a.h);
+    if (W !== a.w || H !== a.h || buf.length !== W * H * 6)
+      die('Paint capture metadata and surface coordinates do not match the view');
+    if (opt['paint-mask'] !== undefined && (!name || typeof opt['paint-mask'] !== 'string'))
+      die('--paint-mask needs a PNG path and a named paint layer');
+    const mask = opt['paint-mask'] && PNG.raster(path.resolve(opt['paint-mask']));
+    if (mask && (mask.w !== W || mask.h !== H)) die('The paint mask must have the same dimensions as paint.png');
     const pal = meta.pal.map(h => parseInt(h.slice(1), 16)),
       nearest = (r, g, bl) => {
         let best = 0,
@@ -2028,13 +2101,26 @@ const CMD = {
         }
         const [ci, d] = nearest(b.rgb[k], b.rgb[k + 1], b.rgb[k + 2]);
         if (d > 12) off++;
-        fresh.push([...at.map(v => Math.round(v * 1e4) / 1e4), ci]);
+        const row = [...at.map(v => Math.round(v * 1e4) / 1e4), ci];
+        if (mask) {
+          const i = (y * W + x) * 4, d = mask.data;
+          row.push(Math.min(1, (.2126 * d[i] + .7152 * d[i + 1] + .0722 * d[i + 2]) * d[i + 3] / mask.max ** 2));
+        }
+        fresh.push(row);
       }
-    const old = fs.existsSync(dfile) ? JSON.parse(fs.readFileSync(dfile, 'utf8')).decals || [] : [],
+    const doc = readPaint(dfile), layers = name && Paint.layers(doc),
+      slot = name ? layers.findIndex(layer => layer.id === name) : -1,
+      prior = name && layers[slot], source = name && Paint.view(meta.camera),
+      old = name ? prior && prior.time === meta.t && Paint.sameView(prior.view, source) ? prior.decals : [] : doc.decals ?? [],
       near = (d, e) => Math.hypot(d[0] - e[0], d[1] - e[1], d[2] - e[2]) < px * 0.45,
       kept = old.filter(d => !fresh.some(e => near(d, e)) && !erase.some(e => near(d, e))),
       decals = kept.concat(fresh);
-    fs.writeFileSync(dfile, JSON.stringify({ id, detail: meta.detail, decals }));
+    if (name) {
+      const correction = Paint.layer({ id: name, view: source, time: meta.t, ...controls(prior), decals });
+      if (slot < 0) layers.push(correction);
+      else layers[slot] = correction;
+      save({ ...doc, id, detail: meta.detail, layers });
+    } else save({ ...doc, id, detail: meta.detail, decals });
     console.log(
       `${fresh.length} pixels painted, ${erase.length} taken off; ${decals.length} decals in ${dfile}` +
         (off ? `; ${off} were not palette colours (the nearest was taken)` : '') +

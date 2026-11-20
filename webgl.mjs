@@ -6,3 +6,4 @@ export { createTransition, transitionPresets } from './src/webgl/transition-pres
 export { createTransitionPlayback, defineTransition, transitionEasings } from './src/webgl/transition-timeline.mjs';
 export { transitionShaders } from './src/webgl/transition-shaders.mjs';
 export { createSplatInstances } from './src/webgl/instances.mjs';
+export { createDrawingInput } from './src/webgl/drawing-input.mjs';

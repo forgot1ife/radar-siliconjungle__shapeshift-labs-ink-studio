@@ -1169,6 +1169,10 @@ name. `budget` shows current amount, emissions, imports, exports,
 removal, and balance error for each load, including heat in joules.
 `trace <system>/airflow` follows the net flow direction through openings.
 
+The same room and opening state powers [acoustic queries](acoustic-queries.md).
+Agents and audio hosts can read estimated gain, arrival direction, delay and
+muffling through the current apertures.
+
 For the splat view, set `visual.air` to an object with the `rooms`
 field, optional `tracer` (defaults to smoke), `scale`, `color`,
 and ray-march `step`. The bounded atmosphere reads the current room

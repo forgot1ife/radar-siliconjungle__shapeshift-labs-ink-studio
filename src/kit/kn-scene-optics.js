@@ -1,5 +1,8 @@
 (function (K) {
   K.skyEnvironment = SkyEnvironment;
+  K.environmentFrame = EnvironmentFrame;
+  K.horizonBands = HorizonBands;
+  K.artDirection = ArtDirection;
   K.celestialTracks = CelestialTracks;
   K.clouds = CloudField;
   K.reflection = {

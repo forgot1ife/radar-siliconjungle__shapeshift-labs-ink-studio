@@ -156,7 +156,9 @@ const CloudDetail = (() => {
         out[3]=clamp(out[3]);
         return out;
       }
-      return { weights, trace, horizon: origin => Math.hypot(...origin.map((x,i)=>x-offset[i]-center[i]))+radius };
+      const card = weightCard === 1 ? { pixels:billboard, resolution, radius, ...frame,
+        center:center.map((n,i)=>n+offset[i]), opacity } : null;
+      return { weights, trace, card, horizon: origin => Math.hypot(...origin.map((x,i)=>x-offset[i]-center[i]))+radius };
     }
     return { view };
   }

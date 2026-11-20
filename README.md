@@ -20,6 +20,7 @@ The package includes geometry, materials, lighting, animation, character control
 - [Importing depth maps](#importing-depth-maps)
 - [Procedural worlds](#procedural-worlds)
 - [Retained authoring](#retained-authoring)
+- [Editable 3D drawing](#editable-3d-drawing)
 - [Headless world simulation](docs/headless-worlds.md)
 - [Rendering and command reference](#rendering-and-command-reference)
 - [View-dependent surface materials](#view-dependent-surface-materials)
@@ -636,6 +637,22 @@ S.bake();
 
 Use `ink-studio catalog <words>` to search catalog entries and follow their `where` fields to the implementation.
 
+## Editable 3D drawing
+
+`KIT.sculpt(S)` adds `S.stroke(mark, mat, options)` and `S.fill(mark, mat, options)`. JSON dioramas accept the same fields as `kind: "stroke"` and `kind: "fill"` solids. Marks bake into splats with the same materials, rig parts, and detail budgets as other solids.
+
+| Field | Behavior |
+| --- | --- |
+| `points` | Stroke control points as world XYZ triples or surface UV pairs. A single point makes a dab. |
+| `width`, `depth`, `axis` | Stroke diameter and thickness in world units. Defaults are width 0.2, depth equal to width, and world Z as the depth axis. On a carrier, depth follows the surface normal. |
+| `pressure`, `taper` | Pressure is one value per control point, and taper is a pair of start and end values. Both multiply the brush size, range from 0 to 1, and default to full size. |
+| `rings`, `frame`, `depth` | A fill takes an outside ring and optional holes. Free-space rings are 2D world-unit coordinates in a frame with `origin`, `u`, and `v`. The frame defaults to world XY. Depth defaults to 0.08 and is centered on the frame. |
+| `surface`, `offset` | A carrier uses the procedural plane or circular cylinder fields plus `kind`. Points and rings use chart UVs. A stroke straddles the offset and a fill extrudes outward from it. Use continuous U coordinates outside the unit interval to specify a winding across a closed cylinder's seam. |
+
+Use `KIT.diorama.scene(spec).authoring(seed)` to open a drawing document. Top-level marks with an `id` become entities with editable `parameters`. The document supports creating, updating, deleting, undoing, and redoing marks. Call `realize(document.snapshot())` to rebuild the scene, or save the snapshot for a later build. The CLI can inspect and edit those parameters through `authoring inspect`, `authoring preview`, and `authoring apply`. Pass `--authoring` to render or export a saved drawing revision.
+
+`createDrawingInput(element, { brush, project, preview, commit })` from `webgl.mjs` collects pointer samples and stylus pressure. The host supplies brush settings and maps each pointer event to the active drawing plane or surface chart. The optional preview callback receives the draft and clears when the gesture ends. The commit callback receives a stroke or a single closed fill ring ready for the drawing document. Set the drawing element's CSS `touch-action` to `none` when using touch and call `dispose()` when unmounting.
+
 ## Retained authoring
 
 `KIT.authoring.document` stores scene intent as JSON with stable IDs, deterministic seeds, transactions, undo and redo, and an optional autosave adapter. Generated parts can keep hand edits across regeneration. They can also be suppressed or promoted to independent entities.
@@ -697,9 +714,10 @@ The CLI and Node `render()` use the CPU renderer. Use the [browser renderer](doc
 | `shimmer <scene> --mode orbit` | Measure pixels that change and quickly change back across frames, and save a GIF. |
 | `compare <scene> <ref.png>` | Render the scene alongside a reference and measure both at the reference's pixel size. |
 | `export-glb <scene or mesh>` | Export indexed mesh geometry, UVs, materials, and available skins and clips. |
-| `paint export <scene>` | Export `paint.png` and the surface coordinates of the rendered view. |
-| `paint absorb <scene>` | Convert edited pixels in `paint.png` into surface-pinned decals. |
-| `paint clear <scene>` | Clear the scene's saved decals. |
+| `paint export <scene> [--layer name]` | Export `paint.png` and the surface coordinates of the rendered view. |
+| `paint absorb <scene> [--layer name]` | Convert edited pixels into permanent paint or a named view correction. |
+| `paint layers|tune <scene>` | List corrections or adjust a named layer with `--layer name`. |
+| `paint clear <scene> [--layer name]` | Clear one correction or all saved paint. |
 | `stats <scene>` | Report splat counts, extents, palette use, build and animation costs. |
 | `perf <scene> --secs 5 --fps 60` | Measure animation work and changed-data upload estimates. |
 | `motion <scene> --from 0 --to 3` | Inspect speed, jumps, low points, still regions and loop error. |
@@ -746,6 +764,19 @@ Use `finish.look.tone` for a luminance-based palette with a black cutoff, ordere
 For per-pixel materials, set `S.pixel = true` before baking and finish the world with `look: { pixel: true }`. `K.pixel` provides surface patterns such as turf, masonry and shingles. Use `K.pixel.edge(material, { up: 'grass', every: 5, share: 0.55 })` to attach sprites that follow the surface as the camera moves. `K.sprite.art` accepts text art for custom sprites, and `K.props` can scatter small objects along paths and at wall bases.
 
 `paint export` and `paint absorb` work with per-pixel scenes. By default, files live in `studio/paint/<scene-id>/`, where `<scene-id>` is the ID returned by the scene. Edit `paint.png` in the scene palette and use magenta (`#ff00ff`) to erase earlier paint. If you choose a custom folder with `--dir`, pass the same folder to `paint` and `render`.
+
+Add `--layer name` to export and absorb an angle-specific correction. Each named layer has its own capture files in `layers/<name>/`, and its surface samples are saved alongside permanent decals in `decals.json`. Named exports use the unpainted view as the editing baseline. Re-exporting a layer from a new view or pose replaces its previous samples the next time you absorb it. Magenta erases samples within the layer being edited.
+
+| Control | Behavior |
+| --- | --- |
+| `--angle` and `--feather` | Set the maximum deviation from the captured view and the width of the fade, in degrees. The defaults are 65° and 35°. |
+| `--opacity` | Set layer opacity from zero to one. |
+| `--region` | Limit the layer to world-space `min` and `max` coordinates with optional inward `feather` in world units. Accepts JSON, a JSON file, or `off`. |
+| `--paint-mask` | During absorb, multiply each sample by the brightness and alpha of a PNG with the same size as the capture. |
+
+Use the first three controls with `paint absorb` or `paint tune`. The CPU and WebGL renderers blend overlapping samples by their visibility from the current camera before resolving the scene palette. Corrections are pinned to the captured world-space surface positions. Use `--paint-corrections off` when rendering an uncorrected comparison.
+
+For programmatic scenes, pass the saved paint document as `paint` in `B.finish()`, or embed it under `finish.paint` in a JSON diorama. Each layer retains `view.direction` toward the capture camera. Perspective captures also retain `view.eye`. A decal row contains its XYZ position, XYZ normal, palette index, and optional opacity. Pass `paintCorrections: false` to either renderer to hide the view corrections.
 
 The [art-pixel rendering guide](docs/art-passes.md) describes the selectable
 render passes, selective ink, camera snapping, stable dithering, art-pixel

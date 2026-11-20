@@ -239,7 +239,13 @@ const CloudField = (() => {
           return sample;
         } };
       }
-      const view=useDetail && rendered ? (eye,parallel) => shapedView(asset.view(eye,parallel,mode,shift,shade,opacity,cutouts)) : null;
+      const view=useDetail && rendered ? (eye,parallel) => {
+        const result = shapedView(asset.view(eye,parallel,mode,shift,shade,opacity,cutouts));
+        if (!result.card) return result;
+        const lighting = style && { ...style, direction:[lx,ly,lz], daylight, probe, cells, width, rows,
+          origin:[minX+dx,minZ+dz], cell:[sx,sz], low, thickness };
+        return { ...result, card:{ ...result.card, rgb, lighting } };
+      } : null;
       const reflections=(useDetail || geometry) && rendered ? shapedView(asset.view([0,0,0],null,'volume',shift,shade,opacity,cutouts)) : null;
       const reflectionSample=[0,0,0,1];
       function paintVolume(origin, ray, out, flashAt, signal) {

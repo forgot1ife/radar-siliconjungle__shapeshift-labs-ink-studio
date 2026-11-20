@@ -32,7 +32,7 @@ try {
     const html = execFileSync(executable, ['--headless', '--no-first-run', '--disable-background-networking',
       '--allow-file-access-from-files', ...software,
       '--user-data-dir=' + path.join(temp, 'profile'), '--dump-dom', pathToFileURL(page).href],
-    { timeout: 120000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    { timeout: 120000, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
     const output = /<pre id="result">([^<]*)<\/pre>/.exec(html)?.[1];
     if (!output || output === 'pending') throw new Error('Chrome did not complete the WebGL fixture page');
     const result = JSON.parse(decodeURIComponent(output));
@@ -56,20 +56,33 @@ function browserBackend(kit, createRenderer) {
     const debug = gl.getExtension('WEBGL_debug_renderer_info');
     const driver = gl.getParameter(debug ? debug.UNMASKED_RENDERER_WEBGL : gl.RENDERER);
     const pixel = new Uint8Array(4);
+    function read() {
+      const pixels = new Uint8Array(width * height * 4);
+      gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      const error = gl.getError();
+      if (error !== gl.NO_ERROR) throw new Error('WebGL readback failed with error ' + error);
+      return pixels;
+    }
     return {
       driver,
       draw(world, overrides) { renderer.render(world, { changedRows:[], ...view,...overrides }); },
       fence() { gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel); },
       pick(world, ray, frame) { return renderer.pick(world,ray,frame); },
       sample(points) {
-        const pixels = new Uint8Array(width * height * 4);
-        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-        const error = gl.getError();
-        if (error !== gl.NO_ERROR) throw new Error('WebGL readback failed with error ' + error);
+        const pixels = read();
         return Object.fromEntries(Object.entries(points).map(([name, [x, y]]) => {
           const offset = ((height - 1 - y) * width + x) * 4;
           return [name, Array.from(pixels.subarray(offset, offset + 3))];
         }));
+      },
+      image() {
+        const data = read();
+        let rgb = '';
+        for (let y = height-1; y >= 0; y--) for (let x = 0; x < width; x++) {
+          const p = 4*(y*width+x);
+          rgb += String.fromCharCode(data[p],data[p+1],data[p+2]);
+        }
+        return btoa(rgb);
       },
       close() {
         renderer.dispose();

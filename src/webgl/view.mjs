@@ -35,7 +35,7 @@ export function makeCamera(world, frame, width, height) {
       (far + near) / (near - far), -1, 0, 0, 2 * far * near / (near - far), 0]);
   const depthCenter = ortho ? distance : dist;
   const result = {
-    view, projection, eye, aspect, ortho, radius,
+    view, projection, eye, aspect, ortho, radius, distance, setback:distance-zoomedDistance,
     tangent: ortho ? viewHeight : tanFov,
     footprint: dist * 2 * tanFov / height,
     clipNear: Math.max(0.4, 0.15 * dist),
