@@ -11,12 +11,17 @@
       const realm={bed:(x,z)=>{const i=domain.cell([x,0,z]);return i<0?0:domain.point(i)[1];},
         fuel:(x,z)=>{const i=domain.cell([x,0,z]);return i<0?0:domain.initial('fuel',i);},
         available:(x,z)=>read('fuel',x,z),moisture:(x,z)=>read('moisture',x,z)};
+      function climate(ctx){
+        const env={winter:ctx.environment.winter??0,rain:ctx.environment.rain??0,wx:ctx.environment.wx??0,wz:ctx.environment.wz??0};
+        if(!Object.values(env).every(Number.isFinite))throw new RangeError('Fire climate values must be finite numbers');
+        env.winter=K.clamp(env.winter,0,1);env.rain=K.clamp(env.rain,0,1);return env;
+      }
       function reset(){context=null;rng=(seed>>>0)||1;eco.reset(realm);lastHeat.fill(0);for(let i=0;i<domain.count;i++)lastFuel[i]=domain.initial('fuel',i);}
       reset();
       return {reset,
         contact(ctx,event){
           context=ctx;
-          try{if(event.type==='ignite')eco.ignite(event.p[0],event.p[2],event.radius,ctx.environment.rain??0);}
+          try{if(event.type==='ignite')eco.ignite(event.p[0],event.p[2],event.radius,climate(ctx).rain);}
           finally{context=null;}
         },
         step(ctx,h){
@@ -29,7 +34,7 @@
               if(Math.abs(heat-lastHeat[i])>1e-6)eco.setCell(i,{heat});
               before[i]=eco.sampleCell(i).burn;
             }
-            eco.update(h,{winter:ctx.environment.winter??0,rain:ctx.environment.rain??0,wx:ctx.environment.wx??0,wz:ctx.environment.wz??0});
+            eco.update(h,climate(ctx));
             for(let i=0;i<domain.count;i++){
               const state=eco.sampleCell(i),oldFuel=ctx.read('fuel',i);
               const used=Math.min(oldFuel,Math.max(0,state.burn-before[i])),fuel=oldFuel-used;

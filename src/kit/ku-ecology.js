@@ -10,7 +10,7 @@
     if(value===null||typeof value==='string'||typeof value==='boolean')return value;
     if(typeof value==='number'){check(finite(value),'Ecology state must be finite');return value;}
     if(Array.isArray(value)||ArrayBuffer.isView(value))return Array.from(value,v=>copy(v,budget));
-    check(record(value),'Ecology state must be serializable');
+    check(record(value)&&(Object.getPrototypeOf(value)===Object.prototype||Object.getPrototypeOf(value)===null),'Ecology state must use plain serializable records');
     return Object.fromEntries(Object.entries(value).map(([key,v])=>{check(!['__proto__','constructor','prototype'].includes(key),'Unsafe ecology state key');return [key,copy(v,budget)];}));
   }
   function create(options={}) {
@@ -29,7 +29,7 @@
       else definitions[key]=Object.freeze(next);
     }
     for(const spec of specs){
-      check(record(spec)&&name(spec.id)&&!names.has(spec.id)&&(typeof spec.step==='function'||typeof spec.create==='function'),'Invalid or duplicate ecology process');
+      check(record(spec)&&name(spec.id)&&!names.has(spec.id)&&(typeof spec.step==='function'||typeof spec.create==='function'||typeof spec.contact==='function'),'Invalid or duplicate ecology process');
       names.add(spec.id);for(const [key,s]of Object.entries(spec.channels??{}))schema(key,s);
     }
     for(const [key,s]of Object.entries(options.channels??{}))schema(key,s);
@@ -55,7 +55,8 @@
     hash(JSON.stringify({width,height,cellSize,origin,definitions,types,processes:specs.map(p=>[p.id,p.version??1])}));
     for(const byte of new Uint8Array(points.buffer))signature=Math.imul(signature^byte,16777619)>>>0;
     for(const key of channels)for(const byte of new Uint8Array(initial[key].buffer))signature=Math.imul(signature^byte,16777619)>>>0;
-    let time=0,tick=0,acc=0,version=1,randomState=(seed>>>0)||1,serial=0,environment=copy(options.environment??{}),busy=false;
+    const initialEnvironment=copy(options.environment??{});
+    let time=0,tick=0,acc=0,version=1,randomState=(seed>>>0)||1,serial=0,environment=copy(initialEnvironment),busy=false;
     const events=[],contacts=[],seen=new Set(),runtimes=[];
     revisions.fill(version);
     const index=(p)=>{
@@ -95,7 +96,7 @@
     const domain=Object.freeze({width,height,count:N,cellSize,origin:Object.freeze(origin.slice()),point,cell:index,
       read:(key,i)=>fields[channel(key)][cell(i)],initial:(key,i)=>initial[channel(key)][cell(i)]});
     for(const spec of specs){
-      const runtime=spec.create?spec.create(domain):{step:spec.step,contact:spec.contact,save:()=>null,restore(value){check(value===null,'Unexpected stateless process state');},reset(){}};
+      const runtime=spec.create?spec.create(domain):{step:spec.step??(()=>{}),contact:spec.contact,save:()=>null,restore(value){check(value===null,'Unexpected stateless process state');},reset(){}};
       check(runtime&&typeof runtime.step==='function'&&typeof runtime.save==='function'&&typeof runtime.restore==='function'&&typeof runtime.reset==='function','Stateful ecology processes need save, restore and reset');
       runtimes.push({id:spec.id,runtime});
     }
@@ -132,8 +133,8 @@
       const row=copy({...raw,id,time:at,radius:raw.radius??0});contacts.push(row);seen.add(id);serial++;
       if(seen.size>4096)seen.delete(seen.values().next().value);return true;
     }
-    function update(dt){idle();check(finite(dt)&&dt>=0&&dt<=.25,'Ecology update needs a step in [0, 0.25]');acc+=dt;while(acc+1e-10>=step){run();acc=Math.max(0,acc-step);}}
-    function reset(){idle();for(const key of channels)fields[key].set(initial[key]);for(const p of runtimes)p.runtime.reset();time=0;tick=0;acc=0;serial=0;randomState=(seed>>>0)||1;contacts.length=0;events.length=0;seen.clear();version++;revisions.fill(version);}
+    function update(dt){idle();check(finite(dt)&&dt>=0&&dt<=.25,'Ecology update needs a step in [0, 0.25]');acc+=dt;while(acc+1e-10>=step){try{run();}catch(error){acc=step;throw error;}acc=Math.max(0,acc-step);}}
+    function reset(){idle();for(const key of channels)fields[key].set(initial[key]);for(const p of runtimes)p.runtime.reset();time=0;tick=0;acc=0;serial=0;environment=copy(initialEnvironment);randomState=(seed>>>0)||1;contacts.length=0;events.length=0;seen.clear();version++;revisions.fill(version);}
     function snapshot(){idle();return copy({format:'ink-ecology/1',signature,time,tick,acc,serial,randomState,environment,
       fields,processes:runtimes.map(p=>({id:p.id,state:p.runtime.save()})),contacts,events,seen:[...seen]});}
     function restore(raw){
@@ -150,7 +151,7 @@
       contacts.splice(0,contacts.length,...s.contacts);events.splice(0,events.length,...s.events);seen.clear();for(const id of s.seen)seen.add(id);version++;revisions.fill(version);
     }
     return Object.freeze({width,height,cellSize,origin:Object.freeze(origin.slice()),count:N,step,channels:Object.freeze(channels.slice()),
-      definitions:Object.freeze(definitions),point,cell:index,cellsInDisc:disc,read:(key,i)=>fields[channel(key)][cell(i)],initial:(key,i)=>initial[channel(key)][cell(i)],
+      definitions:Object.freeze(definitions),processes:Object.freeze(specs.map(p=>p.id)),point,cell:index,cellsInDisc:disc,read:(key,i)=>fields[channel(key)][cell(i)],initial:(key,i)=>initial[channel(key)][cell(i)],
       sample(p){const i=index(p);return i<0?null:{cell:i,point:point(i),material:types[i],values:Object.fromEntries(channels.map(k=>[k,fields[k][i]]))};},
       contact,update,reset,snapshot,restore,drainEvents:()=>events.splice(0),
       changes(since=0){return {version,cells:Array.from({length:N},(_,i)=>i).filter(i=>revisions[i]>since)};},

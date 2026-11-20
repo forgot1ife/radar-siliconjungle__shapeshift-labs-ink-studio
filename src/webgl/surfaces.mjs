@@ -1,7 +1,7 @@
 import { createResources } from './resources.mjs';
 
 // Opaque pixel cutouts share an atlas and depth buffer with the splat pass.
-export function createSurfacePipeline(gl) {
+export function createSurfacePipeline(gl, { updatesSince } = {}) {
   const resources=createResources(gl);
   try {
     const shader=resources.program(`#version 300 es
@@ -43,19 +43,41 @@ void main(){
     gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,3,gl.FLOAT,false,20,0);
     gl.enableVertexAttribArray(1);gl.vertexAttribPointer(1,2,gl.FLOAT,false,20,12);
     gl.bindVertexArray(null);
-    let active,disposed=false;
+    let active,activeVertices,revision=-1,width=0,height=0,disposed=false,staging=new Uint8Array(0);
+    const stats={textureBytes:0,geometryBytes:0};
     function upload(atlas){
+      stats.textureBytes=0;stats.geometryBytes=0;
       if(disposed)throw new Error('Surface pipeline has been disposed');
-      if(active===atlas)return;
+      const next=atlas?.revision??0;
+      if(active===atlas&&revision===next&&activeVertices===atlas.vertices&&width===atlas.width&&height===atlas.height)return;
       if(!atlas||!(atlas.vertices instanceof Float32Array)||atlas.vertices.length%15||
         !Number.isSafeInteger(atlas.width)||atlas.width<1||!Number.isSafeInteger(atlas.height)||atlas.height<1||
         !(atlas.pixels instanceof Uint8Array)||atlas.pixels.length!==atlas.width*atlas.height*4||
-        !atlas.vertices.every(Number.isFinite))throw new RangeError('Invalid sprite surface atlas');
+        !atlas.vertices.every(Number.isFinite)||!Number.isSafeInteger(next)||next<0)throw new RangeError('Invalid sprite surface atlas');
       if(Math.max(atlas.width,atlas.height)>gl.getParameter(gl.MAX_TEXTURE_SIZE))throw new RangeError('Surface atlas exceeds GPU size limit');
-      gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,atlas.vertices,gl.STATIC_DRAW);
+      const replace=active!==atlas||width!==atlas.width||height!==atlas.height;
+      if(replace||activeVertices!==atlas.vertices){
+        gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,atlas.vertices,gl.STATIC_DRAW);
+        stats.geometryBytes=atlas.vertices.byteLength;
+      }
       gl.activeTexture(gl.TEXTURE0+6);gl.bindTexture(gl.TEXTURE_2D,texture);
-      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,atlas.width,atlas.height,0,gl.RGBA,gl.UNSIGNED_BYTE,atlas.pixels);
-      active=atlas;
+      if(replace){
+        gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,atlas.width,atlas.height,0,gl.RGBA,gl.UNSIGNED_BYTE,atlas.pixels);
+        stats.textureBytes=atlas.pixels.byteLength;
+      }else if(revision!==next){
+        const changes=updatesSince?.(atlas,revision);
+        let x=0,y=0,w=atlas.width,h=atlas.height;
+        if(changes?.length){
+          x=Math.min(...changes.map(r=>r.x));y=Math.min(...changes.map(r=>r.y));
+          w=Math.max(...changes.map(r=>r.x+r.width))-x;h=Math.max(...changes.map(r=>r.y+r.height))-y;
+        }
+        const bytes=w*h*4;
+        if(staging.length<bytes)staging=new Uint8Array(bytes);
+        for(let row=0;row<h;row++)staging.set(atlas.pixels.subarray(((y+row)*atlas.width+x)*4,((y+row)*atlas.width+x+w)*4),row*w*4);
+        gl.texSubImage2D(gl.TEXTURE_2D,0,x,y,w,h,gl.RGBA,gl.UNSIGNED_BYTE,staging.subarray(0,bytes));
+        stats.textureBytes=bytes;
+      }
+      active=atlas;activeVertices=atlas.vertices;revision=next;width=atlas.width;height=atlas.height;
     }
     function draw(atlas,{view,projection,range,fog,index=false,arrivalPlane=[0,0,0,0],clip=[0,0,0,0]}){
       upload(atlas);
@@ -65,6 +87,6 @@ void main(){
       gl.bindVertexArray(vao);gl.drawArrays(gl.TRIANGLES,0,active.vertices.length/5);
       gl.activeTexture(gl.TEXTURE0);
     }
-    return {draw,dispose(){if(disposed)return;disposed=true;resources.dispose();}};
+    return {draw,get stats(){return {...stats};},dispose(){if(disposed)return;disposed=true;resources.dispose();}};
   }catch(error){resources.dispose();throw error;}
 }

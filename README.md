@@ -472,6 +472,7 @@ There are several simulation levels:
 | --- | --- |
 | `K.breaker`, `K.rubble`, `K.debris` | Breaking, unsupported pieces, falling rubble and loose fragments. |
 | [`K.destruction`](docs/destruction.md) | Named structural groups, current-pose physics handoffs, swept cannonball/catapult impacts, support cascades and exact reset. |
+| [`K.ecology`](docs/ecology.md) | Shared material channels, extensible processes and contacts, existing fire integration, splat/texture damage, local light and checkpoint replay. |
 | `K.jelly`, `K.sand` | Lightweight shape deformation or granular motion. |
 | `K.mpm` | A material-point solver for elastic jelly, yielding clay, granular sand and water. |
 | `K.sandbox` | A cellular material simulation with fluid flow, heat, phase changes and reactions. |

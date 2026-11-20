@@ -840,7 +840,7 @@
               0.7 *
               wet * (1 - moisture(j)) *
               (0.3 + 1.4 * random()) *
-              (1 + 0.6 * (dx * wx + dz * wz)) *
+              Math.max(0, 1 + 0.6 * (dx * wx + dz * wz)) *
               Math.max(0, 1 - gen[i] / 14) *
               (fuelOf(j) > 0.7 ? 1.6 : 1);
             if (heat[j] >= 1) light(j, gen[i] + 1);

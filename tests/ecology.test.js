@@ -51,11 +51,12 @@ test('a failed process rolls back channels, private fire state, random draws and
   sim.contact({type:'ignite',p:[1.5,0,1.5],radius:.2});const before=sim.snapshot();
   assert.throws(()=>sim.update(.1),/try again/);const after=sim.snapshot();
   assert.deepEqual(after.fields,before.fields);assert.deepEqual(after.processes,before.processes);assert.equal(after.randomState,before.randomState);assert.equal(after.contacts.length,1);
+  assert.throws(()=>sim.update(.25),/try again/);assert(sim.snapshot().acc<=sim.step);
   fail=false;sim.update(0);assert.equal(sim.stats.tick,1);
 });
 
 test('contacts carry arbitrary ecological actions, schedule at tick boundaries and deduplicate event IDs',()=>{
-  const sim=E.create({width:2,height:1,channels:{wear:{}},materials:{path:{}},processes:[{id:'trampling',contact(ctx,e){if(e.type==='step')for(const i of ctx.cellsInDisc(e.p,e.radius))ctx.add('wear',i,.1);},step(){}}]});
+  const sim=E.create({width:2,height:1,channels:{wear:{}},materials:{path:{}},processes:[{id:'trampling',contact(ctx,e){if(e.type==='step')for(const i of ctx.cellsInDisc(e.p,e.radius))ctx.add('wear',i,.1);}}]});
   let batch=[{id:'foot',type:'step',p:[.5,0,.5],radius:0,time:.3}];
   const input=E.contacts(sim,{read:()=>batch});input.update();input.update();advance(sim,.2);near(sim.read('wear',0),0);
   advance(sim,.1);near(sim.read('wear',0),.1);batch=[];input.update();
@@ -101,4 +102,63 @@ test('invalid snapshots, overlapping binding ownership and ambiguous reused UVs 
     0,0,0,.5,.5, 1,0,0,1.5,.5, 0,0,1,.5,1.5,
     5,0,0,.5,.5, 6,0,0,1.5,.5, 5,0,1,.5,1.5])};
   assert.throws(()=>E.atlasPoints(atlas),/unique world positions/);
+});
+
+test('GPU atlas updates upload only changed rectangles, preserve geometry and support two independent consumers',async()=>{
+  const {createSurfacePipeline}=await import('../src/webgl/surfaces.mjs');
+  function mock(){const calls=[],constants=new Map();let serial=1;const target={
+    getProgramParameter(p,key){return key===gl.LINK_STATUS?true:0;},getShaderParameter:()=>true,getParameter:()=>8192};
+    const gl=new Proxy(target,{get(o,key){if(key in o)return o[key];if(/^[A-Z_0-9]+$/.test(key)){if(!constants.has(key))constants.set(key,serial++);return constants.get(key);}
+      return (...args)=>{calls.push({method:key,args});return key.startsWith('create')?{}:undefined;};}});return {gl,calls};}
+  const a=mock(),b=mock(),p=createSurfacePipeline(a.gl,{updatesSince:SpriteSurface.updatesSince}),q=createSurfacePipeline(b.gl,{updatesSince:SpriteSurface.updatesSince});
+  const atlas={width:4,height:4,pixels:new Uint8Array(64),vertices:new Float32Array(15)},frame={view:[],projection:[],range:[0,10,1,0],fog:[0,0,0]};
+  p.draw(atlas,frame);q.draw(atlas,frame);assert.equal(p.stats.textureBytes,64);
+  atlas.pixels.set([2,3,4,255],(1*4+2)*4);SpriteSurface.markDirty(atlas,{x:2,y:1,width:1,height:1});
+  p.draw(atlas,frame);q.draw(atlas,frame);assert.equal(p.stats.textureBytes,4);assert.equal(q.stats.textureBytes,4);assert.equal(p.stats.geometryBytes,0);
+  assert.equal(a.calls.filter(c=>c.method==='bufferData').length,1);assert.equal(a.calls.filter(c=>c.method==='texImage2D').length,1);
+  const last=a.calls.filter(c=>c.method==='texSubImage2D').at(-1);assert.deepEqual(last.args.slice(2,6),[2,1,1,1]);assert.deepEqual([...last.args.at(-1)],[2,3,4,255]);
+  p.draw(atlas,frame);assert.equal(p.stats.textureBytes,0);
+  for(let i=0;i<40;i++)SpriteSurface.markDirty(atlas);p.draw(atlas,frame);assert.equal(p.stats.textureBytes,64);p.dispose();q.dispose();
+});
+
+test('a coupled custom recovery process can restore fuel and appearance and survives checkpoints',()=>{
+  const recovery={id:'recovery',channels:{growth:{}},step(ctx,h){for(let i=0;i<ctx.count;i++)if(ctx.read('moisture',i)>.5&&ctx.read('burning',i)<.1){
+    ctx.add('growth',i,h*.12);ctx.add('char',i,-h*.2);ctx.set('fuel',i,Math.min(ctx.initial('fuel',i),ctx.read('fuel',i)+h*.08));}}};
+  const sim=fire({processes:[E.processes.fire(),E.processes.diffusion({id:'moisture',field:'moisture'}),recovery]});
+  sim.contact({type:'ignite',p:[1.5,0,2.5],radius:.5});advance(sim,4);
+  const old=sim.sample([1.5,0,2.5]).values;assert(old.char>.8);
+  sim.contact({type:'water',p:[1.5,0,2.5],radius:2,values:{moisture:1,heat:0}});advance(sim,1);
+  const saved=JSON.parse(JSON.stringify(sim.snapshot()));advance(sim,2);const expected=sim.snapshot();
+  assert(sim.sample([1.5,0,2.5]).values.char<old.char);assert(sim.sample([1.5,0,2.5]).values.fuel>old.fuel);
+  sim.restore(saved);advance(sim,2);assert.deepEqual(sim.snapshot().fields,expected.fields);assert.deepEqual(sim.snapshot().processes,expected.processes);
+});
+
+test('strong weather inputs keep fire fields nonnegative and reset restores the initial environment',()=>{
+  const sim=fire({environment:{rain:0,wx:.2}});sim.setEnvironment({wx:8,wz:-6,rain:0});
+  sim.contact({type:'ignite',p:[1.5,0,1.5],radius:.5});advance(sim,1);assert(sim.read('char',sim.cell([1.5,0,1.5]))>0);
+  sim.setEnvironment({rain:1.4});advance(sim,1);
+  for(let i=0;i<sim.count;i++)for(const key of sim.channels)assert(Number.isFinite(sim.read(key,i))&&sim.read(key,i)>=0);
+  sim.reset();assert.deepEqual(sim.snapshot().environment,{rain:0,wx:.2});
+});
+
+test('software rendering observes the same atlas damage and reset without rebaking geometry',()=>{
+  const {TexturedSurface:T}=lib.load(),a=SpriteSurface.make(16),B=makeBuilder(2,[0x102030,0x809040]);
+  a.mesh(T.heightfield({bounds:[-2,2,-2,2],segments:[1,1],height:()=>0}),16,16,()=>0x809040);
+  const W=B.finish({spriteSurfaces:a.finish(),cam:{target:[0,0,0],dist:7,pitch:.6,yaw:.2},radius:4}),stage=K.stage(W);
+  const sim=E.create({width:4,height:4,origin:[-2,-2],channels:{damage:{}},materials:{soil:{}}});
+  stage.add(E.bind(stage,sim,{textures:[{atlas:W.spriteSurfaces}],style:[{field:'damage',color:[.03,.04,.05]}]}));
+  stage.update(0,0);const render=()=>lib.render(W,{w:80,h:64,px:1,ortho:true,raw:true}).rgb;
+  const before=render();const vertices=W.spriteSurfaces.vertices;
+  sim.contact({type:'scuff',p:[0,0,0],radius:2,values:{damage:1}});sim.update(.1);stage.update(0,.1);
+  assert.notDeepEqual(render(),before);assert.equal(W.spriteSurfaces.vertices,vertices);
+  sim.reset();stage.update(0,.2);assert.deepEqual(render(),before);
+});
+
+test('destruction contact events can feed ecology through an explicit application rule',()=>{
+  const B=makeBuilder(1);B.iso(1.5,2,.5,.15,B.P[2],3);const stage=K.stage(B.finish());
+  const destruction=K.destruction(stage,{gravity:0,groups:[{id:'wood',ids:[0],strength:1,mass:4}]});
+  const sim=fire({width:4,height:1,materials:{wood:{fuel:1}}});
+  const bridge=E.contacts(sim,{read:()=>destruction.drainEvents(),map:e=>e.kind==='projectile-hit'?{id:'hot-'+e.time,type:'ignite',p:e.p,radius:.3}:null});
+  destruction.launch({p:[-1,2,.5],v:[300,0,0],radius:.1,mass:3});destruction.update(.02);bridge.update();sim.update(.2);
+  assert(sim.read('burning',1)>0);assert(sim.read('char',1)>0);
 });
