@@ -60,6 +60,8 @@ tone mapping, and grading are inactive. Pass `reuseOrder: false` or
 | `afterimages` | Draw historical splat poses with scene depth. See [motion-aware afterimages](motion-afterimages.md). |
 | `stableTransparency` | Hold the order of nearby translucent splats during motion. See [stable transparency](scene-optics.md#stable-transparency-during-motion). |
 | `water: false` | Compare the scene with water optics disabled. |
+| `reflections: false` | Disable live scene captures bound to water optics. |
+| `reflectionScale`, `reflectionMaxSize` | Bound water capture resolution: scale in (0,1], longest edge 1–2048. Defaults: 0.5 and 512. See [interactive water](scene-optics.md#interactive-water-captures). |
 | `portal`, `fade` | Render an oriented destination view or apply a scene fade. See [place travel and portals](portals.md). |
 
 Set `frame.target` to a same-context framebuffer descriptor with `framebuffer`,

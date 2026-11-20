@@ -105,7 +105,18 @@ test('WebGL draws world-space afterimages with occlusion and can reset at cuts',
       patterned.data[0] = .75;
       draw.draw(patterned, { time: .2, raw: false, changedRows: [0] });
       const overPattern = draw.sample(points).ghost;
-      return { before, active, panned, hidden, cut, attached, overPattern };
+      const mirrored = fixture(kit);
+      const water = kit.KIT.procedural.waterBodies;
+      mirrored.water = water.scene([water.create({ id: 'pool', bounds: { min: [-2, -2], max: [2, 2] },
+        sample: () => ({ bed: -1.5, surface: -1 }), optics: { reflection: { plane: 'pool' } } })]);
+      mirrored.reflections = [kit.KIT.reflection.plane({ id: 'pool', at: [0, -1, 0] })];
+      draw.draw(mirrored, { time: 0 });
+      mirrored.data[0] = .75;
+      draw.draw(mirrored, { time: .2, changedRows: [0] });
+      const withCapture = draw.sample(points).ghost;
+      draw.draw(mirrored, { time: .2, reflections: false });
+      const withoutCapture = draw.sample(points).ghost;
+      return { before, active, panned, hidden, cut, attached, overPattern, withCapture, withoutCapture };
     } finally {
       draw.close();
     }
@@ -117,4 +128,6 @@ test('WebGL draws world-space afterimages with occlusion and can reset at cuts',
   assert(result.before[1] > result.before[0]);
   assert(result.attached[0] > result.attached[1] + 40, JSON.stringify(result));
   assert.deepEqual(result.overPattern, [255, 0, 0]);
+  assert.deepEqual(result.withCapture, result.active);
+  assert.deepEqual(result.withoutCapture, result.active);
 });

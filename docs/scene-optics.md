@@ -9,7 +9,7 @@ ink-studio sheet examples/beacon-pool.js --t 0.4,0.94,1.5 --raw --out pool-motio
 
 Use `--reflections off` or `--atmosphere off` to inspect each effect separately. The software renderer supports perspective and orthographic views, and the effects run before palette quantization.
 
-The [WebGL canvas renderer](browser-renderer.md) supports the shared glass-beam pass, analytic fog and water bodies. The CPU renderer also supports planar capture, ripple-driven planar reflections and sampled atmosphere fields.
+The [WebGL canvas renderer](browser-renderer.md) supports the shared glass-beam pass, analytic fog, water bodies and live planar captures bound to water optics. The CPU renderer additionally supports arbitrary material planar receivers, ripple-field normals and sampled atmosphere fields.
 
 For moving directional light and cast shadows on solid geometry, see [Live sun lighting](live-sun.md). See [Moving cloud shadows](cloud-shadows.md) for a shared coverage grid that shades the terrain, fog, and water. Use [Authored lightning](lightning.md) to time flashes that light clouds, appear in water reflections, and reveal nearby geometry. See [Indoor and outdoor exposure](scene-exposure.md) for rain boundaries and shelter for fog, light, and wind.
 
@@ -39,6 +39,61 @@ Use the [environment inspector](environment-inspector.md) to report which keys, 
 
 Export [environment passes](art-passes.md#environment-passes-for-compositing) for downstream compositing of sky, fog, precipitation, reflections, and foreground coverage.
 
+
+## Interactive water captures
+
+Use the existing `K.reflection.plane` definitions with `optics.reflection` on a
+column water body. The [three reflecting gardens](../examples/water-garden.html)
+uses three heights, a moving lantern boat, SDF trees, and optional atlas terrain.
+
+```js
+const pool = K.procedural.waterBodies.create({
+  id: 'garden-pool',
+  bounds: { min: [-3, -2], max: [3, 2] },
+  resolution: [64, 64],
+  sample(x, z) {
+    const bed = terrain.height(x, z); // same triangulated surface that is drawn
+    return bed < 0 ? { bed, surface: 0, current: [0.1, 0] } : null;
+  },
+  optics: {
+    optical: { reflection: 0.18, absorption: 0.3 },
+    reflection: { plane: 'garden-mirror', distortion: 3, blur: 0.5 }
+  }
+});
+const world = B.finish({
+  water: K.procedural.waterBodies.scene([pool]),
+  reflections: [K.reflection.plane({ id: 'garden-mirror', at: [0, 0, 0] })],
+  spriteSurfaces: optionalTerrainAtlas
+});
+```
+
+A binding is optional; existing water, sky reflections, `K.reflect`, and material
+receivers keep their existing APIs. Pools can share a plane and capture; a water
+scene supports up to four distinct capture planes, including layered/atlas water.
+Water capture planes face up and match the flat exposed water level. In WebGL,
+unmatched heights fall back to the body's surface color. These captures use the
+existing water wave/current normal, rather than a new wave simulation. Distortion
+(default 5, range 0–64) and five-tap blur (default 0, range 0–16) use art pixels.
+
+The native renderer captures current splats, rigs, shader motion and atlas meshes
+each frame. `plane.select(index, x, y, z, world)` filters splat sources. Sources
+behind the plane are clipped, and captures do not recursively reflect other pools.
+Global grading runs after reflection compositing. The CPU renderer uses its existing
+lazy planar captures for the same water binding.
+
+Water column intervals clip reflections at wet/dry shoreline cells and air pockets.
+Textured terrain receives water absorption, tint, caustics and surface reflection at
+its own fragment depth. A submerged lakebed does not occlude the reflected object
+at its virtual mirrored depth; raised foreground terrain still occludes the water.
+No reflection proxies or custom ellipse masks are required.
+
+For WebGL, `frame.reflections: false` disables live captures while retaining the
+body's fallback surface reflection. `reflectionScale` defaults to 0.5; the longest
+capture edge is capped by `reflectionMaxSize` (default 512, maximum 2048). Both are
+independent of the main frame size. One bounded capture is shared per plane, its
+resources are reused, and back-facing planes are skipped. Scenes without capture
+bindings allocate no capture targets. On the CLI, `--reflections off` disables the
+same geometry captures; the existing CPU reflection sampling scale is unchanged.
 
 ## Unified optical materials
 

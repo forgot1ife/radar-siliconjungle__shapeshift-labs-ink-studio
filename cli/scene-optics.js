@@ -41,7 +41,7 @@ function reflectionSampler(planes, render, view, eye, scale) {
   }
   const rgb = [0, 0, 0],
     reflected = { rgb, coverage: 0 };
-  function sample(layer, x, y, dx, dy, dz) {
+  function sample(layer, x, y, dx, dy, dz, background) {
     const plane = definitions.get(layer.plane);
     if (!plane) return null;
     if (!captures.has(plane.id)) captures.set(plane.id, render(plane));
@@ -71,6 +71,13 @@ function reflectionSampler(planes, render, view, eye, scale) {
       tap(x + blur, y, 0.15);
       tap(x, y - blur, 0.15);
       tap(x, y + blur, 0.15);
+    }
+    if (background) {
+      rgb[0]=red+background[0]*(1-alpha);
+      rgb[1]=green+background[1]*(1-alpha);
+      rgb[2]=blue+background[2]*(1-alpha);
+      reflected.coverage=1;
+      return reflected;
     }
     if (alpha <= 1e-6) return null;
     rgb[0] = Math.min(1, red / alpha);
@@ -161,10 +168,21 @@ function traceMedia(volumes, segments, origin, direction, stop, result, sample, 
     aerialThrough = through;
   }
   function waterSurface(style, t, surface) {
-    const reflection = OpticalMaterials.waterReflection(style, origin[1], direction[1], t, surface);
+    const atSurface=Math.abs(origin[1]+t*direction[1]-surface)<=1e-6;
+    const reflection = style.reflection && !style.optical && atSurface ?
+      style.surface*(.16+.84*(1-Math.abs(direction[1]))**3) :
+      OpticalMaterials.waterReflection(style, origin[1], direction[1], t, surface);
     if (!reflection) return;
+    let reflected;
+    if (style.reflection && options?.reflection) {
+      const x = origin[0] + direction[0]*t, z = origin[2] + direction[2]*t, time = options.time ?? 0;
+      const flow=options.reflectionCurrent?.(x,surface-1e-5,z)?.current;
+      const px=x-(flow?.[0]??0)*time*.25,pz=z-(flow?.[2]??0)*time*.25;
+      const dx = Math.sin(px*3.1 + pz*1.9 + time*2), dz = Math.sin(-px*1.7 + pz*4.4 - time*1.6);
+      reflected = options.reflection(style.reflection, options.reflectionX, options.reflectionY, dx, 0, dz, options.reflectionBackground);
+    }
     for (let channel = 0; channel < 3; channel++) {
-      result[channel] += result[channel + 3] * reflection * style.surfaceColor[channel];
+      result[channel] += result[channel + 3] * reflection * style.surfaceColor[channel] * (reflected?.rgb[channel] ?? 1);
       result[channel + 3] *= 1 - reflection;
     }
   }
@@ -199,7 +217,7 @@ function mediaSampler(volumes, water, rayAt, width, horizon, options, aerial) {
   const fields = volumes.some(volume => volume.type === 'field' || volume.densityField);
   const tile = fields && options.jitter !== 'off' ? volumeNoise(options.seed) : null;
   const samples = fields ? options.samples : 1;
-  const query = { ...options, jitter: .5 };
+  const query = { ...options, reflectionCurrent:water?.mediumAt, jitter: .5 };
   let opacity = 0, fogCoverage = 0, cloudCoverage = 0, fogThrough = 1;
   const stats = { rays: 0, fallbackRays: 0, depthSamples: 0 };
   function shade(pixel, depth, rgb, geometry = true, fogScale = 1) {
@@ -217,6 +235,8 @@ function mediaSampler(volumes, water, rayAt, width, horizon, options, aerial) {
         values: new Float64Array(size) };
       if (ray.bounds?.ranges.length) ray.fullFog = [];
     }
+    query.reflectionX = pixel % width + .5;
+    query.reflectionY = Math.floor(pixel / width) + .5;
     const stop = Math.min(horizon, depth) / ray.axial;
     const useAerial = geometry && aerial && Number.isFinite(depth) && stop > aerial.start;
     fogCoverage = cloudCoverage = 0;
