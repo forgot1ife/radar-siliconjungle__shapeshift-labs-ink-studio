@@ -14,7 +14,7 @@
       function climate(ctx){
         const env={winter:ctx.environment.winter??0,rain:ctx.environment.rain??0,wx:ctx.environment.wx??0,wz:ctx.environment.wz??0};
         if(!Object.values(env).every(Number.isFinite))throw new RangeError('Fire climate values must be finite numbers');
-        env.winter=K.clamp(env.winter,0,1);env.rain=K.clamp(env.rain,0,1);return env;
+        env.winter=K.clamp(env.winter,0,1);env.rain=K.clamp(env.rain,0,1);env.wx=K.clamp(env.wx,-1,1);env.wz=K.clamp(env.wz,-1,1);return env;
       }
       function reset(){context=null;rng=(seed>>>0)||1;eco.reset(realm);lastHeat.fill(0);for(let i=0;i<domain.count;i++)capacity[i]=lastFuel[i]=domain.initial('fuel',i);}
       reset();
@@ -34,6 +34,8 @@
         step(ctx,h){
           context=ctx;
           try{
+            // The legacy fraction tracks a burn cycle; shared fuel and char own
+            // consumption and persistent damage across material/renderer types.
             const before=new Float32Array(domain.count);
             for(let i=0;i<domain.count;i++){
               const heat=ctx.read('heat',i),fuel=ctx.read('fuel',i);
@@ -54,7 +56,7 @@
         },
         save(){return {rng,solver:eco.capture(),lastHeat:lastHeat.slice(),lastFuel:lastFuel.slice(),capacity:capacity.slice()};},
         restore(state){
-          if(!state||!Number.isInteger(state.rng)||state.lastHeat?.length!==domain.count||state.lastFuel?.length!==domain.count||state.capacity?.length!==domain.count||
+          if(!state||!Number.isSafeInteger(state.rng)||state.rng<-2147483648||state.rng>4294967295||state.lastHeat?.length!==domain.count||state.lastFuel?.length!==domain.count||state.capacity?.length!==domain.count||
             !Array.from(state.capacity).every(v=>Number.isFinite(v)&&v>=0&&v<=1)||
             !Array.from(state.lastHeat).every(v=>Number.isFinite(v)&&v>=0&&v<=1)||!Array.from(state.lastFuel).every(v=>Number.isFinite(v)&&v>=0&&v<=1))throw new RangeError('Invalid ecology fire state');
           eco.restore(state.solver);rng=state.rng;lastHeat.set(state.lastHeat);lastFuel.set(state.lastFuel);capacity.set(state.capacity);context=null;

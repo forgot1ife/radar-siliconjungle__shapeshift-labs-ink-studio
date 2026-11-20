@@ -139,7 +139,7 @@
       fields,processes:runtimes.map(p=>({id:p.id,state:p.runtime.save()})),contacts,events,seen:[...seen]});}
     function restore(raw){
       idle();const s=copy(raw);check(s.format==='ink-ecology/1'&&s.signature===signature&&finite(s.time)&&s.time>=0&&Number.isSafeInteger(s.tick)&&s.tick>=0&&
-        finite(s.acc)&&s.acc>=0&&s.acc<step+.25&&Number.isSafeInteger(s.serial)&&s.serial>=0&&Number.isInteger(s.randomState),'Incompatible ecology snapshot');
+        finite(s.acc)&&s.acc>=0&&s.acc<step+.25&&Number.isSafeInteger(s.serial)&&s.serial>=0&&Number.isSafeInteger(s.randomState)&&s.randomState>=-2147483648&&s.randomState<=4294967295,'Incompatible ecology snapshot');
       check(record(s.fields)&&Object.keys(s.fields).length===channels.length&&channels.every(k=>Array.isArray(s.fields[k])&&s.fields[k].length===N&&s.fields[k].every(v=>finite(v)&&v>=definitions[k].min-1e-6&&v<=definitions[k].max+1e-6)),'Invalid ecology snapshot channels');
       check(Array.isArray(s.processes)&&s.processes.length===runtimes.length&&s.processes.every((p,i)=>p.id===runtimes[i].id)&&Array.isArray(s.contacts)&&s.contacts.length<=maxContacts&&Array.isArray(s.events)&&s.events.length<=maxEvents&&Array.isArray(s.seen)&&s.seen.length<=4096&&record(s.environment),'Invalid ecology snapshot processes or events');
       for(const c of s.contacts){check(name(c.type)&&vector(c.p,3)&&finite(c.time)&&c.time>=s.time&&finite(c.radius)&&c.radius>=0&&typeof c.id==='string'&&record(c.values??{}),'Invalid saved ecology contact');

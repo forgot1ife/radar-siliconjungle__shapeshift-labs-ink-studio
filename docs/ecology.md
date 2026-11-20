@@ -150,14 +150,17 @@ combustible material to an initially bare patch without changing neighbouring
 materials. The adapter checkpoints this local fuel capacity alongside its solver.
 
 Fire reads finite `rain`, `winter`, `wx` and `wz` environment values. Rain and
-winter are clamped to [0,1]; wind cannot create negative heat. Other processes
+winter are clamped to [0,1]. The directional wind biases `wx` and `wz` are
+clamped to [-1,1]; wind cannot create negative heat. Other processes
 can use their own environment fields. `setEnvironment(patch)` updates these
 inputs independently of presentation.
 
 The legacy `K.play.eco()` API remains available with its original grid defaults.
 It also accepts optional grid dimensions, origin, patch size and a random
 function. `capture`, `restore`, `sampleCell` and checked `setCell` support the
-adapter without replacing existing scene integrations.
+adapter without replacing existing scene integrations. A standalone legacy
+random function remains caller-owned; the shared adapter checkpoints its own
+isolated random stream.
 
 ## Contacts and simulation events
 
@@ -251,5 +254,6 @@ Budgets are 65,536 patches, 24 channels, 32 processes and 256 material types.
 Defaults allow 256 pending contacts and 1,024 output events; override with
 `maxContacts` and `maxEvents`. The event queue retains the newest records.
 Texture binding defaults to 262,144 texels and four million triangle visits.
+Snapshots also have a four-million-value serialization budget.
 These are allocation/work limits, not performance guarantees for every domain
 size or authored process. Keep simulation patch scale independent of render LOD.
