@@ -254,12 +254,21 @@
     const config = W.visualEnvironment(world,catalog);
     return K.weather.tracks.compile(config.skyEnvironment,config.weatherTracks);
   }
+  function timelineCommands(world, timeline) {
+    return (timeline?.events ?? []).map(({ id, time, kind, detail, path }) => {
+      const floor = Math.floor(time / world.dt);
+      const tick = Math.max(1, floor + Number(time > floor * world.dt));
+      return { tick, action: 'world/event', args: { ...detail, kind, timeline: { id, path, time } } };
+    });
+  }
   function prepare(source,{implementations} = {}) {
     const world = W.manifest(source), plan = compile(world,implementations);
     for (const command of world.commands) actionCheck(command,plan);
     scenarioCheck(world.scenario,plan);
     const catalog = W.materials.catalog(world);
-    W.validateLooks(world, catalog);
+    const visual = W.validateLooks(world, catalog);
+    const timeline = W.sceneTimeline(world);
+    for (const command of timelineCommands(world, timeline)) actionCheck(command,plan);
     const weather = weatherProgram(world,catalog);
     check(world.history === undefined || record(world.history), 'Invalid history policy');
     if (world.history?.where !== undefined) Q.condition(world.history.where,{});
@@ -273,12 +282,12 @@
     for (const [name,prefab] of Object.entries(world.prefabs)) {
       const sandbox = W.manifest({id:'prefab-check',prefabs:{[name]:prefab},assetPacks:world.assetPacks});
       const stamped = W.stamp(sandbox,name,'instance').world;
-      W.validateLooks({...stamped,visual:world.visual}, catalog);
+      W.validateLooks({...stamped,visual}, catalog);
       const prefabPlan = compile(stamped,implementations);
       for (const port of Object.values(stamped.entities.instance.ports))
         check(own(prefabPlan.ports.inputs,port) || own(prefabPlan.ports.outputs,port), 'Invalid public prefab port ' + port);
     }
-    return {world,plan,weather};
+    return {world,plan,weather,timeline};
   }
   const validate=(source,options)=>prepare(source,options).world;
   function create(source, {checkpoint,implementations,profile = false,validated = false,workerPool,regionRevisions,traceSteps} = {}, token) {
@@ -292,7 +301,7 @@
       result=prepare(edited,{implementations:installed});
       world=result.world;
     }
-    const {plan, weather = weatherProgram(world)}=result;
+    const {plan, weather = weatherProgram(world), timeline = W.sceneTimeline(world)}=result;
     const {systems,ports,incoming,order,names,transfers,dependencies,rates,chunks,aggregates,causePolicy} = plan;
     const regions=regionRevisions===undefined?null:W.regionRevisions.capture(world,regionRevisions,systems);
     const debug=traceSteps===undefined?null:W.stepDebug.capture(traceSteps);
@@ -500,7 +509,7 @@
         const initialView = view();
         weatherTrackState = weather.step(undefined,{time:0,view:initialView,query:Q.create(initialView,systems,projection)});
       }
-      enqueue([...world.commands,...(world.scenario?.commands ?? [])],false);
+      enqueue([...world.commands,...(world.scenario?.commands ?? []),...timelineCommands(world,timeline)],false);
     }
     const origin = save();
     regions?.publish(view());
@@ -822,7 +831,7 @@
       const trace=debug?.recording();
       return freeze({format:runFormat,version:1,origin,commands:added.slice(),end:save(),...(trace&&{trace})});
     }
-    return Object.freeze({view,query,step,advance,...(regions&&{regions:regions.api}),
+    return Object.freeze({view,query,step,advance,...(timeline&&{timeline}),...(regions&&{regions:regions.api}),
       ...(debug&&{stepFrame:debug.latest,stepAttempt:debug.attempt}),
       get scenario(){return scenario;}, get history(){return history;}, get events(){return lastEvents;},
       schedule:commands => enqueue(commands,true),checkpoint:save,recording,

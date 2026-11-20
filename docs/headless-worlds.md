@@ -667,7 +667,8 @@ connections and exposes public ports as `assembly/port`. Prefabs can require
 asset-pack IDs or exact revisions. `scene remix` modifies a definition and
 `scene capture` saves a placed, edited assembly under a new prefab ID.
 [Prefab upgrades](prefab-upgrades.md) migrate a placed assembly and
-check its dependencies and checkpoint state before saving.
+check its dependencies and checkpoint state before saving. The same tick can drive [shared parameter bindings](parameter-bindings.md) on world presentation.
+Use the [unified scene timeline](scene-timeline.md) to schedule world events and sample keyed presentation at that tick.
 
 `world/input` drives an unconnected typed input, `world/patch` edits live
 entity and metadata records, `world/event` emits a named event, and
