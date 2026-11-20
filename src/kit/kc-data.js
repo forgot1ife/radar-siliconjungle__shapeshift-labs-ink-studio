@@ -426,6 +426,11 @@
       bad('finish.look.afterimages', error.message);
     }
     try {
+      K.reconstruction.prepare(look?.reconstruction);
+    } catch (error) {
+      bad('finish.look.reconstruction', error.message);
+    }
+    try {
       SilhouetteProtection.prepare(look?.silhouetteProtection);
     } catch (error) {
       bad('finish.look.silhouetteProtection', error.message);

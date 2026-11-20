@@ -88,7 +88,7 @@ const SplatProvenance = (() => {
       }
     }
 
-    const moving = [], back = [], splatIds = [], surfaces = [], ramps = [], rampOff = [], pats = [], paintRows = [];
+    const moving = [], back = [], splatIds = [], surfaces = [], ramps = [], rampOff = [], pats = [], paintRows = [], paintDecals = [];
     const withIds = parts.some(part => part.splatIds ?? part.ids);
     const rampIds = new Map(), patternIds = new Map();
     let offset = 0;
@@ -121,12 +121,14 @@ const SplatProvenance = (() => {
       }
       for (const i of part.moving ?? []) moving.push(offset + i);
       for (const i of part.back ?? []) back.push(offset + i);
+      for (const row of part.paintDecals ?? []) paintDecals.push({ ...row, index: offset + row.index });
       for (const row of part.paintCorrections?.rows ?? []) paintRows.push({ ...row, index: offset + row.index });
       offset += part.count;
     }
     if (result.surfaceData) result.surfaces = surfaces;
     if (result.pix) Object.assign(result, { ramps, rampOff, pats });
     if (withIds) result.splatIds = Object.freeze(splatIds);
+    if (paintDecals.length) result.paintDecals = paintDecals;
     if (paintRows.length) result.paintCorrections = bindPaint(paintRows);
     return Object.assign(result, { renderMetadata: combineMetadata(parts, count),
       moving: Int32Array.from(moving), back: Int32Array.from(back) });
@@ -151,6 +153,8 @@ const SplatProvenance = (() => {
     }
     for (const key of ['moving', 'back']) result[key] = Int32Array.from(Array.from(world[key] ?? []).filter(i => remap.has(i)), i => remap.get(i));
     if (world.splatIds) result.splatIds = Object.freeze(indices.map(i => world.splatIds[i]));
+    if (world.paintDecals) result.paintDecals = world.paintDecals.filter(row => remap.has(row.index))
+      .map(row => ({ ...row, index: remap.get(row.index) }));
     if (world.paintCorrections) {
       const paintRows = world.paintCorrections.rows.filter(row => remap.has(row.index))
         .map(row => ({ ...row, index: remap.get(row.index) }));

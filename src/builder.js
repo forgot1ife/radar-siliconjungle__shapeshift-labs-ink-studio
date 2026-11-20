@@ -1027,9 +1027,12 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     if (pending) globalThis.INK_DECAL_NEXT = null;
     const paint = meta?.paint ?? pending, px = 1 / (meta?.detail || 12);
     const legacy = Array.isArray(paint) ? paint : paint?.decals ?? [];
-    for (const [x, y, z, nx, ny, nz, c] of legacy)
-      if (P[c])
-        disc(x + nx * px * 0.3, y + ny * px * 0.3, z + nz * px * 0.3, [nx, ny, nz], px * 0.6, px * 0.12, P[c], 3);
+    const paintDecals = [];
+    for (const [x, y, z, nx, ny, nz, c] of legacy) {
+      if (!P[c]) continue;
+      paintDecals.push({ index: n, at: [x, y, z], n: [nx, ny, nz] });
+      disc(x + nx * px * 0.3, y + ny * px * 0.3, z + nz * px * 0.3, [nx, ny, nz], px * 0.6, px * 0.12, P[c], 3);
+    }
     const correctionRows = [];
     if (paint?.layers !== undefined) {
       for (const group of PaintCorrections.groups(paint, px)) {
@@ -1044,6 +1047,7 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
       {
         data: data.subarray(0, n * 16),
         count: n,
+        ...(paintDecals.length && { paintDecals }),
         ...(correctionRows.length && { paintCorrections: PaintCorrections.bind(correctionRows) }),
         renderMetadata: renderRows(),
         ...(precipitationRanges.length && { precipitationRanges: precipitationRanges.slice() }),

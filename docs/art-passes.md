@@ -131,3 +131,5 @@ ink-studio atlas examples/art-effects.js --from 0 --to 1.2 --fps 12 --directions
 Use [artist-authored cards and impostors](impostor-atlases.md) to place the resulting atlas back into a scene.
 
 In Node, use `spriteAtlas(world, { width, height, directions, times, fps, pivot, view, maps, pose })`. Supply a `pose(world, time)` callback for scenes that need to advance a stateful timeline or pose a rig. A separate effect history is kept for each direction.
+
+For keyed fragmentation and reassembly with stable ownership, see [world-space reveal and reconstruction](world-reconstruction.md).

@@ -17,6 +17,13 @@ import { prepareMaskRows } from './contribution-plan.mjs';
 
 const zero = new Float32Array(4);
 const empty = new Float32Array(0);
+const reconstructionSource = Symbol('reconstruction source');
+
+function reconstruct(toolkit, world, frame, definition) {
+  const api = toolkit.KIT?.reconstruction;
+  if (!api) throw new Error('World reconstruction needs the Ink Studio KIT');
+  return api.frame(world, frame.time ?? world.lookSnapshot?.time ?? 0, definition);
+}
 const rgb = hex => [(hex >> 16 & 255) / 255, (hex >> 8 & 255) / 255, (hex & 255) / 255];
 
 function palette(values, max = 64) {
@@ -379,7 +386,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       // The toolkit caches anchors on its input. Keep that cache private to
       // this upload so a replaced material table can rebuild the sprite list.
       const { count, data, detail, pix, pats } = world;
-      const points = pixel.anchors({ count, data, detail, pix, pats });
+      const points = world.reconstructionPose ? world._anchors : pixel.anchors({ count, data, detail, pix, pats });
       if (!points?.n) return;
       spriteProgram ??= resources.program(sources.SPR_VS, sources.SPR_FS);
       spriteLayer ??= target(1, { depth: true });
@@ -584,9 +591,22 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       return plan;
     }
 
+    const reconstructionInstances = createExpandedInstances(), portalReconstructionInstances = createExpandedInstances();
+    function reconstructFrame(world, frame, expand) {
+      const definition = frame.reconstruction ?? world.look?.reconstruction;
+      if (definition === undefined || definition === false) return { world, frame };
+      const source = world, layout = frame.instances;
+      const expanded = layout ? expand(world, layout, frame.changedRows) : null;
+      const posed = reconstruct(toolkit, expanded?.world ?? world, frame, definition);
+      if (posed === (expanded?.world ?? world)) return { world, frame };
+      return { world: posed, frame: { ...frame, [reconstructionSource]: { source, layout }, instances: undefined,
+        changedRows: undefined } };
+    }
+
     function render(world, frame, width, height, output, cameraOverride, plane = zero, cover, reflectionCapture = false,
       reflectedTrailStart = 0) {
-      const source = world, histories = plane === zero ? mainTransparency : portalTransparency;
+      const reconstruction = frame[reconstructionSource];
+      const source = reconstruction?.source ?? world, histories = plane === zero ? mainTransparency : portalTransparency;
       const camera = cameraOverride ?? makeCamera(world, frame, width, height);
       if (world.shadowLod && frame.shadowArt !== false)
         world = toolkit.KIT?.shadowArt?.frame(world, camera.shadowFootprint) ?? world;
@@ -619,7 +639,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       if (rules.length) {
         const time = frame.time ?? world.lookSnapshot?.time ?? 0;
         const poseTime = frame.stepAnimation !== false && look.pixel ? Math.floor(time * 10) / 10 : time;
-        const rows = trailHistory.frame(world, time, rules, { source, layout: frame.instances, poseTime, bornAt: frame.bornAt,
+        const rows = trailHistory.frame(world, time, rules, { source, layout: reconstruction?.layout ?? frame.instances, poseTime, bornAt: frame.bornAt,
           withdrawal: frame.sampleWithdrawal ?? world.sampleWithdrawal ?? 0 });
         if (rows.length) {
           trailStart = world.count;
@@ -1039,9 +1059,10 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         const nextCamera = withCameraPose(camera, opening.camera(cameraPose(camera)));
         const { raw, outline, dither, scale, clean, lineClean, colored, tone, edges, water, time, stepAnimation, environment,
           stableTransparency, resetTransparency } = frame;
-        render(portal.destination, { raw, outline, dither, scale, clean, lineClean, colored, tone, edges, water, time,
-          stepAnimation, environment, stableTransparency, resetTransparency, ...portal.destinationFrame, damp: false }, width, height, portalDestination.framebuffer,
-          nextCamera, anchorPlane(opening.to));
+        const destination = reconstructFrame(portal.destination, { raw, outline, dither, scale, clean, lineClean, colored, tone,
+          edges, water, time, stepAnimation, environment, stableTransparency, resetTransparency, ...portal.destinationFrame, damp: false },
+          portalReconstructionInstances);
+        render(destination.world, destination.frame, width, height, portalDestination.framebuffer, nextCamera, anchorPlane(opening.to));
       }
       const spriteCover = render(world, visible ? { ...frame, damp: false } : frame, width, height,
         portalSource.framebuffer, camera, zero, visible ? { buffer: portalMask, plane: front } : undefined);
@@ -1076,6 +1097,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
     }
     let renderGraph;
     function presentFrame(world, frame, width, height, output) {
+      ({ world, frame } = reconstructFrame(world, frame, reconstructionInstances));
       const definition = frame.renderGraph ?? world.look?.renderGraph;
       if (definition === false || definition === undefined) return presentMixed(world, frame, width, height, output);
       const api = toolkit.KIT?.renderGraph;
@@ -1106,6 +1128,7 @@ export function createRenderer(canvas, { toolkit, specialize = true, reuseOrder 
   if (!gl) throw new Error('Ink Studio GPU rendering requires WebGL 2');
   let backend = createBackend(gl, toolkit, specialize, reuseOrder);
   let disposed = false, picking;
+  const pickInstances = createExpandedInstances();
   const lose = event => {
     event.preventDefault();
     // The restored context cannot delete or reuse the old resources.
@@ -1175,11 +1198,17 @@ export function createRenderer(canvas, { toolkit, specialize = true, reuseOrder 
       const group = frame.instances, revision = group && instancePlan(group).revision;
       const time = frame.time ?? world.lookSnapshot?.time ?? 0;
       const withdrawal = frame.sampleWithdrawal ?? world.sampleWithdrawal ?? 0;
+      const definition = frame.reconstruction ?? world.look?.reconstruction;
+      const reconstruction = definition === undefined || definition === false ? undefined : JSON.stringify(definition);
       if (picking?.world !== world || picking.data !== world.data || picking.count !== world.count || picking.opticalSplats !== world.opticalSplats ||
           picking.group !== group || picking.revision !== revision || picking.withdrawal !== withdrawal ||
-          picking.time !== time && (world.moving?.length || world.grow || world.anim?.bones)) {
-        const picker = create(group ? group.flatten(world) : world,{ time,sampleWithdrawal:withdrawal });
-        picking = { world,data:world.data,count:world.count,opticalSplats:world.opticalSplats,group,revision,time,withdrawal,picker };
+          picking.reconstruction !== reconstruction || picking.time !== time &&
+            (reconstruction !== undefined || world.moving?.length || world.grow || world.anim?.bones)) {
+        let posed = group ? pickInstances(world, group, frame.changedRows).world : world;
+        if (reconstruction !== undefined) posed = reconstruct(toolkit, posed, frame, definition);
+        const picker = create(posed, { time, sampleWithdrawal: withdrawal });
+        picking = { world, data: world.data, count: world.count, opticalSplats: world.opticalSplats,
+          group, revision, time, withdrawal, reconstruction, picker };
       }
       return picking.picker.ray({ water:frame.water !== false,...ray });
     },

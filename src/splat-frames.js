@@ -7,11 +7,12 @@ const SplatFrames = (() => {
   }
 
   function create(world, time, M) {
-      const { renderMetadata, pix, surfaceData, anim, data, rest } = world;
+    const { renderMetadata, pix, surfaceData, anim, data, rest, reconstructionPose } = world;
     const rig = anim?.rig, bones = anim?.bones;
     const matrices = new Map();
     function sample(i) {
       const offset = i * 3, p = i * 8, surfaceOffset = i * surface.STRIDE, q = i * 16;
+      const fragment = reconstructionPose?.poses.get(i);
       let normal;
       if (pix?.[p]) normal = [pix[p + 3], pix[p + 4], pix[p + 5]];
       else if (renderMetadata?.normals?.[offset] || renderMetadata?.normals?.[offset + 1] || renderMetadata?.normals?.[offset + 2])
@@ -44,7 +45,8 @@ const SplatFrames = (() => {
       if (normal && angle) normal = [c * normal[0] + s * normal[2], normal[1], c * normal[2] - s * normal[0]];
       const length = normal && Math.hypot(...normal);
       return { normal: length > 1e-8 ? normal.map(value => value / length) : null,
-        rest: (skinned ? restData : anim?.base instanceof Float32Array ? anim.base : rest || data).subarray(q, q + 3),
+        rest: (fragment ? reconstructionPose.base : skinned ? restData :
+          anim?.base instanceof Float32Array ? anim.base : rest || data).subarray(q, q + 3),
         position() {
           let x = data[q], y = data[q + 1], z = data[q + 2];
           const ph = data[q + 12], sp = data[q + 13], rg = data[q + 14], ex = data[q + 15];
@@ -90,11 +92,12 @@ const SplatFrames = (() => {
         basis() {
           const orbit = angle ? [c, 0, s, 0, 1, 0, -s, 0, c] : null;
           const posed = transform?.basis;
-          return { anchor: orbit && posed ? M.mul(orbit, posed) : orbit || posed || M.id(),
+          return { anchor: fragment?.rotation ?? (orbit && posed ? M.mul(orbit, posed) : orbit || posed || M.id()),
             covariance: kind === 12 || kind === 13 ? posed : orbit };
         },
         localOffset(x, y, z) {
           const offset = [c * x - s * z, y, c * z + s * x];
+          if (fragment?.transpose) return M.app(fragment.transpose, offset);
           return transform ? M.app(transform.inverse, offset) : offset;
         }
       };

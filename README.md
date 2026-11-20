@@ -754,6 +754,7 @@ Common rendering controls:
 | `--splat-order center\|surface` | Choose global center ordering or local ordering using the sampled surface plane. |
 | `--stable-transparency on\|off` | Stabilize close translucent layers through camera motion. |
 | `--afterimages file.json\|off` | Set scene-space object and surface trails. See [motion-aware afterimages](docs/motion-afterimages.md). |
+| `--reconstruction file.json\|off` | Animate fragmentation and reassembly of selected splats. See [world-space reveal and reconstruction](docs/world-reconstruction.md). |
 | `--composite file.json\|off` | Set independent world and screen-layer resolutions. See [mixed-resolution compositing](docs/mixed-resolution.md). |
 | `--render-graph file.json\|off` | Order and scope screen-space passes. See [the render graph](docs/render-graph.md). |
 | `--volume-scale`, `--volume-steps`, `--volume-jitter` | Override the atmosphere volume's sampling settings. |

@@ -103,8 +103,11 @@ module.exports = {
   readRasterAsset(file) {
     return require('./cli/raster-asset.js').readRasterAsset(file, module.exports.load().KIT.procedural.graph.raster);
   },
-  createSplatPicker(world, options) {
-    return module.exports.load().KIT.procedural.contributions.create(world, options);
+  createSplatPicker(world, options = {}) {
+    const K = module.exports.load().KIT;
+    const time = options.time ?? world.lookSnapshot?.time ?? 0;
+    const posed = K.reconstruction.frame(world, time, options.reconstruction ?? world.look?.reconstruction);
+    return K.procedural.contributions.create(posed, options);
   },
   createSimulationWorkers: require('./src/simulation-worker-pool.js'),
   openCheckpointStore: require('./src/simulation-checkpoint-store.js').openCheckpointStore,

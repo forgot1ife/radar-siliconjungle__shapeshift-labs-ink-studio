@@ -107,8 +107,15 @@ function viewMatrix(yaw, pitch, dist, T) {
 }
 // o: t (seconds), yaw, pitch, dist, target, w, h (the size of the stage in screen pixels), zoom (1 = the diorama's own distance), raw (skip the palette)
 const afterimageRows = Symbol('afterimage rows');
+const reconstructionSource = Symbol('reconstruction source');
 
 function render(world, o, preparedPalettes) {
+  const reconstruction = o?.reconstruction ?? world.look?.reconstruction;
+  if (reconstruction !== undefined && reconstruction !== false && !o?.[reconstructionSource]) {
+    const source = world, time = o?.t ?? world.lookSnapshot?.time ?? 0;
+    world = require('../index.js').load().KIT.reconstruction.frame(world, time, reconstruction);
+    o = { ...o, [reconstructionSource]: source };
+  }
   if (o?.afterimageHistory && !o[afterimageRows] && !o.samples && !o.captureCoverage) {
     const definition = o.afterimages ?? world.look?.afterimages;
     if (o.resetAfterimages || definition === false || definition === undefined) o.afterimageHistory.clear();
@@ -117,7 +124,7 @@ function render(world, o, preparedPalettes) {
       const time = o.t ?? world.lookSnapshot?.time ?? 0;
       const direction = ArtDirection.prepare(world.look?.artDirection, o.artDirection);
       o = { ...o, [afterimageRows]: o.afterimageHistory.frame(world, time, rules, {
-        poseTime: ArtDirection.time(direction, time), withdrawal: o.sampleWithdrawal ?? world.sampleWithdrawal ?? 0
+        source: o[reconstructionSource] ?? world, poseTime: ArtDirection.time(direction, time), withdrawal: o.sampleWithdrawal ?? world.sampleWithdrawal ?? 0
       }) };
     }
   }
@@ -246,7 +253,7 @@ function renderFrame(world, o, preparedPalettes) {
   const finishLook = (frame, passes, fog, effectSignals, source) => {
     if (ink) frame = ArtInk.apply(frame, passes, ink, world.pal, fog);
     if (effects) frame = ArtEffects.apply(frame, passes, effects, t, {
-      history: o.artHistory, world, palette: world.pal, motionReference: frame.motionReference
+      history: o.artHistory, world: o[reconstructionSource] ?? world, palette: world.pal, motionReference: frame.motionReference
     });
     const ditherAt = anchoring ? (x,y) => ArtStability.ditherCoordinates(stable, passes, y*frame.w+x, x, y) : undefined;
     if (styled && stages?.post) RenderStages.finish(frame, stages, passes, t, lookPass?.post, audit, ditherAt);
@@ -294,7 +301,7 @@ function renderFrame(world, o, preparedPalettes) {
     time:sceneTime, skyTime:ArtDirection.time(direction,o.skyTime ?? sceneTime,'environment'), camera:{ target:Array.from(T), yaw, pitch, distance:dist, lensScale, orthographic:!!o.ortho },
     art:{ width:W, height:H, pixelSize:px }
   });
-  const historyFrames = effects?.smear && o.artHistory ? o.artHistory.previous(t, W, H, world) : [];
+  const historyFrames = effects?.smear && o.artHistory ? o.artHistory.previous(t, W, H, o[reconstructionSource] ?? world) : [];
   const motionFrame = historyFrames[Math.max(0, historyFrames.length - (effects?.smear?.frames || 1))];
   const motionFrom = o.motionFrom ?? motionFrame?.motionReference;
   const captureMotion = !!o.captureMotion || passSelection.has('motion') || passSelection.has('emissionMotion');
@@ -389,7 +396,7 @@ function renderFrame(world, o, preparedPalettes) {
   const relative = SplatRelighting.frame(world, o, climate);
   const lightingOptions = (o.relighting ?? world.relighting) ? { ...o, liveSun: false } : o;
   const { celestial,sun,flash,clouds } = resolveLighting(world,lightingOptions,climate,windState,direction);
-  const transparencySource = world.data;
+  const transparencySource = o[reconstructionSource]?.data ?? world.data;
   const shadowFootprint = 2 * dist * tangent * (o.artGridScale || 1) / H;
   if (!sun && o.shadowArt !== false) world = ShadowArt.frame(world, shadowFootprint);
   const travel = (at, birth, time) => {
