@@ -354,6 +354,8 @@ console.log(pose.head.rot);
 
 Clip pose rotations use degrees; matrix rotations and many geometry options use radians. Check the relevant module's opening API comment before combining the two.
 
+Use [route followers and events](docs/route-followers.md) for loop-safe vehicle frames, banking, speed sections, station stops, arc-length train spacing and events scheduled ahead of a vehicle. `K.anim.route` consumes an arc-length path and returns poses and timestamps for any renderer or simulation.
+
 Additional animation APIs include `K.anim.machine`, `K.anim.face`, `K.anim.path`, `K.anim.steer`, `K.anim.track` and `K.anim.support`. Deformation maps include body squash/stretch, noodles, folds, lattices, morphs, smears, reaction fields, foliage and line boil. Apply maps on the CPU with `K.deform.apply`, or use puppet/bone skinning with an appropriate host renderer.
 
 Use [pose blocking and the pose shelf](docs/pose-blocking.md) to hold named story poses, draft in-betweens, and apply reusable poses to a puppet. The `pose-review` command checks the same landmarks as silhouettes at the size and angles of a directional sprite atlas.
