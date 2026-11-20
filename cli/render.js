@@ -736,7 +736,7 @@ function renderFrame(world, o, preparedPalettes) {
   }
   const mediaOptions = (water || aerial || cloudView) && atmosphereOptions();
   const hazeCoverage = effectRules?.ramps.get('fog')?.geometry && world.fog.max > 0 && new Float32Array(W * H);
-  const rayMedia = mediaOptions && mediaSampler(volumes, water, rayAt, W, mediumHorizon, mediaOptions, air);
+  const rayMedia = mediaOptions && mediaSampler(volumes, water, rayAt, W, mediumHorizon, { ...mediaOptions, reflection, reflectionBackground: bg }, air);
   const retainLayers = retainContributions || Boolean(rayMedia);
   const col = new Float32Array(W * H * 3),
     dep = new Float32Array(W * H),

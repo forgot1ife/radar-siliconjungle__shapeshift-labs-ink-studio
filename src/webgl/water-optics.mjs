@@ -27,6 +27,7 @@ uniform vec4 u_waterTint[8], u_waterLoss[8], u_waterHighlight[8];
 
 struct WaterStyle {
   vec4 tint, loss, highlight;
+  int index;
   #ifdef WATER_ATLAS
   vec4 deep, sediment, depth;
   #else
@@ -36,10 +37,10 @@ struct WaterStyle {
 WaterStyle readWaterStyle(int i) {
   #ifdef WATER_ATLAS
   int at = u_waterStyleBase + i * 6;
-  return WaterStyle(waterTexel(at), waterTexel(at + 1), waterTexel(at + 2),
+  return WaterStyle(waterTexel(at), waterTexel(at + 1), waterTexel(at + 2), i,
     waterTexel(at + 3), waterTexel(at + 4), waterTexel(at + 5));
   #else
-  return WaterStyle(u_waterTint[i], u_waterLoss[i], u_waterHighlight[i], u_waterMax[i].w);
+  return WaterStyle(u_waterTint[i], u_waterLoss[i], u_waterHighlight[i], i, u_waterMax[i].w);
   #endif
 }
 uniform mat4 u_waterView;
@@ -47,6 +48,38 @@ uniform vec3 u_waterEye;
 uniform vec3 u_waterCamera;
 uniform vec4 u_arrivalPlane;
 uniform float u_waterTime;
+
+// Captures reuse the same body/style index in the column and atlas layouts.
+uniform sampler2D u_waterReflections;
+uniform int u_waterReflectionBase, u_waterReflectionCount;
+uniform vec4 u_waterReflectionActive, u_waterReflectionHeights;
+uniform vec2 u_waterReflectionGrid, u_waterReflectionViewport;
+uniform mat4 u_waterProjection;
+vec3 waterReflectedColor(WaterStyle style, vec3 p, vec2 ripple) {
+  if (u_waterReflectionCount == 0) return style.highlight.rgb;
+  int offset = u_waterReflectionBase + style.index;
+  int width = textureSize(u_waterData, 0).x;
+  vec3 binding = texelFetch(u_waterData, ivec2(offset % width, offset / width), 0).xyz;
+  int slot = int(binding.x) - 1;
+  if (slot < 0 || u_waterReflectionActive[slot] == 0.0 || abs(p.y-u_waterReflectionHeights[slot]) > 0.002) return style.highlight.rgb;
+  vec4 clip = u_waterProjection * u_waterView * vec4(p, 1.0);
+  vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
+  vec2 normal = (mat3(u_waterView) * vec3(ripple.x, 0.0, ripple.y)).xy;
+  uv += binding.y * normal / u_waterReflectionViewport;
+  vec2 tile = vec2(slot % 2, slot / 2), size = vec2(textureSize(u_waterReflections, 0)) / u_waterReflectionGrid;
+  vec2 edge = 0.5 / size;
+  vec2 at = (tile + clamp(uv, edge, 1.0-edge)) / u_waterReflectionGrid;
+  vec3 reflected = texture(u_waterReflections, at).rgb;
+  if (binding.z > 0.0) {
+    vec2 blur = binding.z / u_waterReflectionViewport;
+    reflected *= 0.4;
+    reflected += texture(u_waterReflections,(tile+clamp(uv+vec2(blur.x,0),edge,1.0-edge))/u_waterReflectionGrid).rgb * 0.15;
+    reflected += texture(u_waterReflections,(tile+clamp(uv-vec2(blur.x,0),edge,1.0-edge))/u_waterReflectionGrid).rgb * 0.15;
+    reflected += texture(u_waterReflections,(tile+clamp(uv+vec2(0,blur.y),edge,1.0-edge))/u_waterReflectionGrid).rgb * 0.15;
+    reflected += texture(u_waterReflections,(tile+clamp(uv-vec2(0,blur.y),edge,1.0-edge))/u_waterReflectionGrid).rgb * 0.15;
+  }
+  return reflected * style.highlight.rgb;
+}
 
 bool waterSlab(inout vec2 interval, float p, float d, float low, float high) {
   if (abs(d) < 1e-8) return p >= low && p < high;
@@ -104,7 +137,7 @@ void waterSurface(int body, vec3 p, vec3 ray, vec4 column, WaterStyle style, ino
     reflection = f0 > 0.0 ? f0 + (1.0 - f0) * pow(1.0 - abs(ray.y), 5.0) : 0.0;
   }
   float opacity = clamp(reflection + foam, 0.0, 1.0);
-  light += through * mix(highlight.rgb, vec3(0.9, 0.98, 0.94), foam) * opacity;
+  light += through * mix(waterReflectedColor(style, p, ripple), vec3(0.9, 0.98, 0.94), foam) * opacity;
   through *= 1.0 - opacity;
   #ifdef WATER_ATLAS
   float refraction = style.deep.w;

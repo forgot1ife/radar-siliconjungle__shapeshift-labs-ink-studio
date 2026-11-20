@@ -1,3 +1,4 @@
+import { waterReflectionPlan, selectReflectionWorld } from './reflections.mjs';
 import { createSurfacePipeline } from './surfaces.mjs';
 import { createResources } from './resources.mjs';
 import { createTargets } from './targets.mjs';
@@ -103,7 +104,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
     const wetVariants = new Map();
     let wetGeometry, wetContours, waterTexture, packedWater, maskOwner, glassBoundary, dryGlassGeometry, wetGlassGeometry;
     let portalSource, portalDestination, portalMask, portalSpriteLayer, portalProgram;
-    let lastWater, lastWaterTime, waterWidth = 0, waterHeight = 0;
+    let lastWater, lastWaterTime, uploadedWater, waterWidth = 0, waterHeight = 0;
     let waterLookSource, waterLookPlan, waterOpticalPlan, mappedWater;
     let opticsDefinition, opticsWorld, opticsPlan, opticsTime;
     const cleaned = target(), finished = target(), history = [target(), target()];
@@ -127,7 +128,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
     let rasterKey = 0;
     const sort = createDepthSorter(), transparencyAPI = toolkit.KIT?.procedural?.splatOrder;
     const mainTransparency = new WeakMap(), portalTransparency = new WeakMap();
-    let surfacePipeline;
+    let surfacePipeline, reflectionTarget, reflectionAtlas, reflectionAtlasSize;
     let simple, simpleUnavailable = false, keyProgram, damp, copy, spriteProgram, spriteEnvProgram, spriteLayer, spriteTable, anchors;
     let lastWorld, lastData, lastCount, lastOutput, lastDetail, lastEnvironment, fineValues, materials, anchorCount = 0;
     let packed = empty, historyIndex = 0, historyValid = false, previousVP, previousColorGrade;
@@ -390,11 +391,11 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       anchorCount = points.n;
     }
 
-    function waterUniforms(scene, camera, time, plane) {
+    function waterUniforms(scene, camera, time, plane, captures, width, height) {
       if (!scene) return null;
       waterTexture ??= resources.texture();
       textureUnit(3, waterTexture);
-      if (scene !== lastWater || !packedWater) {
+      if (scene !== uploadedWater || !packedWater) {
         const { width, height, data, uniforms } = scene.pack();
         if (width === waterWidth && height === waterHeight)
           gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA, gl.FLOAT, data);
@@ -404,9 +405,13 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
           waterHeight = height;
         }
         packedWater = uniforms;
+        uploadedWater = scene;
       }
       return { ...packedWater, u_waterData: 3, u_waterView: camera.view, u_waterEye: camera.eye, u_arrivalPlane: plane,
-        u_waterCamera: [camera.tangent * camera.aspect, camera.tangent, +camera.ortho], u_waterTime: time };
+        u_waterCamera: [camera.tangent * camera.aspect, camera.tangent, +camera.ortho], u_waterTime: time,
+        u_waterReflections: captures ? 23 : 0, u_waterReflectionCount: captures?.count ?? 0,
+        u_waterReflectionActive: captures?.active ?? zero, u_waterReflectionHeights: captures?.heights ?? zero,
+        u_waterReflectionGrid: captures?.grid ?? [2,1], u_waterReflectionViewport:[width,height], u_waterProjection:camera.projection };
     }
 
     function wetVariant(water, media) {
@@ -467,7 +472,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         buffer.ensureDepth();
         gl.enable(gl.DEPTH_TEST);gl.depthFunc(gl.LEQUAL);gl.depthMask(true);
         gl.clearBufferfv(gl.DEPTH,0,[1]);gl.disable(gl.BLEND);
-        surfacePipeline.draw(options.surfaces,options.surfaceFrame);
+        surfacePipeline.draw(options.surfaces,{...options.surfaceFrame,water,wet,width,height});
         data.bind();
         gl.depthMask(false);
         if(!options.u_idx){gl.enable(gl.BLEND);gl.blendFunc(gl.ONE,gl.ONE_MINUS_SRC_ALPHA);}
@@ -537,12 +542,46 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       return buffer.textures[1];
     }
 
-    function render(world, frame, width, height, output, cameraOverride, plane = zero, cover) {
+    function captureWater(world, frame, camera, width, height) {
+      const plan = waterReflectionPlan(world, frame, camera, width, height, toolkit.KIT?.reflection);
+      if (!plan?.captures.length) return null;
+      reflectionTarget ??= target();
+      reflectionTarget.resize(plan.width,plan.height);
+      reflectionAtlas ??= resources.texture();
+      const size = [plan.width*plan.grid[0],plan.height*plan.grid[1]];
+      textureUnit(23,reflectionAtlas);
+      if (!sameValues(reflectionAtlasSize,size)) {
+        gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,...size,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+        reflectionAtlasSize=size;
+      }
+      // Read the current geometry each frame; no baked or manually synchronized mirror splats.
+      for (const capture of plan.captures) {
+        let source = world, instances = frame.instances;
+        if (instances && capture.plane.select) {
+          expandInstances ??= createExpandedInstances();
+          source = expandInstances(world,instances,frame.changedRows).world;
+          instances = undefined;
+        }
+        source = selectReflectionWorld(source,capture.plane,frame.time??0,toolkit);
+        render(source,{...frame,instances,order:undefined,changedRows:undefined,water:false,reflections:false,
+          raw:frame.raw??false,outline:false,dither:0,damp:false,edges:false,clean:false,tone:false},
+          plan.width,plan.height,reflectionTarget.framebuffer,capture.camera,capture.equation,undefined,true);
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER,reflectionTarget.framebuffer);
+        textureUnit(23,reflectionAtlas);
+        gl.copyTexSubImage2D(gl.TEXTURE_2D,0,(capture.slot%2)*plan.width,
+          Math.floor(capture.slot/2)*plan.height,0,0,plan.width,plan.height);
+      }
+      gl.activeTexture(gl.TEXTURE0);
+      return plan;
+    }
+
+    function render(world, frame, width, height, output, cameraOverride, plane = zero, cover, reflectionCapture = false) {
       const source = world, histories = plane === zero ? mainTransparency : portalTransparency;
       const camera = cameraOverride ?? makeCamera(world, frame, width, height);
       if (world.shadowLod && frame.shadowArt !== false)
         world = toolkit.KIT?.shadowArt?.frame(world, camera.shadowFootprint) ?? world;
       const { raw = false, outline = true, dither = 0.35, scale = 1 } = frame;
+      const captures = captureWater(world,frame,camera,width,height);
       const look = world.look ?? {};
       const tolerance = transparencyAPI?.transparency(frame.stableTransparency ?? look.stableTransparency)?.depthTolerance ?? 0;
       const budget = raw ? null : detailAPI?.prepare(look.detailBudgets);
@@ -578,7 +617,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
           blueNoise: toolkit.KIT?.procedural?.materials?.blueNoise });
       }
       const optical = raw ? null : opticsPlan;
-      if (sourceWater !== waterLookSource || constraints !== waterLookPlan || optical !== waterOpticalPlan) {
+      if (sourceWater && (sourceWater !== waterLookSource || constraints !== waterLookPlan || optical !== waterOpticalPlan)) {
         waterLookSource = sourceWater;
         waterLookPlan = constraints;
         waterOpticalPlan = optical;
@@ -586,7 +625,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
           sourceWater.mapColors((medium, mediumKind) => optical?.transform({ kind: 'medium', medium, mediumKind }) ??
             toolkit.PixelLook.mediumTransform(constraints, { medium, mediumKind })) : sourceWater;
       }
-      const waterScene = mappedWater;
+      const waterScene = sourceWater ? mappedWater : null;
       if (waterScene) {
         wetGeometry ??= target(3);
         wetContours ??= target(3);
@@ -665,7 +704,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       }
       const clip = plane === zero ? zero : planeInView(plane, camera);
       const t = frame.time ?? world.lookSnapshot?.time ?? 0;
-      const water = waterUniforms(waterScene, camera, t, plane);
+      const water = waterUniforms(waterScene, camera, t, plane, captures, width, height);
       const env = environment.prepare(world,frame,camera,t,width,height);
       if (env || lastEnvironment) historyValid = false;
       lastEnvironment = !!env;
@@ -739,7 +778,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       const colorGrade = !raw && !definition && hasColorGrade &&
         toolkit.PixelLook.colorGrade(world.pal, world.paletteRoles, world.anim?.grade,
           remapDefinition, curveDefinition, lutDefinition, stackDefinition);
-      const grade = colorGrade || world.anim?.grade;
+      const grade = reflectionCapture ? null : colorGrade || world.anim?.grade;
       if (masked) bindMaskSites(world,dirty);
       if (constraints?.textured) textureUnit(14,maskTexture);
       if (constraints && (coverage || masked)) {
