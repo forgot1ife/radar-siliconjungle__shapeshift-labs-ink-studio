@@ -375,7 +375,7 @@ export function pixelShaderSources(PixelLook, { water = false, airPockets = fals
 void main(){ vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
   const POST_FS = `#version 300 es
 precision highp float;
-${paletteConstraints ? 'precision highp int;' : ''}
+precision highp int;
 uniform sampler2D u_scene, u_depth, u_crispScene, u_crispDepth;
 uniform vec3 u_line;
 uniform float u_edge;
@@ -629,6 +629,15 @@ const ivec2 N4o[4] = ivec2[4](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 
 /* edge sprites (K.pixel.edge, an option): drawn first in a pass of their own (SPR_VS / SPR_FS: each stands on a point pinned to its
    surface), into u_sprLayer: which cell (8 + steps from the edge's own colour, or 100 + a palette colour), ramp and band */
 uniform highp sampler2D u_sprLayer; uniform float u_sprOn, u_markA; bool g_spr = false;
+uniform highp sampler2D u_detailFlags; uniform bool u_detailCleanup;
+// Keep detail flags in the resolve alpha channel. Half alpha marks pixels the cleaner already preserves.
+float detailAlpha(ivec2 p) {
+  if (!u_detailCleanup) return 1.0;
+  int i = dabAt(p);
+  if (i < 0) return 1.0;
+  float flags = texelFetch(u_detailFlags, ivec2((i >> 2) & 511, i >> 11), 0)[i & 3];
+  return 1.0 - (flags + 8.0) / 255.0;
+}
 vec3 pixColour(ivec2 p, vec3 c) {
   int i = dabAt(p); if (i < 0) return c; vec4 A = pixA(i); if (A.x < 0.5) return c;
   // (only where the dab is what shows: nothing soft in front of it, no light carried onto it)
@@ -836,24 +845,38 @@ void main(){
 ${water ? '  p = waterPixel(p);' : ''}
   if (u_bypass > 0.5) { o = vec4(texelFetch(u_scene, p, 0).rgb, 1.0); return; }
   vec3 c0 = lookAt(p);
-  o = vec4(c0, (g_spr${paletteConstraints ? ' || g_constrained' : ''}) && u_markA > 0.5 ? 0.5 : 1.0);
+  o = vec4(c0, (g_spr${paletteConstraints ? ' || g_constrained' : ''}) && u_markA > 0.5 ? 0.5 : detailAlpha(p));
 }`;
   const CLEAN_FS = `#version 300 es
 precision highp float;
 uniform sampler2D u_look, u_dep;
 uniform float u_keep, u_lineClean;
+uniform bool u_scopedOnly, u_hasDetailFlags;
 out vec4 o;
 bool like(vec3 a, vec3 b) { vec3 d = abs(a - b); return max(d.r, max(d.g, d.b)) < 0.004; }
 vec3 at(ivec2 p) { return texelFetch(u_look, clamp(p, ivec2(0), textureSize(u_look, 0) - 1), 0).rgb; }
 float dp(ivec2 p) { ivec2 q = clamp(p, ivec2(0), textureSize(u_dep, 0) - 1); return texelFetch(u_look, q, 0).a < 0.75 ? 0.5 : texelFetch(u_dep, q, 0).r; }
 const ivec2 N8[8] = ivec2[8](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1), ivec2(-1, -1), ivec2(1, -1), ivec2(-1, 1), ivec2(1, 1));
+int detailFlags(float alpha) { return alpha < 0.75 ? 0 : int(round((1.0 - alpha) * 255.0)); }
+bool protects(int flags) { return (flags & 6) != 0; }
 int likes(ivec2 p, vec3 c, out ivec2 one) { int n = 0; one = p; for (int i = 0; i < 8; i++) if (like(c, at(p + N8[i]))) { n++; one = p + N8[i]; } return n; }
 void main(){
   ivec2 p = ivec2(gl_FragCoord.xy); vec3 c0 = at(p); ivec2 q, q2;
-  if (texelFetch(u_look, p, 0).a < 0.75) { o = vec4(c0, 1.0); return; }   // (an edge sprite, drawn as its author drew it)
+  float alpha = texelFetch(u_look, p, 0).a;
+  int flags = u_hasDetailFlags ? detailFlags(alpha) : 0;
+  if (alpha < 0.75 || (flags & 2) != 0 || (u_scopedOnly && (flags & 1) == 0)) {
+    o = vec4(c0, 1.0); return;
+  }
   // outlines: a notch (an empty pixel with things on three or four sides) is filled from them, a bump (a pixel of a thing with
   // nothing on three or four sides) is taken off, so the edge of a thing against the background runs clean
-  { bool e0 = dp(p) >= 0.995; int en = 0, ni = -1; for (int i = 0; i < 4; i++) { bool ei = dp(p + N8[i]) >= 0.995; if (ei) en++; if (ei != e0) ni = i; }
+  { bool e0 = dp(p) >= 0.995; int en = 0;
+    for (int i = 0; i < 4; i++) {
+      ivec2 q = clamp(p + N8[i], ivec2(0), textureSize(u_look, 0) - 1);
+      if (dp(q) >= 0.995) en++;
+      if (u_hasDetailFlags && (e0 || (flags & 8) == 0) &&
+          protects(detailFlags(texelFetch(u_look, q, 0).a))) { o = vec4(c0, 1.0); return; }
+    }
+    if (!e0 && en > 0 && protects(flags)) { o = vec4(c0, 1.0); return; }
     if (e0 && en <= 1) { int kb = 0, ib = -1; for (int i = 0; i < 4; i++) { if (dp(p + N8[i]) >= 0.995) continue; int k = 0; for (int j = 0; j < 4; j++) if (like(at(p + N8[i]), at(p + N8[j]))) k++; if (k > kb) { kb = k; ib = i; } }
       if (ib >= 0) { o = vec4(at(p + N8[ib]), 1.0); return; } }
     if (!e0 && en >= 3) { for (int i = 0; i < 4; i++) if (dp(p + N8[i]) >= 0.995) { o = vec4(at(p + N8[i]), 1.0); return; } } }

@@ -401,6 +401,11 @@
       bad('finish.look.silhouetteProtection', error.message);
     }
     try {
+      DetailBudgets.prepare(look?.detailBudgets);
+    } catch (error) {
+      bad('finish.look.detailBudgets', error.message);
+    }
+    try {
       HorizonBands.compile(look?.horizonBands);
     } catch (error) {
       bad('finish.look.horizonBands', error.message);
@@ -864,7 +869,8 @@
         const mesh = K.mesh.fit(env.assets[s.asset], { size: s.size || 4, at: s.at, turn: s.spin, up: s.up });
         meshLooks[s.asset] = { mesh, look: K.mesh.look(mesh, { hues: s.hues || 5, pal }) };
       }
-    const B = (env.makeBuilder || makeBuilder)(seed, pal);
+    const detailBudgets = st0.finish.look?.detailBudgets;
+    const B = (env.makeBuilder || makeBuilder)(seed, pal, detailBudgets === undefined ? undefined : { detailBudgets });
     let S, grp;
     function startSculpt() {
       S = K.sculpt((env.makeSculpt || makeSculpt)(B));

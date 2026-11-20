@@ -82,7 +82,9 @@ function makeNoise(seed) {
 }
 
 // ---------------- shared builder: splat storage plus shape helpers ----------------
-function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 15 } = {}) {
+function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 15, detailBudgets } = {}) {
+  const detailBudget = DetailBudgets.prepare(detailBudgets);
+  if (detailBudget?.affectsCleanup || detailBudget?.fineOn || detailBudget?.fineOff) renderMetadata = true;
   if (!Number.isSafeInteger(initialCapacity) || initialCapacity < 1 || initialCapacity > Number.MAX_SAFE_INTEGER / 16)
     throw new RangeError('Initial splat capacity must be a positive integer');
   seed = seed >>> 0;
@@ -1005,6 +1007,8 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
       },
       meta
     );
+    if (detailBudgets !== undefined)
+      world.look = { ...world.look, detailBudgets: detailBudget?.rules ?? false };
     if (world.environmentPreset !== undefined && world.environmentPreset !== false) {
       const catalog = KIT.authoring.assetPacks.create({ packs:world.assetPacks ?? [] });
       Object.assign(world,KIT.authoring.environments.apply(world,world.environmentPreset,catalog,world.pal));
@@ -1069,6 +1073,7 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     return out;
   };
   return {
+    detailBudget,
     count: () => n,
     describeSplats: renderMetadata ? describeSplats : undefined,
     describeAlbedo,

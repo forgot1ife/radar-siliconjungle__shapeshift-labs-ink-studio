@@ -7,6 +7,10 @@
    ------------------------------------------------------------------ */
 function makeSculpt(B, rest) {
   const { P, n3, fbm, disc, stick, fib, TAU, clamp, norm, R } = B;
+  const detailBudget = B.detailBudget;
+  const budgetFor = detailBudget && (p => detailBudget.match({
+    object: p.renderOwner, entity: p.renderOwner, ...p.renderTarget
+  }));
   const pos = rest?.positive || [],
     neg = rest?.negative || [],
     ghosts = [],
@@ -82,6 +86,7 @@ function makeSculpt(B, rest) {
     p.tag = o.tag || null;
     p.renderOwner = o.objectId ?? p.tag;
     p.renderTarget = o.surfaceId !== undefined ? { surface: o.surfaceId, ...o.target } : o.target;
+    if (budgetFor) p.detailBudget = budgetFor(p);
     p.model = o.model;
     if (p.bump) p.br += p.bump[0];
     p.reach = o.reach || 0;
@@ -745,7 +750,7 @@ function makeSculpt(B, rest) {
     return RR;
   }
   const RR = [null, 0];
-  function light(m, res, x, y, z, nx, ny, nz, full, selected) {
+  function light(m, res, x, y, z, nx, ny, nz, full, selected, fine) {
     if (S.clip && !S.clip(x, y, z)) return;
     /* born: when this dab appears (growth you can watch). A material's or a solid's o.born: seconds, or (x, y, z, along) -> seconds */
     const bn = m.born !== undefined ? m.born : curP && curP.born !== undefined ? curP.born : null;
@@ -1178,7 +1183,7 @@ function makeSculpt(B, rest) {
       }
       return;
     }
-    if ((S.fine || m0.fine) && !m.glass && (m.a === undefined || m.a >= 1 || glint))
+    if ((fine ?? (S.fine || m0.fine)) && !m.glass && (m.a === undefined || m.a >= 1 || glint))
       fineTile(m0, res, x, y, z, nx, ny, nz, full, ci);
     if (S.bounce && !flat && !m.em)
       ((BTAP.ramp[B.count()] = ramp), (BTAP.t[B.count()] = t)); /* kept for the bounce pass */
@@ -1577,11 +1582,12 @@ function makeSculpt(B, rest) {
     if (material.materialAt) material = material.materialAt(sample[1], sample[2], sample[3], sample[4], sample[5], sample[6]) ?? material;
     const preview = typeof globalThis !== 'undefined' && globalThis.INK_LOOK_ALBEDO;
     const capture = B.describeAlbedo && (preview || S.captureAlbedo || stagedAlbedo(material.surface) || stagedAlbedo(material.top?.surface));
-    if (!capture && !B.describeSplats) return light(material, ...sample);
+    const fine = owner?.detailBudget?.fine;
+    if (!capture && !B.describeSplats) return light(material, ...sample, undefined, fine);
     const first = B.count();
     let effective = material;
-    if (material.top) light(material, ...sample, used => { effective = used; });
-    else light(material, ...sample);
+    if (material.top) light(material, ...sample, used => { effective = used; }, fine);
+    else light(material, ...sample, undefined, fine);
     const end = B.count();
     const surfaceId = effective.surfaceId ?? (effective === material ? undefined : effective.surface?.id) ?? material.surfaceId;
     B.describeSplats?.(first, end, {
@@ -1592,12 +1598,21 @@ function makeSculpt(B, rest) {
     const albedo = effective.albedo ?? effective.r?.at(-1) ?? material.albedo ?? material.r?.at(-1);
     if (capture && albedo !== undefined) B.describeAlbedo(first, end, albedo);
   }
+  function sampleAt(solid, spacing, visit) {
+    const original = solid.res;
+    solid.res = spacing;
+    try {
+      solid.sample(visit);
+    } finally {
+      solid.res = original;
+    }
+  }
   S.bake = () => {
     buildGrid();
     L = S.sun;
     for (const p of pos.concat(neg)) {
       if (p.mat.skip) continue;
-      const res0 = p.res,
+      const res0 = p.res * (p.detailBudget?.spacing ?? 1),
         bands = S.focus && !S.capture ? focusBands(p) : ONE_BAND;
       for (let bi = 0; bi < bands.length; bi++) {
         const band = bands === ONE_BAND ? -1 : bands[bi][0],
@@ -1605,8 +1620,8 @@ function makeSculpt(B, rest) {
           bm = p.bump ? p.bump[0] : 0,
           tout = res * 0.7 + bm + p.reach,
           tin = res * 0.7 + bm + p.k * 0.4 + p.reach;
-        p.res = p.bump ? res * 0.8 : res; // rough or blended solids stretch their sample points, so take more of them
-        p.sample((x, y, z) => {
+        // Rough or blended solids stretch their sample points.
+        sampleAt(p, p.bump ? res * 0.8 : res, (x, y, z) => {
           if (S.pre && !S.pre(x, y, z)) return;
           if (band >= 0 && focusBand(x, y, z) !== band) return;
           // whole: this solid's own surface, all of it, found from its own distance alone (a part that will move must not have gaps where it touched something)
@@ -1702,14 +1717,12 @@ function makeSculpt(B, rest) {
           } else shadeOwned(curP, m, res, x, y, z, nx, ny, nz, true);
         });
       }
-      p.res = res0;
     }
     // ghosts are drawn but take no part in shadows (things in the sky, glass, glowing shapes)
     for (const p of ghosts) {
-      const res = p.res,
+      const res = p.res * (p.detailBudget?.spacing ?? 1),
         e = 0.012;
-      if (p.bump) p.res = res * 0.8;
-      p.sample((x, y, z) => {
+      sampleAt(p, p.bump ? res * 0.8 : res, (x, y, z) => {
         if (S.pre && !S.pre(x, y, z)) return;
         let d = psd(p, x, y, z),
           nx = 0,
@@ -1741,7 +1754,6 @@ function makeSculpt(B, rest) {
           S.emit(p, n0, B.count());
         } else shadeOwned(p, p.mat, res, x, y, z, nx, ny, nz, !!S.ghostLit);
       });
-      p.res = res;
     }
     layInstances();
     B.born(null);
@@ -1846,7 +1858,13 @@ function makeSculpt(B, rest) {
       };
     // (o.solid false: the copy is drawn and lit, but takes no part in the field: no shadow of its own, nothing hidden by it.
     // Right for small thin things in great numbers, leaves, petals, where the field would only be slowed by them)
-    if (o.solid !== false) add(proxy, { r: [0], skip: true }, {});
+    const labels = { objectId: o.objectId, tag: o.tag, target: o.target };
+    if (o.solid !== false) add(proxy, { r: [0], skip: true }, labels);
+    else {
+      proxy.renderOwner = o.objectId ?? o.tag;
+      proxy.renderTarget = o.target;
+      if (budgetFor) proxy.detailBudget = budgetFor(proxy);
+    }
     insts.push({
       born: o.born,
       tpl,

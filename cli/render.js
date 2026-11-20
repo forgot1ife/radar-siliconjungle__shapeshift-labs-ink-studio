@@ -11,6 +11,7 @@ const ArtPasses = require('../src/art-passes.js');
 const ArtInk = require('../src/art-ink.js');
 const ArtDirection = require('../src/art-direction.js');
 const SilhouetteProtection = require('../src/silhouette-protection.js');
+const DetailBudgets = require('../src/detail-budgets.js');
 const EffectPalettes = require('../src/effect-palettes.js');
 const ArtEffects = require('../src/art-effects.js');
 const ArtStability = require('../src/art-stability.js');
@@ -102,6 +103,7 @@ function render(world, o, preparedPalettes) {
   if (!Number.isFinite(lensScale) || lensScale <= 0) throw new RangeError('Lens scale must be finite and positive');
   const tangent = Math.tan(FOV / 2) / lensScale;
   const look = world.look || {};
+  const detailBudget = !o.raw && DetailBudgets.prepare(look.detailBudgets);
   const direction = ArtDirection.prepare(look.artDirection,o.artDirection);
   const protection = SilhouetteProtection.prepare(look.silhouetteProtection,o.silhouetteProtection);
   const subject = protection?.bind(world);
@@ -232,7 +234,7 @@ function render(world, o, preparedPalettes) {
       captureMotion, motionFrom, maskGrade: !tone && grade, reflectionTint: effects?.reflection,
       previewPalette: globalPaletteMark, lookAudit: audit,
       effectPaletteCapture: effectPaletteSettings,
-      captureFog: o.captureFog || ink?.ramps.has('fog') }), paletteRules);
+      captureFog: o.captureFog || ink?.ramps.has('fog'), resolveDetailCleanup: !!detailBudget?.affectsCleanup }), paletteRules);
     const samples = render(
       world,
       Object.assign({}, o, {
@@ -267,6 +269,7 @@ function render(world, o, preparedPalettes) {
         palette, local, contour: !ink, grade, interiorColor: native.color, dither: amount,
         ditherAt: anchoring ? (x, y) => ArtStability.ditherCoordinates(stable, native.passes, (H - 1 - y) * W + x, x, y) : null
       }));
+    native.cleanDetail?.(img.rgb, !!(o.clean || (look.clean && !tone?.preserveDots)));
     applyMasks(img.rgb, native.masked);
     return finishLook(Object.assign(img, { px, drawn: samples.drawn },
       evaluatedPalette && !local && { palette: evaluatedPalette },
@@ -752,8 +755,15 @@ function render(world, o, preparedPalettes) {
   }
   let pixed = null,
     sprM = null;
+  const defaultFine = o.fine || !!look.fine;
+  const defaultCleanup = !!(o.clean || (look.clean && !tone?.preserveDots));
+  const needsCleanupFlags = (styled || o.resolveDetailCleanup) && detailBudget?.affectsCleanup &&
+    (defaultCleanup || detailBudget.enablesCleanup);
+  const budgetAt = (needsCleanupFlags || detailBudget?.fineOn || detailBudget?.fineOff) ? detailBudget.bind(world) : null;
+  const cleanupFlags = needsCleanupFlags && Uint8Array.from({length:baseCount}, (_, i) => DetailBudgets.flags(budgetAt(i)));
+  const pixelBudgets = cleanupFlags && cleanupFlags.some(Boolean) ? new Uint8Array(W * H) : null;
   const FN =
-      (o.fine || (world.look && world.look.fine)) && world.fine && world.fine.length >= baseCount * 12 ? world.fine : null,
+      (defaultFine || detailBudget?.fineOn) && world.fine && world.fine.length >= baseCount * 12 ? world.fine : null,
     FPAL = FN ? world.pal.map((h, i) => hex(i)) : null;
   let deferred = sortedSurfaces ? new Map() : null, deferredCount = 0, orderFallback = false;
   const foreground = direction?.foreground;
@@ -804,6 +814,7 @@ function render(world, o, preparedPalettes) {
       dep[p] = dn * a + dep[p] * ia;
       gls[p] *= ia;
       if (a > 0.5) {
+        if (pixelBudgets) pixelBudgets[p] = (cleanupFlags[i] ?? 0) | DetailBudgets.OWNED;
         if (win) win[p] = surface?.reveals(i) ? -1 : i;
         if (axialDepth) axialDepth[p] = opticalDepth;
         if (fogScales || silhouetteMask) subjectPixel(p,rule);
@@ -1014,7 +1025,8 @@ function render(world, o, preparedPalettes) {
       i01 = 0,
       i10 = 0,
       i11 = 0;
-    if (!liveNormal && FN && FN[i * 12 + 11] && FN[i * 12 + 7] === pk && !add[i] && kind !== 5 && kind !== 12 && kind !== 13) {
+    if (!liveNormal && FN && FN[i * 12 + 11] && (budgetAt?.(i)?.fine ?? defaultFine) &&
+        FN[i * 12 + 7] === pk && !add[i] && kind !== 5 && kind !== 12 && kind !== 13) {
       const f = i * 12,
         sc = SC[i],
         m00 = (a0 * FN[f + 4] + a1 * FN[f + 5] + a2 * FN[f + 6]) * sc,
@@ -1708,6 +1720,7 @@ function render(world, o, preparedPalettes) {
     }
     return {
       w: W, h: H, color: Uint8Array.from(c2, v => Math.round(clamp(v, 0, 1) * 255)), depth: dep, drawn,
+      ...(o.resolveDetailCleanup && pixelBudgets && { cleanDetail: cleanPixels }),
       ...(localAt && { localAt, localPalettes, localConstraints }), ...(detail && { detail }), ...(passes && { passes }), ...(motionReference && { motionReference }),
       ...(masks && { masked: masks.output }),
       ...(atmosphere?.fog && { fog: atmosphere.fog }), ...(silhouetteMask && {silhouetteMask}), ...(effectSignals && { effectSignals }), ...(volumeStats && { volumeStats }), ...(alpha && { alpha }), ...(orderFallback && { orderFallback })
@@ -1878,16 +1891,18 @@ function render(world, o, preparedPalettes) {
   /* pixel clean-up (an option, or a diorama's look.clean), as on the page: a speck (a pixel with no like neighbour of the eight round
      it, or one of a pair that has no other) takes the colour most of its eight neighbours share, if at least three share it, they are
      on the same surface, and it is not much brighter or darker than they are (a glint, an eye or a flower is kept). */
-  if ((o.clean || (look.clean && !tone?.preserveDots)) && !o.raw) {
+  if ((defaultCleanup || pixelBudgets) && !o.raw) cleanPixels(out);
+  function cleanPixels(out, globalCleanup = defaultCleanup) {
     const src = out.slice(),
       keep = look.clean && look.clean.keep !== undefined ? look.clean.keep : 0.3,
       at = (x, y) => (clamp(y, 0, H - 1) * W + clamp(x, 0, W - 1)) * 3,
       same = (a, b) => src[a] === src[b] && src[a + 1] === src[b + 1] && src[a + 2] === src[b + 2],
       lum = a => (src[a] * 0.3 + src[a + 1] * 0.55 + src[a + 2] * 0.15) / 255,
-      depA = a => {
+      atDepth = a => {
         const i = a / 3;
-        return dep[(H - 1 - Math.floor(i / W)) * W + (i % W)];
+        return (H - 1 - Math.floor(i / W)) * W + (i % W);
       },
+      depA = a => dep[atDepth(a)],
       N8 = [
         [-1, 0],
         [1, 0],
@@ -1909,17 +1924,24 @@ function render(world, o, preparedPalettes) {
       return [n, one];
     };
     const empty = (x, y) => depA(at(x, y)) >= 0.995,
+      N4 = N8.slice(0, 4),
       lineClean = o.lineClean === undefined ? !!(world.look && world.look.pixel) : !!o.lineClean;
     for (let y = 0; y < H; y++)
       for (let x = 0; x < W; x++) {
         const q = at(x, y);
         const pixel = (H - 1 - y) * W + x;
+        const flags = pixelBudgets?.[pixel] ?? 0;
+        if (pixelBudgets && !DetailBudgets.cleans(flags, globalCleanup)) continue;
         if (localConstraints?.[(localAt?.[pixel] || 0) - 1] || (alpha && alpha[q / 3] < 128) || sprM?.[pixel] ||
             surfaceGlint?.[pixel] || detail?.[q / 3] || ArtStability.protectedPixel(stable, passes, q / 3)) continue;
         // outlines, as on the page: a notch is filled from what is round it, a bump against the background taken off
         const e0 = empty(x, y),
-          N4 = N8.slice(0, 4),
           en = N4.filter(([dx, dy]) => empty(x + dx, y + dy)).length;
+        if (pixelBudgets) {
+          if ((e0 || !(flags & DetailBudgets.OWNED)) &&
+              N4.some(([dx, dy]) => DetailBudgets.protects(pixelBudgets[atDepth(at(x + dx, y + dy))]))) continue;
+          if (!e0 && en > 0 && DetailBudgets.protects(flags)) continue;
+        }
         if (e0 && en <= 1) {
           let kb = 0,
             best = -1;

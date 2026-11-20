@@ -15,7 +15,7 @@ const files = () =>
     'src/color-space.js', 'src/color-curves.js', 'src/color-lut.js', 'src/color-stack.js', 'src/pixel-look.js', 'src/reflection-plane.js', 'src/airflow.js', 'src/wind-field.js', 'src/light-schedule.js',
     'src/route-visibility.js', 'src/sample-coverage.js', 'src/sample-visibility.js', 'src/swept-disc.js', 'src/splat-order.js', 'src/splat-codec.js', 'src/ripple-field.js',
     'src/volume-field.js', 'src/geometry-density.js', 'src/volume-cutouts.js', 'src/cloud-recipes.js', 'src/cloud-detail.js', 'src/cloud-field.js', 'src/lightning.js', 'src/volume-light.js', 'src/celestial-tracks.js', 'src/sky-environment.js', 'src/weather-front.js', 'src/weather-binding.js', 'src/scene-optics.js', 'src/scene-exposure.js', 'src/splat-effects.js',
-    'src/look-inputs.js', 'src/render-stages.js', 'src/effect-palettes.js', 'src/silhouette-protection.js', 'src/horizon-bands.js', 'src/surface-look.js', 'src/builder.js', 'src/sculpt.js'
+    'src/look-inputs.js', 'src/render-stages.js', 'src/effect-palettes.js', 'src/silhouette-protection.js', 'src/detail-budgets.js', 'src/horizon-bands.js', 'src/surface-look.js', 'src/builder.js', 'src/sculpt.js'
   ]
     .map(f => path.join(__dirname, f))
     .concat(
@@ -28,7 +28,7 @@ const files = () =>
 const demoFiles = () => [path.join(__dirname, 'demos', 'labscenes.js')];
 // the names the bundle defines at top level (add them to your own module.exports)
 const EXPORTS =
-  'makeBuilder, makeSculpt, basis, flame, motes, pondMat, lilies, courses, PALETTES, PAL_HEX, KIT, FrameBudget, InkVeil, SpriteSurface, TargetSelectors, SplatProvenance, ColorSpace, ColorCurves, ColorLUT, ColorStack, PixelLook, LookInputs, RenderStages, SurfaceLook, SceneOptics, SceneExposure, SkyEnvironment, CelestialTracks, CloudField, Lightning, VOX, SplatEffects, ArtPasses, ArtDirection, ArtInk, EffectPalettes, SilhouetteProtection, HorizonBands, ArtStability, ArtEffects, VolumeField, VolumeLight';
+  'makeBuilder, makeSculpt, basis, flame, motes, pondMat, lilies, courses, PALETTES, PAL_HEX, KIT, FrameBudget, InkVeil, SpriteSurface, TargetSelectors, SplatProvenance, ColorSpace, ColorCurves, ColorLUT, ColorStack, PixelLook, LookInputs, RenderStages, SurfaceLook, SceneOptics, SceneExposure, SkyEnvironment, CelestialTracks, CloudField, Lightning, VOX, SplatEffects, ArtPasses, ArtDirection, ArtInk, EffectPalettes, SilhouetteProtection, DetailBudgets, HorizonBands, ArtStability, ArtEffects, VolumeField, VolumeLight';
 module.exports = {
   files,
   demoFiles,

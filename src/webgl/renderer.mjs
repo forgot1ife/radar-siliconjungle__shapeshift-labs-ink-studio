@@ -99,6 +99,9 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
     let waterLookSource, waterLookPlan, waterOpticalPlan, mappedWater;
     let opticsDefinition, opticsWorld, opticsPlan, opticsTime;
     const cleaned = target(), finished = target(), history = [target(), target()];
+    const detailAPI = toolkit.DetailBudgets ?? toolkit.KIT?.detailBudgets;
+    const detailPlans = new WeakMap();
+    let detailTable, uploadedDetailFlags;
     const data = table(2048, 0, maxSize), bones = table(768, 4, maxSize);
     const fine = table(1536, 7, maxSize), pattern = table(2048, 10, maxSize);
     const toneStops = resources.texture(), toneRanks = resources.texture();
@@ -106,7 +109,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
     let constrainedPost;
     const sort = createDepthSorter();
     let simple, simpleUnavailable = false, keyProgram, damp, copy, spriteProgram, spriteLayer, spriteTable, anchors;
-    let lastWorld, lastData, lastCount, lastOutput, fineValues, materials, anchorCount = 0;
+    let lastWorld, lastData, lastCount, lastOutput, lastDetail, fineValues, materials, anchorCount = 0;
     let packed = empty, historyIndex = 0, historyValid = false, previousVP, previousColorGrade;
     let toneKey, tone, sorted, instanceDraw, expandInstances, lastInstances;
 
@@ -127,6 +130,30 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       pipeline.setOrder(sort(world, camera.view, time, visible, plan?.rows), !!plan);
       sorted = canReuse ? { view: camera.view, moving: Int32Array.from(moving), back: Int32Array.from(back),
         clock, revision:plan?.orderRevision, viewport } : null;
+    }
+
+    function prepareDetail(world, budget) {
+      if (!budget?.affectsCleanup && !budget?.fineOff) return null;
+      const definition = world.look.detailBudgets;
+      const previous = detailPlans.get(world);
+      if (previous?.definition === definition && previous.count === world.count &&
+          previous.metadata === world.renderMetadata && previous.tiles === world.fine) return previous;
+      const at = budget.bind(world);
+      const flags = budget.affectsCleanup && Float32Array.from({ length: world.count }, (_, i) => detailAPI.flags(at(i)));
+      let fine = world.fine;
+      if (fine && budget.fineOff) {
+        for (let i = 0; i < world.count; i++) {
+          const marker = i * 12 + 11;
+          if (fine[marker] && at(i)?.fine === false) {
+            if (fine === world.fine) fine = fine.slice();
+            fine[marker] = 0;
+          }
+        }
+      }
+      const detail = { definition, count: world.count, metadata: world.renderMetadata, tiles: world.fine,
+        fine, flags: flags && flags.some(Boolean) ? flags : null };
+      detailPlans.set(world, detail);
+      return detail;
     }
 
     function resolveProgram(patterned, glass, ao, definition, grade) {
@@ -350,10 +377,14 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
     function render(world, frame, width, height, output, cameraOverride, plane = zero, cover) {
       const { raw = false, outline = true, dither = 0.35, scale = 1 } = frame;
       const look = world.look ?? {};
+      const budget = raw ? null : detailAPI?.prepare(look.detailBudgets);
+      const globalCleanup = !raw && (frame.clean ?? !!look.clean);
+      const needsDetailFlags = budget?.affectsCleanup && (globalCleanup || budget?.enablesCleanup);
       const constraintDefinition = frame.paletteConstraints ?? look.paletteConstraints;
       let group = frame.instances;
-      // Per-pixel material and constraint resolves index the expanded world.
-      if (group && (frame.order || !raw && (constraintDefinition || look.pixel && world.pix))) {
+      // Per-pixel material, palette, and detail rules index the expanded world.
+      if (group && (frame.order || !raw && (constraintDefinition || look.pixel && world.pix ||
+          needsDetailFlags || budget?.fineOn || budget?.fineOff))) {
         expandInstances ??= createExpandedInstances();
         const expanded = expandInstances(world,group,frame.changedRows);
         world = expanded.world;
@@ -392,7 +423,9 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       const pixel = toolkit.KIT?.pixel;
       const patterned = !raw && !!(look.pixel && world.pix && pixel?.gpu);
       const colored = !raw && !patterned && (frame.colored ?? true);
-      const cleaning = !raw && (frame.clean ?? !!look.clean);
+      const detail = prepareDetail(world, budget);
+      const scopedCleanup = !!needsDetailFlags && !!detail?.flags;
+      const cleaning = globalCleanup || scopedCleanup;
       const damping = !raw && !colored && !constraints && !!look.pixel && frame.damp !== false;
       const samples = colored ? 2 : 1, rw = width * samples, rh = height * samples;
       if (rw > maxSize || rh > maxSize ||
@@ -403,11 +436,13 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         if (gl.canvas.height !== height) gl.canvas.height = height;
       }
       const resized = width !== finished.width || height !== finished.height;
-      if (isNew || resized || output !== lastOutput || !damping || waterScene !== lastWater ||
+      if (isNew || resized || output !== lastOutput || detail !== lastDetail || !damping || waterScene !== lastWater ||
           (waterScene && frame.time !== lastWaterTime)) historyValid = false;
       geometry.resize(rw, rh);
       contours.resize(colored ? width : 1, colored ? height : 1);
-      owner.resize(patterned || constraints ? width : 1, patterned || constraints ? height : 1);
+      const ownsPixels = patterned || constraints || scopedCleanup;
+      owner.resize(ownsPixels ? width : 1, ownsPixels ? height : 1);
+      if (scopedCleanup) detailTable ??= table(512, 7, maxSize);
       key.resize(patterned ? width : 1, patterned ? height : 1);
       if (cover && patterned && frame.edges !== false) portalSpriteLayer ??= target(2, { depth: true });
       if (cleaning) cleaned.resize(width, height);
@@ -422,7 +457,8 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       const water = waterUniforms(waterScene, camera, t, plane);
       const wet = water && wetVariant(water);
       const time = frame.stepAnimation !== false && look.pixel ? Math.floor(t * 10) / 10 : t;
-      const hasFine = !raw && !!world.fine;
+      const fineTiles = detail?.fine ?? world.fine;
+      const hasFine = !raw && !!fineTiles;
       const pal = palette(world.pal);
       const palCount = Math.min(world.pal.length, 64);
       const fog = world.fog ?? {};
@@ -432,9 +468,9 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         instanceDraw ??= createInstanceDraw(table,data,maxSize);
         plan = instanceDraw.bind(group,world,dirty,lastInstances !== group);
       } else data.upload(world.data, world.count * 16, dirty);
-      if (hasFine && (isNew || fineValues !== world.fine)) {
-        fine.upload(world.fine, world.count * 12);
-        fineValues = world.fine;
+      if (hasFine && (isNew || fineValues !== fineTiles)) {
+        fine.upload(fineTiles, world.count * 12);
+        fineValues = fineTiles;
       } else fine.bind();
       uploadBones(world.anim?.bones);
       orderFor(world, frame, camera, time, isNew, plan, width, height, scale);
@@ -475,7 +511,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       drawGeometry(shader, geometry, rw, rh, { u_idx: 0, u_snap: +(!raw && !colored), u_hard: 0, background, tangent }, water, wet);
       if (colored)
         drawGeometry(shader, contours, width, height, { u_idx: 0, u_snap: 1, u_hard: 0, background, tangent }, water, wet);
-      if (patterned || constraints)
+      if (ownsPixels)
         drawGeometry(shader, owner, width, height, { u_idx: 1, u_snap: 1, u_hard: 0, tangent });
       if (cover)
         drawGeometry(shader, cover.buffer, width, height,
@@ -549,12 +585,19 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         textureUnit(8, constraintRows);
       } else resolve = wet ? (wet.post ??= program(wet.sources.POST_FS)) : resolveProgram(patterned, glass, world.ao, definition, grade);
       if (water) textureUnit(11, (colored ? contours : geometry).textures[2]);
+      if (scopedCleanup) {
+        if (uploadedDetailFlags !== detail.flags) {
+          detailTable.upload(detail.flags);
+          uploadedDetailFlags = detail.flags;
+        } else detailTable.bind();
+      }
       fullscreen(resolve, cleaning ? cleaned.framebuffer : destination, width, height, {
         ...patternedUniforms, ...glassUniforms, ...prepareTone(definition), ...water, u_waterMask: 11,
         ...(constraints ? { u_constraintSlots: 4, u_constraintRows: 8, u_constraintDefault: constraints.defaultSlot,
-          u_constraintMap: constraintMap, u_idxTex: 9 } : {}),
+          u_constraintMap: constraintMap } : {}),
         u_scene: 1, u_depth: 2, u_crispScene: 5, u_crispDepth: 6, u_keyTex: 15,
         u_pixOn: +patterned, u_keyOn: +patterned, u_sprOn: +sprites,
+        u_detailCleanup: scopedCleanup, u_detailFlags: scopedCleanup ? 7 : 1, u_idxTex: 9,
         u_sprLayer: 13, u_markA: +cleaning, u_pal: pal, u_n: palCount, u_luma: 0,
         u_bypass: +raw, u_colored: +colored, u_dither: dither * 0.3 * (world.dither ?? 1),
         u_line: rgb(world.pal[lineIndex] ?? 0),
@@ -572,6 +615,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         textureUnit(6, colored ? contours.textures[1] : geometry.textures[1]);
         fullscreen(clean, destination, width, height, {
           u_look: 8, u_dep: 6, u_keep: look.clean?.keep ?? 0.3,
+          u_scopedOnly: !globalCleanup, u_hasDetailFlags: scopedCleanup,
           u_lineClean: +(frame.lineClean !== false && !!look.pixel)
         });
       }
@@ -604,6 +648,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       lastData = world.data;
       lastCount = world.count;
       lastOutput = output;
+      lastDetail = detail;
       lastWater = waterScene;
       lastWaterTime = frame.time;
       return spriteCover;
