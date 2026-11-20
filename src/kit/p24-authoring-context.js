@@ -551,6 +551,12 @@
       read(id);
       return A.styles.resolve(view, id);
     };
+    ctx.describe = id => {
+      read(id);
+      const rec = synchronizing ? ensureRecord(id) : records.get(id);
+      return rec ? freeze({ bounds: clone(rec.bounds), tags: clone(rec.tags),
+        surfaces: rec.surfaces.map(({id, kind}) => ({id, kind: kind || 'parametric'})) }) : null;
+    };
     ctx.surfaces = id => {
       read(id);
       const r = synchronizing ? ensureRecord(id) : records.get(id);

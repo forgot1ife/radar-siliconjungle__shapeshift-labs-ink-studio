@@ -18,11 +18,14 @@
         !Number.isSafeInteger(value.revision) || value.revision < 1 ||
         typeof value.title !== 'string' || !value.title.trim() || value.title.length > 100)
       throw Error('Invalid versioned asset pack');
-    const { families: sourceFamilies = [], looks: sourceLooks = [], materials: sourceMaterials = [] } = value;
+    const { families: sourceFamilies = [], looks: sourceLooks = [], materials: sourceMaterials = [],
+      environments: sourceEnvironments = [], environmentImages: sourceImages = [] } = value;
     if (!Array.isArray(sourceFamilies) || !Array.isArray(sourceLooks) || sourceLooks.length > 128 ||
         !Array.isArray(sourceMaterials) || sourceMaterials.length > 256 ||
-        (!sourceFamilies.length && !sourceLooks.length && !sourceMaterials.length))
-      throw Error('An asset pack needs families, named looks or physical materials');
+        !Array.isArray(sourceEnvironments) || sourceEnvironments.length > 128 ||
+        !Array.isArray(sourceImages) || sourceImages.length > 64 ||
+        (!sourceFamilies.length && !sourceLooks.length && !sourceMaterials.length && !sourceEnvironments.length && !sourceImages.length))
+      throw Error('An asset pack needs families, looks, materials, environments or environment images');
     const registry = A.assets();
     registry.load({ format: 'ink-studio/asset-families', version: 1, families: sourceFamilies });
     const families = registry.list();
@@ -40,8 +43,17 @@
     const materials = sourceMaterials.map(material => A.physicalMaterials.definition(material, value.id));
     if (new Set(materials.map(material => material.id)).size !== materials.length)
       throw Error('Duplicate physical material in ' + value.id);
+    const environments = sourceEnvironments.map(environment => A.environments.definition(environment,value.id));
+    const environmentImages = sourceImages.map(image => A.environments.image(image,value.id));
+    if (new Set(environments.map(environment => environment.id)).size !== environments.length)
+      throw Error('Duplicate environment preset in '+value.id);
+    if (new Set(environmentImages.map(image => image.id)).size !== environmentImages.length)
+      throw Error('Duplicate environment image in '+value.id);
+    if (environmentImages.reduce((total,image) => total+image.width*image.height,0) > 2097152)
+      throw Error('Environment images exceed the pack pixel budget');
     const result = freeze({ format, version: 1, id: value.id, revision: value.revision, title: value.title.trim(),
-      families, replacements, ...(looks.length && { looks }), ...(materials.length && { materials }) });
+      families, replacements, ...(looks.length && { looks }), ...(materials.length && { materials }),
+      ...(environments.length && { environments }), ...(environmentImages.length && { environmentImages }) });
     manifests.add(result);
     return result;
   }
@@ -65,12 +77,20 @@
     const include = new Set(ids ?? index.keys());
     if (!include.size) throw Error('An asset bundle needs at least one pack');
 
-    // Follow replacement sources that belong to other packs in this catalog.
-    const owner = new Map();
-    for (const pack of index.values()) for (const family of pack.families) owner.set(family.id,pack.id);
-    for (const id of include) for (const familyId of Object.keys(index.get(id).replacements)) {
-      const dependency = owner.get(familyId);
-      if (dependency !== undefined) include.add(dependency);
+    const owner = new Map(), images = new Map();
+    for (const pack of index.values()) {
+      for (const family of pack.families) owner.set(family.id,pack.id);
+      for (const image of pack.environmentImages ?? []) images.set(image.id,{ image,pack:pack.id,revision:pack.revision });
+    }
+    const artwork = { getEnvironmentImage:id => images.get(id) };
+    for (const id of include) {
+      const { replacements, environments } = index.get(id);
+      for (const familyId of Object.keys(replacements)) {
+        const dependency = owner.get(familyId);
+        if (dependency !== undefined) include.add(dependency);
+      }
+      for (const environment of environments ?? []) for (const ref of A.environments.references(environment.settings))
+        include.add(A.environments.requireImage(artwork,ref).pack);
     }
     return freeze({format:bundleFormat,version:1,packs:[...index.values()].filter(pack=>include.has(pack.id))});
   }
@@ -131,14 +151,31 @@
     return manifest({ ...pack, revision: pack.revision + 1, looks });
   }
 
+  function reviseEnvironment(input, id, changes) {
+    const pack = manifest(input), environments = pack.environments?.slice() ?? [];
+    const index = environments.findIndex(environment => environment.id === id);
+    if (index === -1) throw Error('Unknown environment preset: '+id);
+    if (!object(changes) || Object.keys(changes).some(key => !['label','settings'].includes(key)))
+      throw Error('Environment revision needs a label or settings');
+    const next = A.environments.definition(clone({ ...environments[index], ...changes }),pack.id);
+    if (canonical(next) === canonical(environments[index])) return pack;
+    environments[index] = next;
+    return manifest({ ...pack, revision:pack.revision+1, environments });
+  }
+
   function create({ families = [], packs = [] } = {}) {
     if (!Array.isArray(families)) throw Error('Asset catalog needs a family array');
     const registry = A.assets();
     registry.load({ format: 'ink-studio/asset-families', version: 1, families });
     const extensions = packMap(packs), owners = new Map(), looks = new Map(), materials = new Map();
+    const environments = new Map(), images = new Map();
     for (const pack of extensions.values()) {
       for (const look of pack.looks ?? []) looks.set(look.id, freeze({ look, pack: pack.id, revision: pack.revision }));
       for (const material of pack.materials ?? []) materials.set(material.id,freeze({material,pack:pack.id,revision:pack.revision}));
+      for (const environment of pack.environments ?? [])
+        environments.set(environment.id,freeze({ environment,pack:pack.id,revision:pack.revision }));
+      for (const image of pack.environmentImages ?? [])
+        images.set(image.id,freeze({ image,pack:pack.id,revision:pack.revision }));
       for (const family of pack.families) {
         if (registry.get(family.id)) throw Error('Duplicate asset family: ' + family.id);
         registry.register(family);
@@ -177,17 +214,23 @@
         }
       });
     }
-    return Object.freeze({
+    const catalog = Object.freeze({
       packs: Object.freeze([...extensions.values()]),
       families: listed,
       looks: Object.freeze([...looks.values()]),
       materials: Object.freeze([...materials.values()]),
+      environments: Object.freeze([...environments.values()]),
+      environmentImages: Object.freeze([...images.values()]),
+      getEnvironment: id => environments.get(id) ?? null,
+      getEnvironmentImage: id => images.get(id) ?? null,
       getMaterial: id => materials.get(id) ?? null,
       getLook: id => looks.get(id) ?? null,
       get: id => byId.get(id) ?? null,
       owner: id => owners.get(id) ?? null,
       compile
     });
+    for (const id of environments.keys()) A.environments.bind(id,catalog);
+    return catalog;
   }
-  A.assetPacks = Object.freeze({ create, manifest, bundle, merge, reviseFamily, reviseLook });
+  A.assetPacks = Object.freeze({ create, manifest, bundle, merge, reviseFamily, reviseLook, reviseEnvironment });
 })(KIT);

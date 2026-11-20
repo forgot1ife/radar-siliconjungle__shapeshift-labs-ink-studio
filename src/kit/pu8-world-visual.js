@@ -7,8 +7,12 @@
     0x173047,0x1c475b,0x226a78,0x329393,0x64b8aa,0xa9ded2,
     0x4e302a,0x815032,0xab6e3b,0xd29f55,0xf0cb7b,0xf8edd0
   ];
-  function visualLooks(world, catalog) {
-    const config = world.visual ?? {}, entities = world.entities;
+  function visualEnvironment(world, catalog = W.materials.catalog(world)) {
+    const config = world.visual ?? {};
+    return K.authoring.environments.apply(config,config.environmentPreset,catalog,config.palette ?? palette);
+  }
+  function visualLooks(world, catalog, config = visualEnvironment(world,catalog)) {
+    const entities = world.entities;
     const assets = K.authoring.looks, paletteOptions = { palette: config.palette ?? palette,
       roles: config.paletteRoles, blueNoise: K.procedural.materials.blueNoise,
       context: config.surfaceEffects && K.splatEffects.context(config.surfaceEffects), validateOnly: true };
@@ -70,14 +74,14 @@
   }
 
   function visual({makeBuilder,makeSculpt},view,query) {
-    const config=view.world.visual ?? {}, volume=config.volume&&query.renderVolume(config.volume);
+    const catalog = W.materials.catalog(view.world), config = visualEnvironment(view.world,catalog);
+    const volume=config.volume&&query.renderVolume(config.volume);
     const enclosed=config.enclosedWater&&query.renderWater(config.enclosedWater);
     const region=W.fields.bounds(config.bounds ?? volume?.bounds ?? enclosed?.bounds ?? {min:[-5,-1,-5],max:[5,5,5]});
     const {min,max}=region, span=Math.max(max[0]-min[0],max[2]-min[2],1), resolution=config.resolution??Math.max(.08,span/100);
     W.data.check(Number.isFinite(resolution)&&resolution>=.02&&resolution<=10&&span/resolution<=256,'Render grid exceeds its sample budget');
     const B=makeBuilder(view.world.seed,config.palette??palette), S=K.sculpt(makeSculpt(B));
-    const catalog = W.materials.catalog(view.world);
-    const looks = visualLooks(view.world, catalog);
+    const looks = visualLooks(view.world,catalog,config);
     const entities = view.world.entities, targets = new Map();
     function targetFor(id) {
       if (targets.has(id)) return targets.get(id);
@@ -326,15 +330,15 @@
     const airborne=config.air&&W.ventilation.render(query,config.air);
     const baked=B.finish({lookSnapshot: { time: view.time ?? view.tick * view.world.dt, tick: view.tick, query }, cam:config.camera??{target:[mid[0],.05,mid[2]],dist:span*1.48,yaw:.62,pitch:.8},
       radius:span,detail:30,dither:.22,look:looks.look,paletteRoles:config.paletteRoles,
-      ...(waterScene && { water: waterScene }), ...(config.atmosphere && { atmosphere: config.atmosphere }),
-      ...(airborne?.length&&{shapedAtmosphere:airborne}),
-      ...(config.atmosphereEmitters && { atmosphereEmitters:config.atmosphereEmitters }),
-      ...(config.volumeLighting !== undefined && {volumeLighting:config.volumeLighting}),
-      ...(config.volumeQuality !== undefined && {volumeQuality:config.volumeQuality}),
-      ...(config.windField !== undefined && {windField:config.windField}),
+      ...K.authoring.environments.rendererSettings(config),
+      ...(config.environmentSource && {environmentSource:config.environmentSource}),
+      ...(view.weatherTrackState && {weatherTrackState:view.weatherTrackState}),
+      ...(waterScene && { water: waterScene }),
+      ...(airborne?.length && {shapedAtmosphere:[...(config.shapedAtmosphere || []),...airborne]}),
       ...(config.reflections && { reflections: config.reflections }), ...(surfaceEffects&&{surfaceEffects})});
     return volume?SplatProvenance.join([...volume.parts,baked],baked):baked;
   }
   W.visual = visual;
+  W.visualEnvironment = visualEnvironment;
   W.validateLooks = (world, catalog) => visualLooks(world, catalog).validate();
 })(KIT);

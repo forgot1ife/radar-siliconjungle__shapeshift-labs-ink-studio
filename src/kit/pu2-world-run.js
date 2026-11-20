@@ -181,12 +181,19 @@
     }
     for (const command of scenario.commands ?? []) actionCheck(command,plan);
   }
+  function weatherProgram(world, catalog) {
+    const tracks = world.visual?.weatherTracks;
+    if ((tracks === undefined || tracks === false) && !world.visual?.environmentPreset) return null;
+    const config = W.visualEnvironment(world,catalog);
+    return K.weather.tracks.compile(config.skyEnvironment,config.weatherTracks);
+  }
   function prepare(source,{implementations} = {}) {
     const world = W.manifest(source), plan = compile(world,implementations);
     for (const command of world.commands) actionCheck(command,plan);
     scenarioCheck(world.scenario,plan);
     const catalog = W.materials.catalog(world);
     W.validateLooks(world, catalog);
+    const weather = weatherProgram(world,catalog);
     check(world.history === undefined || record(world.history), 'Invalid history policy');
     if (world.history?.where !== undefined) Q.condition(world.history.where,{});
     if (world.history?.enabled !== undefined) check(typeof world.history.enabled==='boolean','History enabled must be boolean');
@@ -204,7 +211,7 @@
       for (const port of Object.values(stamped.entities.instance.ports))
         check(own(prefabPlan.ports.inputs,port) || own(prefabPlan.ports.outputs,port), 'Invalid public prefab port ' + port);
     }
-    return {world,plan};
+    return {world,plan,weather};
   }
   const validate=(source,options)=>prepare(source,options).world;
   function create(source, {checkpoint,implementations,profile = false,validated = false} = {}) {
@@ -215,7 +222,7 @@
       result=prepare(edited,{implementations});
       world=result.world;
     }
-    const {plan}=result;
+    const {plan, weather = weatherProgram(world)}=result;
     const {systems,ports,incoming,order,names,transfers,dependencies,rates,causePolicy} = plan;
     const projection = Q.projection(systems);
     const slowReaders = new Map(rates ? dependencies.describe.filter(({id,reads})=>reads.length&&rates.rates[id].every>1)
@@ -231,12 +238,13 @@
     let tick = 0, states = {}, outputs = rootOutputs, manual = rootInputs, delays = rootDelays,
       history = [], dropped = 0, lastEvents = [], scenario = {status:'running',score:0,matched:{},metrics:{}};
     let pendingWrites = [], lastDependencies = null, sampling = rates?.initial, spatialSampling = {};
-    let causalState;
+    let causalState, weatherTrackState;
     let currentQuery, lastTransfers = [], lastSignals = {...rootInputs,...rootOutputs};
 
     function view(worldValue = world, statesValue = states, signals = lastSignals, tickValue = tick, receipts = lastTransfers, causes = causalState) {
       return Object.freeze({world:worldValue,states:statesValue,signals,tick:tickValue,time:tickValue*worldValue.dt,history,dropped,
-        ...(receipts.length && {transfers:receipts}),...(causes && {causality:causes})});
+        ...(receipts.length && {transfers:receipts}),...(causes && {causality:causes}),
+        ...(weatherTrackState && {weatherTrackState})});
     }
     function context(name, worldValue, statesValue, at, input, emit, query, spatial, timing, causal) {
       const baseDt = worldValue.dt, substeps = timing?.substeps ?? 1;
@@ -294,6 +302,7 @@
       return freeze({format:checkpointFormat,version:1,tick,world,states,outputs,manual,delays,history,dropped,
         signals:lastSignals,events:lastEvents,pending:packCommands(),scenario,
         ...(lastTransfers.length && {transfers:lastTransfers}),
+        ...(weatherTrackState && {weatherTrackState}),
         ...(pendingWrites.length && {dependencyWrites:pendingWrites}),...(rates && {sampling}),
         ...(Object.keys(spatialSampling).length && {spatialSampling}),...(causalState && {causality:causalState})});
     }
@@ -339,6 +348,8 @@
         causalState = payload.causality;
       } else check(!own(payload,'causality'),'Unexpected causal checkpoint data');
       ({tick,states,outputs,manual,delays,history,dropped,scenario,signals:lastSignals,events:lastEvents} = payload);
+      if (weather) weatherTrackState = weather.validate(payload.weatherTrackState,tick*world.dt);
+      else check(!own(payload,'weatherTrackState'),'Unexpected weather track checkpoint data');
       enqueue(payload.pending,false);
     }
     if (checkpoint) restore(checkpoint);
@@ -364,6 +375,10 @@
       const past=world.history?.enabled===false?[]:(world.history?.past??[]).filter(event=>Q.condition(world.history?.where,event));
       history=freeze(copy(past.slice(-historyLimit)));
       dropped=Math.max(0,past.length-historyLimit);
+      if (weather) {
+        const initialView = view();
+        weatherTrackState = weather.step(undefined,{time:0,view:initialView,query:Q.create(initialView,systems,projection)});
+      }
       enqueue([...world.commands,...(world.scenario?.commands ?? [])],false);
     }
     const origin = save();
@@ -557,7 +572,10 @@
       const memory = historyWith(events,nextWorld.history);
       const dependencyReport = trace && trace.report();
       const nextCausal = causal?.finish();
-      const nextScenario = evaluateScenario({...view(nextWorld,freeze(nextStates),publishedSignals,at,receipts,nextCausal),...memory},events);
+      const nextView = {...view(nextWorld,freeze(nextStates),publishedSignals,at,receipts,nextCausal),...memory};
+      const nextScenario = evaluateScenario(nextView,events);
+      const nextWeather = weather?.step(weatherTrackState,{time:nextView.time,view:nextView,events,
+        query:Q.create(nextView,systems,projection)});
       tick = at;
       world = nextWorld;
       states = nextStates;
@@ -575,6 +593,7 @@
       pendingWrites = freeze(nextWrites);
       lastDependencies = dependencyReport;
       scenario = nextScenario;
+      weatherTrackState = nextWeather;
       scheduled.delete(at);
       currentQuery = undefined;
       for (const [name,{calls,ms}] of Object.entries(spent)) {

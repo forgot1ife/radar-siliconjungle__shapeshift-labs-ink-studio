@@ -10,6 +10,29 @@
   const keys=(value,allowed)=>record(value)&&Object.keys(value).every(key=>allowed.includes(key));
   const rgb=value=>[(value>>16)&255,(value>>8)&255,value&255];
 
+  // Compile scalar brush distances for the shadow march. Volume coordinates are bounded.
+  function fastDistance({kind,at,half,round=0,radius,from,to}) {
+    if(kind==='box'){
+      const [x,y,z]=at,[a,b,c]=half;
+      return (px,py,pz)=>{
+        const dx=Math.abs(px-x)-a+round,dy=Math.abs(py-y)-b+round,dz=Math.abs(pz-z)-c+round;
+        const m=Math.max(dx,dy,dz);
+        if(m<=0)return m-round;
+        const q=Math.max(0,dx),r=Math.max(0,dy),s=Math.max(0,dz);
+        return Math.sqrt(q*q+r*r+s*s)-round;
+      };
+    }
+    const [x,y,z]=at??from;
+    const [a,b,c]=kind==='sphere'?[0,0,0]:V.sub(to,from);
+    const square=a*a+b*b+c*c;
+    return (px,py,pz)=>{
+      const dx=px-x,dy=py-y,dz=pz-z;
+      const t=square?clamp((dx*a+dy*b+dz*c)/square,0,1):0;
+      const u=dx-a*t,v=dy-b*t,w=dz-c*t;
+      return Math.sqrt(u*u+v*v+w*w)-radius;
+    };
+  }
+
   function brush(raw) {
     check(record(raw)&&['box','sphere','capsule'].includes(raw.kind),'Expected a box, sphere or capsule brush');
     const {kind,at,half,radius,round=0,from,to}=raw;
@@ -55,13 +78,17 @@
       known.add(name);
       ramps.set(name,colors?.map(value=>rgb(parseInt(value.slice(1),16)))??neutral.map(rgb));
     }
+    const lighting=config.lighting===undefined||config.lighting===false?null:
+      P.relighting.create(config.lighting,{bounds:domain,cell});
+    const litFrames=new WeakMap();
+    let lastLit;
     function operation(op,args) {
       check(keys(args,op==='cut'?['shape']:['shape','material']),'Invalid volume '+op+' arguments');
       const shape=brush(args.shape);
       check([...shape.min,...shape.max].every(v=>finite(v)&&Math.abs(v)<=1e5)&&overlap(shape,domain),
         'Volume brush must intersect the editable bounds');
       if(op!=='cut') material(args.material);
-      return {op,material:args.material,shape};
+      return {op,material:args.material,shape,...(lighting&&op!=='layer'&&{rayDistance:fastDistance(args.shape)})};
     }
     const authored=config.initial??[];
     check(Array.isArray(authored)&&authored.length<=256&&authored.every(row=>record(row)&&
@@ -99,7 +126,7 @@
         if (!contains(domain,point)) return null;
         let value=null;
         for(const {op,shape,material} of ops) {
-          if (shape.sd(...point)>0) continue;
+          if (!contains(shape,point)||shape.sd(...point)>0) continue;
           if (op==='cut') value=null;
           else if (op==='fill') value??=material;
           else if (value!==null) value=material;
@@ -141,8 +168,40 @@
       samples.set(part,surface);
       return part;
     }
+    function lightingField(solid,ops) {
+      const span=cell*chunkCells, cap=span*.75, geometry=ops.filter(row=>row.op!=='layer');
+      const [nx,ny,nz]=size.map(n=>Math.ceil(n/chunkCells)), cells=new Array(nx*ny*nz);
+      function distance(x,y,z) {
+        if(x<domain.min[0]||x>domain.max[0]||y<domain.min[1]||y>domain.max[1]||z<domain.min[2]||z>domain.max[2])
+          return domainDistance(x,y,z);
+        const i=Math.min(nx-1,Math.floor((x-domain.min[0])/span));
+        const j=Math.min(ny-1,Math.floor((y-domain.min[1])/span));
+        const k=Math.min(nz-1,Math.floor((z-domain.min[2])/span));
+        const key=(k*ny+j)*nx+i;
+        if(!cells[key]){
+          const min=[i,j,k].map((v,axis)=>domain.min[axis]+v*span);
+          const area=expand({min,max:min.map(v=>v+span)},cap);
+          // A brush outside the expanded bin cannot change distances inside the capped band.
+          const active=geometry.filter(row=>overlap(row.shape,area));
+          cells[key]=(x,y,z)=>{
+            let value=cap;
+            for(const row of active){
+              const d=row.rayDistance(x,y,z);
+              value=row.op==='fill'?Math.min(value,d):Math.max(value,-d);
+            }
+            return value;
+          };
+        }
+        return Math.min(cap,cells[key](x,y,z));
+      }
+      function albedo(x,y,z) {
+        const color=ramps.get(solid.materialAt([x,y,z]))?.at(-1);
+        return color&&(color[0]*65536+color[1]*256+color[2]);
+      }
+      return {distance,albedo,surfaceDistance:solid.distance};
+    }
     function prepare(state,previous,edit) {
-      if(frames.has(state))return frames.get(state);
+      if(frames.has(state.edits))return frames.get(state.edits);
       const ops=initial.concat(state.edits.map(row=>{
         if(!compiled.has(row))compiled.set(row,operation(row.op,row.args));
         return compiled.get(row);
@@ -166,11 +225,35 @@
       const render=Object.freeze({bounds:domain,water,parts:Object.freeze([...baked.values()])});
       const tilesAt=new Map(wetTiles.map((tile,i)=>[tiles[i].id,tile]));
       const frame=Object.freeze({...solid,chunks:baked,dry,flood,tilesAt,render,
+        ...(lighting&&{lightingField:lightingField(solid,ops)}),
         work:freeze({splatChunks:rebuilt,reusedChunks:chunks.length-rebuilt.length,sampledChunks:edit?.op==='layer'?0:rebuilt.length,
           spanTiles:dry&&dry!==previous?.dry?dry.work.rebuilt:[],
           waterTiles:flood===previous?.flood?[]:flood?.work.changedTiles??[]})});
-      frames.set(state,frame);
+      frames.set(state.edits,frame);
       return frame;
+    }
+    function illuminated(state) {
+      if(litFrames.has(state))return litFrames.get(state);
+      const frame=prepare(state), previous=lastLit;
+      let same=0;
+      while(previous&&same<state.edits.length&&state.edits[same]===previous.state.edits[same])same++;
+      const changes=previous?[...previous.state.edits.slice(same),...state.edits.slice(same)].map(row=>{
+        const edit=compiled.get(row);
+        return {bounds:edit.shape,occlusion:edit.op!=='layer'};
+      }):[];
+      const result=lighting.refresh({chunks:chunks.map(chunk=>({...chunk,part:frame.chunks.get(chunk.id)})),
+        field:frame.lightingField,lamps:state.lamps,edits:changes,previous:previous?.result});
+      const lit=Object.freeze({result,render:Object.freeze({...frame.render,parts:result.parts})});
+      litFrames.set(state,lit);
+      lastLit={state,result};
+      return lit;
+    }
+    function lightAction(args, prior) {
+      check(keys(args,['id','at','range','color','intensity','enabled'])&&W.data.id(args.id)&&
+        own(lighting.initial,args.id),'Expected an authored point light ID');
+      const {id,...patch}=args;
+      check(Object.keys(patch).length,'Point light edit needs at least one setting');
+      return P.relighting.lamp(patch,prior?.[id]??lighting.initial[id]);
     }
     function supports(frame,point,args) {
       const [x,y,z]=point, low=args.low??y-4, high=args.high??y+.5;
@@ -210,7 +293,7 @@
       const edit=operation(op,args), row=freeze({op,args:copy(args)});
       compiled.set(row,edit);
       const previous=prepare(state);
-      const next={edits:Object.freeze([...state.edits,row])};
+      const next={...state,edits:Object.freeze([...state.edits,row])};
       const frame=prepare(next,previous,edit);
       next.work=frame.work;
       const area={min:edit.shape.min.map((n,i)=>Math.max(n,domain.min[i])),max:edit.shape.max.map((n,i)=>Math.min(n,domain.max[i]))};
@@ -230,14 +313,25 @@
       return freeze(next);
     }
     const actions=Object.fromEntries(['cut','fill','layer'].map(op=>[op,(state,args,ctx)=>action(op,state,args,ctx)]));
+    if(lighting)actions['set-light']=(state,args,ctx)=>{
+      const next=lightAction(args,state.lamps);
+      ctx.emit('light-edited',{light:args.id,at:next.at});
+      return freeze({...state,lamps:{...state.lamps,[args.id]:next}});
+    };
     return {
-      initial:()=>freeze({edits:[],work:null}),actions,
-      checkAction:operation,
+      initial:()=>freeze({edits:[],work:null,...(lighting&&{lamps:lighting.initial})}),actions,
+      checkAction(op,args){return op==='set-light'?lightAction(args):operation(op,args);},
       validateState(state) {
         check(record(state)&&Array.isArray(state.edits)&&state.edits.length<=maxEdits,'Invalid saved volume edits');
         for(const row of state.edits){
           check(record(row)&&own(actions,row.op),'Invalid saved volume operation');
           compiled.set(row,operation(row.op,row.args));
+        }
+        if(lighting){
+          const lights=P.relighting.lamps(state.lamps);
+          check(Object.keys(lights).length===Object.keys(lighting.initial).length&&
+            Object.keys(lights).every(id=>own(lighting.initial,id))&&W.data.equal(lights,state.lamps),
+          'Invalid saved volume lights');
         }
         const {work}=state, list=(ids,available)=>Array.isArray(ids)&&ids.length===new Set(ids).size&&ids.every(key=>available.has(key));
         check(state.edits.length===0?work===null:
@@ -247,8 +341,10 @@
         'Invalid saved volume work report');
       },
       dependencies:{reads:[id+'/clearance',id+'/material'],writes:['clearance','material','support','height','medium','water'].map(key=>id+'/'+key)},
-      volumeFrame:state=>state?prepare(state).render:null,
+      volumeFrame:state=>state?(lighting?illuminated(state).render:prepare(state).render):null,
       fields:{
+        ...(lighting&&{lighting:{type:'record',read:({state})=>state?
+          Q.ok({lamps:state.lamps,...illuminated(state).result.work}):Q.missing('volume state required')}}),
         clearance:W.spatialFields.define({type:'number',units:'world'},({state,point,explain})=>
           state?{status:'ok',value:prepare(state).distance(...point),...(explain&&{source:{kind:'volume',revision:state.edits.length}})}:
             Q.missing('volume state required')),

@@ -187,6 +187,7 @@
     style: 'style',
     palette: 'list',
     assetPacks: 'list',
+    environmentPreset: 'obj',
     roles: 'obj',
     camera: 'obj',
     light: 'obj',
@@ -286,7 +287,19 @@
       bad('style', 'there is no style called "' + spec.style + '"', 'styles: ' + Object.keys(DIO.styles).join(', '));
       return out;
     }
-    let surfaceEffects;
+    let surfaceEffects, catalog;
+    try {
+      catalog = lookCatalog(spec);
+    } catch (error) {
+      bad('assetPacks', error.message);
+    }
+    if (catalog || spec.assetPacks === undefined) {
+      try {
+        st.finish = K.authoring.environments.apply(st.finish,spec.environmentPreset,catalog,st.palette);
+      } catch (error) {
+        bad('environmentPreset',error.message);
+      }
+    }
     if (st.finish.skyEnvironment !== undefined && st.finish.skyEnvironment !== false) {
       try {
         SkyEnvironment.compile(st.finish.skyEnvironment);
@@ -339,6 +352,11 @@
     } catch (error) {
       bad('finish.weatherBinding', error.message);
     }
+    try {
+      K.weather.tracks.compile(st.finish.skyEnvironment,st.finish.weatherTracks);
+    } catch (error) {
+      bad('finish.weatherTracks',error.message);
+    }
     if (st.finish.cloudField !== undefined && st.finish.cloudField !== false) {
       try {
         K.clouds.compile(st.finish.cloudField);
@@ -367,12 +385,7 @@
         bad('finish.surfaceEffects', error.message);
       }
     }
-    let catalog, look = st.finish.look;
-    try {
-      catalog = lookCatalog(spec);
-    } catch (error) {
-      bad('assetPacks', error.message);
-    }
+    let look = st.finish.look;
     try {
       look = K.authoring.looks.scene(look, catalog);
     } catch (error) {
@@ -842,6 +855,7 @@
       motion = spec.motion || [],
       lamps = effects.filter(e => e.do === 'lamp'),
       loose = effects.some(e => ['dust', 'embers', 'smoke', 'sparks', 'rain'].includes(e.do)) || !!spec.tap;
+    st0.finish = K.authoring.environments.apply(st0.finish,spec.environmentPreset,catalog,st0.palette);
     st0.finish.look = K.authoring.looks.scene(st0.finish.look, catalog);
     let pal = st0.palette;
     const meshLooks = {};

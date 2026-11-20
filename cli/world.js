@@ -30,7 +30,7 @@ function target(opt) {
   return {};
 }
 
-module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,atmosphereEmittersOption,effectPalettesOption,stabilityOption,artDirectionOption,silhouetteOption,horizonOption}) {
+module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,atmosphereEmittersOption,effectPalettesOption,stabilityOption,artDirectionOption,silhouetteOption,horizonOption,skyTransitionsOption,weatherTracksOption}) {
   const W = kit.KIT.world, R = W.runtime;
   const args = () => opt.args ? parse(opt.args) : {};
   function sampleArgs() {
@@ -90,7 +90,7 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
   function advanceVisual(run, tick) {
     const emitters = kit.KIT.atmosphere.emitters;
     const { world, tick: start } = run.view();
-    const program = emitters.settings(world.visual?.atmosphereEmitters, atmosphereEmittersOption?.());
+    const program = emitters.settings(W.visualEnvironment(world).atmosphereEmitters, atmosphereEmittersOption?.());
     const targets = program?.targets.filter(target => target.entity !== undefined);
     if (!targets?.length || tick < start) {
       run.advance(tick);
@@ -328,7 +328,7 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
           colorLut:require('./lut.js').override(opt.lut),
           paletteConstraints:require('./palette-constraints.js').override(opt['palette-constraints']),
           water:opt.water==='off'?false:undefined, effectPalettes:effectPalettesOption?.(), stable:stabilityOption?.(), artDirection:artDirectionOption?.(), silhouetteProtection:silhouetteOption?.(),
-          horizonBands:horizonOption?.(),
+          horizonBands:horizonOption?.(), skyTransitions:skyTransitionsOption?.(), weatherTracks:weatherTracksOption?.(),
           atmosphere:opt.atmosphere==='off'?false:undefined, atmosphereEmitters:atmosphereEmittersOption?.(),
           coverageAware:opt['coverage-aware']===undefined?undefined:opt['coverage-aware']!=='off',
           lookMasks:opt['look-masks']==='off'?false:undefined,

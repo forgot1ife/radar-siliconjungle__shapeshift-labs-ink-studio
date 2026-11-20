@@ -97,6 +97,7 @@ module.exports = {
   spriteAtlas: require('./cli/sprite-atlas.js').spriteAtlas,
   readSpriteAtlas: require('./cli/sprite-atlas.js').readSpriteAtlas,
   readHorizonBands: require('./cli/horizon-bands.js').readHorizonBands,
+  readEnvironmentImage: require('./cli/horizon-bands.js').readEnvironmentImage,
   previewTimeline: require('./cli/animation-timeline.js').previewTimeline,
   readRasterAsset(file) {
     return require('./cli/raster-asset.js').readRasterAsset(file, module.exports.load().KIT.procedural.graph.raster);

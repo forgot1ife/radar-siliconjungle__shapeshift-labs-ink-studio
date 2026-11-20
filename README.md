@@ -354,6 +354,8 @@ console.log(pose.head.rot);
 
 Clip pose rotations use degrees; matrix rotations and many geometry options use radians. Check the relevant module's opening API comment before combining the two.
 
+Use [route followers and events](docs/route-followers.md) for loop-safe vehicle frames, banking, speed sections, station stops, arc-length train spacing and events scheduled ahead of a vehicle. `K.anim.route` consumes an arc-length path and returns poses and timestamps for any renderer or simulation.
+
 Additional animation APIs include `K.anim.machine`, `K.anim.face`, `K.anim.path`, `K.anim.steer`, `K.anim.track` and `K.anim.support`. Deformation maps include body squash/stretch, noodles, folds, lattices, morphs, smears, reaction fields, foliage and line boil. Apply maps on the CPU with `K.deform.apply`, or use puppet/bone skinning with an appropriate host renderer.
 
 Use [pose blocking and the pose shelf](docs/pose-blocking.md) to hold named story poses, draft in-betweens, and apply reusable poses to a puppet. The `pose-review` command checks the same landmarks as silhouettes at the size and angles of a directional sprite atlas.
@@ -643,6 +645,11 @@ Use `ink-studio catalog <words>` to search catalog entries and follow their `whe
 
 `KIT.authoring.context` adds spatial queries, raycasts, named surface anchors, transform resolution, and rules that respond to changes in related entities. `KIT.authoring.groups` supports batch transforms, copying, deletion and named selections. `KIT.procedural.chunks` rebuilds affected preview or final chunks and cancels superseded work. See the [retained authoring API](docs/procedural.md#optional-retained-authoring), [incremental realization](docs/procedural.md#incremental-realization) and [runnable example](examples/procedural/authoring-example.js).
 
+Use `ink-studio authoring inspect` to list stable part IDs, bounds and anchors in a retained scene.
+Preview a JSON edit with an optional PNG, then apply it to a new snapshot after the scene's checks pass.
+The [editable passage walkthrough](docs/headless-authoring.md#edit-generated-parts-from-the-cli) moves a
+doorway and landing while checking that a character can still walk through.
+
 The [headless authoring guide](docs/headless-authoring.md) covers typed graphs,
 cached simulation, attribute transfer, mesh paths, layered artwork, animation
 state graphs and the retained Flooded Shrine recipe. The [procedural API guide](docs/procedural.md)
@@ -663,6 +670,7 @@ The CLI and Node `render()` use the CPU renderer. Use the [browser renderer](doc
 | `scenes` | List scenes from the default demos or configured collection. |
 | `catalog [words] [--full]` | Search feature names, descriptions and tags. |
 | `acts` | List action clips, reactions, easing names and cues. |
+| `authoring inspect\|preview\|apply <scene>` | Inspect generated parts, preview JSON edits and save validated snapshots. |
 | `render <scene> --t 1.5` | Render one PNG at a chosen time. |
 | `passes <scene>` | Save art-pixel coverage, depth, normals, IDs and emission previews. |
 | `atlas <scene> --directions 8` | Export an RGBA atlas with registered pivots and optional relighting maps. |

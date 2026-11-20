@@ -241,6 +241,7 @@
       if (!current) throw new Error('The timeline no longer owns this puppet pose sampler');
       return current;
     }
+    const cues = () => (sequence?.cues ?? source?.cues ?? []).slice();
     function report({ before = false } = {}) {
       const motion = motionReview(), authored = contactSpec && plan('spline', []);
       return { duration, state: snapshot(), sprite: framing,
@@ -251,7 +252,7 @@
           motionLayers: motionLayers?.layers.map((layer, order) => ({ ...layer, order })) ?? [],
           keys: sequence?.keys.slice() ?? (source?.tracks ?? []).flatMap(track =>
             (track.keys ?? []).map(key => ({ part: track.part, channel: track.ch, time: key.t ?? key.time }))).sort((a, b) => a.time - b.time),
-          cues: sequence?.cues.slice() ?? source?.cues.slice() ?? [],
+          cues: cues(),
           contacts: authored?.contacts.slice() ?? [],
           transfers: authored?.handoffs.map(item => ({ ...item, part: contactSpec.prop.part })) ?? [],
           fx: fx?.effects().map(item => ({ ...item, start: item.keys[0][0], end: item.keys.at(-1)[0] })) ?? [],
@@ -264,7 +265,7 @@
     }
 
     return Object.freeze({ duration, sprite: framing, snapshot, set, restore, timeAt,
-      focus, clearFocus, sample, frame, report, motionReview });
+      focus, clearFocus, sample, frame, report, cues, motionReview });
   }
   A.timeline = Object.freeze({ create, stages });
 })(KIT);

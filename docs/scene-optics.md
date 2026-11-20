@@ -29,6 +29,12 @@ Use [Layered horizon art](layered-horizon.md) to paint a distant vista with dept
 
 Use [Transition review](transition-review.md) to compare native export frames through changes in weather, lighting, and camera.
 
+Use [Environment packs](environment-packs.md) to share versioned sky, weather, and atmosphere settings across scenes.
+
+Use [Interruptible transitions](interruptible-sky.md) to carry the current sky and weather values into a new transition.
+
+Use [Conditional weather tracks](conditional-weather.md) to drive sky transitions from cues and simulation state.
+
 ## Planar reflections
 
 ```js

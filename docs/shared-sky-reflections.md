@@ -39,4 +39,6 @@ world.skyEnvironment = K.skyEnvironment.compile({
 - `--sky-time seconds` scrubs the sky independently of scene animation. Use `--sky-profile light=sunset` to pin a compatible profile on one track. The corresponding Node options are `skyTime` and `skyProfiles`.
 - Azimuth and altitude are in radians. Azimuth starts along +Z and increases towards +X. Optional directional accents in `sky.splats` use world angles `at: [azimuth, elevation]`, and sample the same way in both views. Optional `sky.orthoFov` sets the orthographic backdrop's virtual vertical lens in degrees. A flat mirror in an orthographic shot samples a single direction until its surface normals vary.
 
+Use [Interruptible transitions](interruptible-sky.md) to start a weather or lighting change from the currently sampled sky.
+
 `--sky-environment off` disables the directional backdrop and restores the material colours for opted-in layers. `--sky-reflections material` leaves the directional backdrop visible during a comparison.

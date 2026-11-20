@@ -4,6 +4,61 @@ These APIs are available through `KIT.procedural` in Node and the browser bundle
 
 For image review and export, pass the finished world to Node's CPU `render()`. For interactive review, pass the world and authoring toolkit to the [WebGL canvas renderer](browser-renderer.md).
 
+## Edit generated parts from the CLI
+
+From the checkout, inspect the [editable passage](../examples/editable-passage.js)
+and try its [edit batch](../examples/editable-passage.edits.json).
+
+```sh
+node cli/ink-studio.js authoring inspect examples/editable-passage.js --part '@/wall/parts/doorway'
+node cli/ink-studio.js authoring preview examples/editable-passage.js examples/editable-passage.edits.json --image passage-preview.png
+node cli/ink-studio.js authoring apply examples/editable-passage.js examples/editable-passage.edits.json --out passage.json
+node cli/ink-studio.js render examples/editable-passage.js --authoring passage.json --out passage.png
+```
+
+`inspect` returns JSON with the current revision and entity records. Generated
+records include the owner, rule, and key. A scene with a spatial context also
+reports registered bounds and surfaces and resolves any authored anchor into a
+world-space frame. Omit `--part` to list the whole scene.
+
+Edit files contain an `operations` array and can pin the base by copying the
+`revision` from `inspect`. Use these operations.
+
+| Operation | Fields | Effect |
+| --- | --- | --- |
+| `update` | `id`, `patch` | Merge `parameters`, `anchor`, `parent`, or `styleRef` into the part. Generated edits become retained overrides. |
+| `suppress` | Generated part `id` | Hide the part and suppress its slot on regeneration. |
+| `allow` | Owner `id`, `rule`, `key` | Clear suppression so the rule can emit the part again. |
+
+The batch reconciles its generation rules after staging all operations.
+Both commands return added, removed and updated IDs, changed part records,
+and checks from the scene's realization. The passage example rebuilds the
+splats and colliders from the same geometry and checks whether a character
+can still walk through the doorway and up the stairs. A failed scene check
+returns exit code 2 and leaves the snapshot and image unwritten. Bad input
+or a stale revision returns exit code 1.
+
+Pass `--authoring passage.json` to inspect or edit a saved snapshot. Each
+`apply` takes a new output path, so the previous snapshot remains available
+for rollback. The output uses the existing retained-document format.
+Preview can save a PNG to a new path with `--image`.
+
+### Enable the CLI for a scene
+
+Add `authoring(seed, {snapshot, controls})` to a JavaScript scene descriptor.
+Return a retained `document`, an optional authoring `context` bound to it,
+and `realize(snapshot)`. Initialize the default document when no snapshot is
+supplied. The CLI passes any `--params` JSON as `controls` and uses the saved
+seed when loading a snapshot.
+
+The CLI reconciles the context, stages edits in one document transaction,
+and calls `realize` with the immutable candidate. Return `{world, checks}`
+or a promise for that result. A check contains `id`, Boolean `pass`, and
+optionally a message and JSON evidence. Every check must pass before the
+CLI writes an output. Successful realization supplies a packed render world.
+A rejected realization can omit the world. Use the same realization in the
+scene's normal `build` hook to render the saved snapshot.
+
 ## Fixed-size image framing
 
 `KIT.captureFrame.fixed(viewWidth, viewHeight, options)` returns the centred

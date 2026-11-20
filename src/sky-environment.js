@@ -7,7 +7,7 @@ const SkyEnvironment = (() => {
     color = require('./color-space.js');
   }
   const decode = color.prepare('srgb', 'srgb-linear'), encode = color.prepare('srgb-linear', 'srgb');
-  const TAU = Math.PI * 2;
+  const TAU = Math.PI * 2, transitionLimit = 2048;
   const clamp = (v, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
   const mix = (a, b, t) => a + (b - a) * t;
   const mod = (n, period) => {
@@ -69,13 +69,31 @@ const SkyEnvironment = (() => {
     return Object.keys(a).length === Object.keys(b).length &&
       Object.keys(a).every(key => own(b, key) && typeof a[key] === typeof b[key]);
   }
+  function blendValue(key, a, b, t) {
+    if (t <= 0) return a;
+    if (t >= 1) return b;
+    if (Array.isArray(a)) return a.map((channel,i) => mix(channel,b[i],t));
+    const target = key === 'sunAzimuth' ? a + mod(b-a+Math.PI,TAU) - Math.PI : b;
+    return mix(a,target,t);
+  }
   function blend(a, b, t) {
-    return Object.fromEntries(Object.entries(a).map(([key, v]) => {
-      const w = b[key];
-      if (Array.isArray(v)) return [key, v.map((c, i) => mix(c, w[i], t))];
-      const target = key === 'sunAzimuth' && t > 0 && t < 1 ? v + mod(w - v + Math.PI, TAU) - Math.PI : w;
-      return [key, mix(v, target, t)];
-    }));
+    return Object.fromEntries(Object.entries(a).map(([key, value]) => [key,blendValue(key,value,b[key],t)]));
+  }
+
+  function previous(keys, seconds) {
+    let low = 0, high = keys.length;
+    while (low < high) {
+      const mid = (low+high) >>> 1;
+      if (keys[mid].at <= seconds) low = mid+1;
+      else high = mid;
+    }
+    return keys[low-1];
+  }
+
+  function atTransition(key, segment, seconds) {
+    if (seconds >= segment.end) return segment.to;
+    const progress = clamp((seconds-segment.at)/segment.duration);
+    return blendValue(key,segment.from,segment.to,segment.ease(progress));
   }
   function sequence(value, profiles, id) {
     const { keys, duration, loop = true } = record(value, 'Sequence ' + id);
@@ -109,7 +127,7 @@ const SkyEnvironment = (() => {
 
   function compile(value = {}) {
     if (value?.[compiled] === true) return value;
-    const { defaults = {}, profiles = {}, sequences = {}, tracks = [], sky = {} } = record(value, 'Sky environment');
+    const { defaults = {}, profiles = {}, sequences = {}, tracks = [], sky = {}, transitions = [] } = record(value, 'Sky environment');
     const initial = parameters(defaults, 'Defaults');
     const looks = new Map(Object.entries(record(profiles, 'Profiles')).map(([id, params]) => [id, parameters(params, id)]));
     const clips = new Map(Object.entries(record(sequences, 'Sequences')).map(([id, clip]) => [id, sequence(clip, looks, id)]));
@@ -165,10 +183,7 @@ const SkyEnvironment = (() => {
             size: widths(raw, .45), color: rgb(raw.color ?? '#ffffff') };
         }) };
     }
-    function sample(seconds, overrides = {}) {
-      if (!Number.isFinite(seconds)) throw new TypeError('Sky time must be finite seconds');
-      const pins = new Map(Object.entries(record(overrides, 'Profile overrides')));
-      for (const id of pins.keys()) if (!ids.has(id)) throw new RangeError('Unknown profile track ' + id);
+    function trackSample(seconds, pins) {
       const params = Object.assign(Object.create(null), initial);
       for (const { id, clip, offset, speed } of schedule) {
         const time = seconds * speed - offset;
@@ -178,11 +193,75 @@ const SkyEnvironment = (() => {
           throw new RangeError('Incompatible profile ' + pin + ' for ' + id);
         Object.assign(params, profile);
       }
-      return Object.fromEntries(Object.entries(params).map(([key, v]) => [key, Array.isArray(v) ? encode(v) : v]));
+      return params;
     }
 
-    function frame(seconds, overrides) {
-      const p = Object.assign(Object.create(null), sample(seconds, overrides));
+    function transitionList(source) {
+      return Object.freeze(Array.from(list(source,transitionLimit,'Sky transitions'), raw => {
+        const { at, profile, duration, ease = 'smooth' } = record(raw,'Sky transition');
+        if (Object.keys(raw).some(key => !['at','profile','duration','ease'].includes(key)))
+          throw new TypeError('A sky transition needs at, profile, duration and optional ease');
+        bounded(at,-1e9,1e9,'Sky transition time');
+        bounded(duration,Number.MIN_VALUE,1e9,'Sky transition duration');
+        if (!(at+duration > at)) throw new RangeError('Sky transition duration is too small at its start time');
+        if (!['linear','smooth'].includes(ease)) throw new TypeError('Sky transition easing must be linear or smooth');
+        const target = looks.get(text(profile,'Sky transition profile'));
+        if (!target || !Object.keys(target).length) throw new RangeError('Unknown or empty sky transition profile ' + profile);
+        for (const [key,value] of Object.entries(target)) {
+          if (!own(channelTypes,key) || typeof value !== typeof channelTypes[key])
+            throw new TypeError('Sky transition profile '+profile+' needs an initial '+typeof value+' value for '+key);
+        }
+        return Object.freeze({ at, profile, duration, ease });
+      }).sort((a,b) => a.at-b.at));
+    }
+
+    function indexTransitions(events, pins) {
+      const byChannel = new Map();
+      for (const event of events) {
+        const authored = trackSample(event.at,pins);
+        for (const [key,to] of Object.entries(looks.get(event.profile))) {
+          if (!byChannel.has(key)) byChannel.set(key,[]);
+          const segments = byChannel.get(key), last = segments.at(-1);
+          // Capture in the same linear-light space used by the track sampler.
+          const from = last ? atTransition(key,last,event.at) : authored[key];
+          segments.push({ at:event.at,end:event.at+event.duration,duration:event.duration,ease:easings[event.ease],from,to });
+        }
+      }
+      return byChannel;
+    }
+
+    function playback(events) {
+      const indexed = new Map();
+      function sample(seconds, overrides = {}) {
+        if (!Number.isFinite(seconds)) throw new TypeError('Sky time must be finite seconds');
+        const pins = new Map(Object.entries(record(overrides, 'Profile overrides')));
+        for (const id of pins.keys()) if (!ids.has(id)) throw new RangeError('Unknown profile track ' + id);
+        const params = trackSample(seconds,pins);
+        if (events.length && seconds >= events[0].at) {
+          const pinKey = pins.size ? JSON.stringify([...pins].sort(([a],[b]) => a.localeCompare(b))) : '';
+          if (!indexed.has(pinKey)) {
+            if (indexed.size >= 16) indexed.delete(indexed.keys().next().value);
+            indexed.set(pinKey,indexTransitions(events,pins));
+          }
+          for (const [key,segments] of indexed.get(pinKey)) {
+            const segment = previous(segments,seconds);
+            if (segment) params[key] = atTransition(key,segment,seconds);
+          }
+        }
+        return Object.fromEntries(Object.entries(params).map(([key, v]) => [key, Array.isArray(v) ? encode(v) : v]));
+      }
+
+      function frame(seconds, overrides) {
+        return skyFrame(sample(seconds,overrides));
+      }
+      return Object.freeze({ [compiled]:true, sample, frame, profile, transitions:events,
+        interrupt(event) { return playback(transitionList([...events,event])); },
+        withTransitions(source) { return playback(transitionList(source === false ? [] : source)); }
+      });
+    }
+
+    function skyFrame(parameters) {
+      const p = Object.assign(Object.create(null), parameters);
       const sun = direction(mod(p.sunAzimuth ?? base.sunAzimuth, TAU), p.sunAltitude ?? base.sunAltitude);
       function style(layer) {
         const tint = layer.tint === undefined ? [1, 1, 1] : p[layer.tint];
@@ -207,7 +286,7 @@ const SkyEnvironment = (() => {
       return Object.fromEntries(Object.entries(value).map(([key,v]) => [key, Array.isArray(v) ? encode(v) : v]));
     }
 
-    return Object.freeze({ [compiled]: true, sample, frame, profile });
+    return playback(transitionList(transitions));
   }
 
   function withCelestials(sky, celestial, background = [0, 0, 0]) {
@@ -277,6 +356,6 @@ const SkyEnvironment = (() => {
     }
     return sky.celestial ? sky.celestial.shade(ray, output) : output;
   }
-  return Object.freeze({ compile, shade, aerial, airTransmission, scattering, withCelestials });
+  return Object.freeze({ compile, shade, aerial, airTransmission, scattering, withCelestials, transitionLimit });
 })();
 if (typeof module !== 'undefined') module.exports = SkyEnvironment;

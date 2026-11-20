@@ -1005,6 +1005,10 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
       },
       meta
     );
+    if (world.environmentPreset !== undefined && world.environmentPreset !== false) {
+      const catalog = KIT.authoring.assetPacks.create({ packs:world.assetPacks ?? [] });
+      Object.assign(world,KIT.authoring.environments.apply(world,world.environmentPreset,catalog,world.pal));
+    }
     if (world.look?.colorLut !== undefined && world.look.colorLut !== false)
       world.look = { ...world.look, colorLut: ColorLUT.normalize(world.look.colorLut) };
     if (world.look?.colorStack !== undefined && world.look.colorStack !== false)

@@ -673,7 +673,7 @@ reaches the feeder.
 | --- | --- |
 | `fields` | Typed spatial fields with defaults, grids, regions and a `set` action. |
 | `materials` | Grid of versioned surface materials with local moisture, temperature, coefficients, and appearance. |
-| `volume` | Editable 3D solid with material layers, collision and support queries, fixed-head connected water, and locally retained splats. |
+| `volume` | Editable 3D solid with material layers, collision and support queries, fixed-head water, retained splats, and optional local relighting. |
 | `construction` | Constraint-fitted points, sockets, blocks, spans, and passage clearance with live refits and conflict reports. |
 | `control` | Typed arithmetic, thresholds, selection, binary logic, pulses, latches, timers and hysteresis. |
 | `store` | Bounded numeric, integer, or vector accounts with named resources and units. |
@@ -1368,6 +1368,62 @@ ink-studio trace examples/world-harvest-logistics.json flow/supply --ticks 150 -
 ink-studio probe harvest.run.json --field flow/ledger
 ink-studio sim replay harvest.run.json
 ```
+
+## Relighting editable volumes
+
+Enable `lighting` in a `volume` system's config. The volume shades its retained
+splat positions, surface normals, and material colors when you render it.
+Cuts and fills can change shadows farther from the edit than the rebuilt
+geometry. Material layers can change the color bounced onto nearby surfaces.
+Shadow rays follow the same solid geometry used by the editing tools. Both the headless renderer and WebGL can draw the resulting
+packed splats.
+
+```json
+{
+  "ambient": 0.12,
+  "sun": { "direction": [-0.28, 0.92, 0.31], "color": "#fff0c2", "intensity": 1.4 },
+  "sky": { "color": "#9ec2ff", "intensity": 0.23 },
+  "indirect": { "distance": 1.6, "strength": 0.66, "rays": 4, "probeSize": 0.42 },
+  "lamps": {
+    "lantern": { "at": [3.2, 1.32, 0.65], "range": 3.1, "color": "#ff9c52", "intensity": 5.3 }
+  }
+}
+```
+
+Sun direction points from the receiver toward the light. Its optional
+`distance` bounds the shadow ray and defaults to the volume's diagonal.
+Point lights have finite range. Use `volume-id/set-light` with a lamp ID and
+the position, range, color, intensity, or enabled flag you want to change.
+The runtime saves lamp settings alongside the volume edits for replay.
+
+The diffuse term combines sky visible within `indirect.distance` with one
+local surface bounce. `rays` controls how many directions each probe samples
+and `probeSize` controls spatial reuse. Choose a probe size near twice the
+volume cell spacing to start. Set `strength: 0` to disable the bounce.
+The volume's cut and fill shapes supply the shadow geometry.
+
+The `lighting` query reports changed and reused chunks, surface samples, and
+ray work. It describes the lighting work for the queried snapshot. A moved
+lamp reuses the sun, sky, and bounce paths and only refreshes its local
+contribution. Cuts and fills invalidate receivers whose light paths cross
+the edit. A restored checkpoint starts with a fresh lighting cache.
+
+```sh
+ink-studio sim render examples/world-lightwell-workshop.json --ticks 2 --colored --out skylight.png
+ink-studio probe examples/world-lightwell-workshop.json --ticks 4 --field workshop/lighting
+node scripts/benchmark-volume-lighting.js
+```
+
+The benchmark compares incremental work to a full lighting refresh on
+prepared geometry and verifies that their rendered splat data agree.
+For another retained geometry provider, use
+`K.procedural.relighting.create(settings, { bounds, cell })`. Pass
+`refresh({ chunks, field, lamps, edits, previous })` the native chunk parts
+with stable IDs and world bounds, a signed distance function
+`field.distance(x, y, z)`, and an optional `field.albedo(x, y, z)` returning
+packed RGB for bounce donors. Each edit carries world `bounds` and can mark
+a material-only change with `occlusion: false`. Retain the returned frame
+for the next refresh.
 
 ## Extend the runtime in JavaScript
 
