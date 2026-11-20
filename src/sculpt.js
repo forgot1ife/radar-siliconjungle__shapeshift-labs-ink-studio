@@ -1546,9 +1546,11 @@ function makeSculpt(B, rest) {
   S.proxySdf = () => hasOptionalProxy ? (x, y, z) => fieldAll(x, y, z, true) : S.sdf;
   /* Material and part ownership at a rest-pose surface. The distance field
      is retained even when the renderer samples it at a different resolution. */
-  S.surfaceAt = (x, y, z) => {
+  S.surfaceAt = (x, y, z, provenance = false) => {
     const distance = fieldAll(x, y, z), cut = ownNeg;
-    return { distance, material: cut?.mat?.r ? cut.mat : own?.mat, tag: cut?.tag || own?.tag || null };
+    const source = cut?.mat?.r ? cut : own;
+    return { distance, material: source?.mat, tag: cut?.tag || own?.tag || null,
+      ...(provenance && { owner: source?.renderOwner, target: source?.renderTarget }) };
   };
   /* (before a bake the field does not yet know where its solids are: S.ready() tells it, for whoever needs to ask early) */
   S.ready = buildGrid;

@@ -45,6 +45,26 @@ Use `setModifiers(list, keys)` to add, remove, or reorder entries. Use `updateMo
 
 Pass the result of `build()` to `createSceneEditor` to reopen its source at the time of the bake. Retain `serialize()` output for durable storage alongside any exported splat or image data. Opening a scene with mesh operands uses the same asset lookup as opening its source JSON. Active modifiers on a separate analytic shape send its edited surface through the general mesh export path.
 
+## Brushes and local rebuilds
+
+Use `setBrushRegion(region)` to select a bounded 3D region or pass `null` to clear it. The region is stored as `brushRegion` in the saved diorama. Set `bounds` with XYZ `min` and `max`, and list the IDs of the stationary solids to edit in `solids`. Omit `solids` for a region that starts empty. `cell` sets the surface sampling interval and defaults to 0.16 scene units. `chunkCells` sets the size of each chunk along an axis and defaults to 12.
+
+Use `applyBrush(stroke)` to append a retained stroke and receive the rebuilt world immediately. A stroke needs a unique `id`, a `mode`, one or more XYZ `points`, and a positive `radius`. Brush footprints are clipped to the region.
+
+| Mode | Operation |
+| --- | --- |
+| `sculpt` | Add solid material along a swept sphere path. |
+| `paint` | Change the material of existing editable surfaces inside the path. Surface sampling is reused. |
+| `erase` | Carve the path out of the editable surface and earlier stamps. |
+| `place` | Place a solid stamp at each point. Set `shape` to `ball` or `box`. Radius is the ball radius or box half-width. |
+| `scatter` | Scatter solid stamps within horizontal disks around the points. Set `count`, `size`, and optionally `seed` and `shape`. Radius sets the disk radius. Size is the stamp radius or half-width and defaults to 15 percent of the disk radius. The default count is 12. |
+
+All modes except erase accept a palette role in `material` and default to `stone`. Apply strokes in order. Added stamps have deterministic ownership and can be picked as stroke entries in the scene tree. Use `begin()` and `commit()` to group strokes. Edit the region's `strokes` array to change or remove a saved stroke. The CLI can validate and render the saved diorama.
+
+The returned `world.brushRegion.chunks` maps chunk keys to packed splats. `world.brushRegion.work` reports rebuilt and resampled keys and the number of reused chunks. The first build samples the region. Subsequent strokes reuse distant chunk buffers and keep native splats outside the editable lattice. The assembled world can go directly to either renderer.
+
+Brush regions use a static diorama and a separate sampled surface for the locally editable geometry. That surface uses the diorama's palette roles and directional light. Choose the cell size for the detail required. Brush regions publish splat geometry. Their scene source and strokes are retained in the diorama JSON.
+
 ## History
 
 Standalone edits commit immediately. Use `begin(label)` to group repeated transform or material edits into one gesture. `preview()` validates the draft, `commit()` records it as one undo step, and `cancel()` restores the prior scene. If preview or commit fails validation, the transaction rolls back.

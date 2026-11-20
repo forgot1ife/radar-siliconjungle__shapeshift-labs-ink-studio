@@ -229,6 +229,7 @@
     groups: 'obj',
     parts: 'obj',
     solids: 'list',
+    brushRegion: 1,
     motion: 'list',
     effects: 'list',
     tap: 'obj',
@@ -956,6 +957,13 @@
       if (spec.camera.target !== undefined && !isVec(spec.camera.target, 3))
         bad('camera.target', 'three numbers [x, y, z]');
     }
+    if (spec.brushRegion != null) {
+      try {
+        K.authoring.brushRegions.prepare(spec, st.roles);
+      } catch (error) {
+        bad('brushRegion', error.message);
+      }
+    }
     if (area > 150000)
       warn(
         'solids',
@@ -1003,6 +1011,8 @@
   }
 
   // ---------------- building ----------------
+  const brushField = Symbol('brush field');
+  DIO.brushField = (spec, env) => DIO.build(spec, env, { [brushField]: true });
   DIO.build = (spec, env, modelOptions) => {
     env = env || {};
     const problems = DIO.check(spec, env),
@@ -1027,6 +1037,11 @@
       motion = spec.motion || [],
       lamps = effects.filter(e => e.do === 'lamp'),
       loose = effects.some(e => ['dust', 'embers', 'smoke', 'sparks', 'rain'].includes(e.do)) || !!spec.tap;
+    if (spec.brushRegion != null) {
+      if (modelOptions) throw new TypeError('Brush regions are baked as splat geometry');
+      const { palette, roles, sun } = st0;
+      return (env.brushSession ?? K.authoring.brushRegions.create()).build(spec, env, { palette, roles, sun });
+    }
     st0.finish = K.authoring.environments.apply(st0.finish,spec.environmentPreset,catalog,st0.palette);
     st0.finish.look = K.authoring.looks.scene(st0.finish.look, catalog);
     let pal = st0.palette;
@@ -1215,6 +1230,11 @@
         }
         return p;
       };
+    if (modelOptions?.[brushField]) {
+      for (const solid of spec.solids) make(solid);
+      S.ready();
+      return S;
+    }
     if (modelOptions) {
       const groups = new Map(), meshes = [];
       const { duration = 4, fps = 30, resolution, method, bounds, targetTriangles } = modelOptions;

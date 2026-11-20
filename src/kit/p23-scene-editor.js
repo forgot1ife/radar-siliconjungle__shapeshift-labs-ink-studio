@@ -54,6 +54,20 @@
       (owner?.children ?? roots).push(node);
       return node;
     });
+    const byStroke = new Map();
+    if (scene.brushRegion) {
+      const brushRegion = parent('brushRegion', 'Brush region');
+      const strokes = scene.brushRegion.strokes;
+      for (const stroke of Array.isArray(strokes) ? strokes : []) {
+        if (typeof stroke?.id !== 'string') continue;
+        const key = 'stroke:' + stroke.id;
+        const node = { key, kind: 'stroke', name: stroke.id, stroke, children: [] };
+        nodes.set(key, node);
+        byStroke.set('brush-stroke:' + stroke.id, key);
+        brushRegion.children.push(node);
+      }
+      roots.push(brushRegion);
+    }
     const tree = freeze({ key: 'scene:' + scene.id, kind: 'scene', name: scene.name ?? scene.id, children: roots });
     nodes.set(tree.key, tree);
 
@@ -67,7 +81,7 @@
       byTag.set(tag, indexedNodes[i].key);
       return { ...solid, tags: [...(solid.tags ?? []), tag] };
     }) };
-    return { tree, nodes, byEntity, byTag, preview: freeze(preview) };
+    return { tree, nodes, byEntity, byTag, byStroke, preview: freeze(preview) };
   }
 
   function create(source, { env, historyLimit } = {}) {
@@ -98,16 +112,18 @@
       }
       return index;
     }
-    function keys(value) {
+    function keys(value, solidsOnly = false) {
       const requested = typeof value === 'string' ? [value] : value;
-      if (!Array.isArray(requested) || Array.from(requested).some(key => current().nodes.get(key)?.kind !== 'solid'))
-        throw new RangeError('Selection needs keys of solids in the scene tree');
+      const kinds = solidsOnly ? ['solid'] : ['solid', 'stroke'];
+      if (!Array.isArray(requested) || Array.from(requested).some(key => !kinds.includes(current().nodes.get(key)?.kind)))
+        throw new RangeError(solidsOnly ? 'Edits need keys of solids in the scene tree' :
+          'Selection needs keys of solids or brush strokes in the scene tree');
       return [...new Set(requested)];
     }
 
     function selectedKeys() {
       const { nodes } = current();
-      return freeze(selection.filter(key => nodes.get(key)?.kind === 'solid'));
+      return freeze(selection.filter(key => ['solid', 'stroke'].includes(nodes.get(key)?.kind)));
     }
 
     function select(requested, { mode = 'replace' } = {}) {
@@ -122,7 +138,7 @@
     }
 
     function edit(label, targets, update) {
-      const selected = new Set(keys(targets).map(key => current().nodes.get(key).solid));
+      const selected = new Set(keys(targets, true).map(key => current().nodes.get(key).solid));
       if (!selected.size) return false;
       function rewrite(solid) {
         let next = solid;
@@ -196,9 +212,38 @@
       else document.transact('Edit material role ' + name, write);
     }
 
-    const build = () => Object.assign(DIO.build(current().preview, env), { spec: snapshot() });
+    const brushEnv = { ...env, brushSession: A.brushRegions.create() };
+    const build = () => Object.assign(DIO.build(current().preview, brushEnv), { spec: snapshot() });
+
+    function setBrushRegion(region) {
+      const value = clone(region);
+      const write = () => document.setEnvironment({ brushRegion: value });
+      if (document.pending()) write();
+      else document.transact('Select brush region', write);
+    }
+
+    function applyBrush(stroke) {
+      const value = clone(stroke);
+      const region = snapshot().brushRegion;
+      if (!region) throw new Error('Select a brush region before applying a stroke');
+      function edit() {
+        document.setEnvironment({ brushRegion: { strokes: [...(region.strokes ?? []), value] } });
+        document.preview();
+        const world = build();
+        previewWorld = world;
+        return world;
+      }
+      if (!document.pending()) return document.transact('Brush ' + (value?.mode ?? 'edit'), edit);
+      try {
+        return edit();
+      } catch (error) {
+        document.cancel();
+        throw error;
+      }
+    }
+
     function pick(ray, { world, time, reconstruction, sampleWithdrawal } = {}) {
-      const { byEntity, byTag } = current();
+      const { byEntity, byTag, byStroke } = current();
       const rendered = world ?? (previewWorld ??= build());
       const at = time ?? rendered.lookSnapshot?.time ?? 0;
       // A caller-owned world can be animated or edited in place between picks.
@@ -213,7 +258,8 @@
       for (const hit of [result.dominant, ...result.contributions]) {
         const target = hit?.target;
         const tag = target?.tags?.find(tag => byTag.has(tag));
-        const key = tag ? byTag.get(tag) : byEntity.get(target?.entity);
+        const stroke = target?.surface === 'brush-region' ? byStroke.get(target.entity) : undefined;
+        const key = stroke ?? (tag ? byTag.get(tag) : byEntity.get(target?.entity));
         if (key) return { key, hit };
       }
       return null;
@@ -236,6 +282,8 @@
       updateShape,
       setModifiers,
       updateModifier,
+      setBrushRegion,
+      applyBrush,
       setMaterial,
       setRole,
       materials: () => freeze(clone(DIO.sceneMaterials(snapshot()))),
