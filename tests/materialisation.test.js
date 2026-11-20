@@ -77,7 +77,7 @@ test('staggered gathers keep untouched animated surfaces attached until each dep
   const {fx,W,stage}=fixture(2,{source:home,targets:{form:target}});fx.gather('form',{duration:1,stagger:1});
   const snap=fx.snapshot();assert(snap.particles.some(s=>s.pending));
   const waiting=snap.particles.findIndex(s=>s.pending?.at>.05);fx.advance(.025);
-  if(waiting>=0){assert.equal(stage.geometryOwned[waiting],0);assert.equal(fx.inspect(waiting).mode,'home');}
+  if(waiting>=0){near(W.data[waiting*16],.025);assert.equal(fx.inspect(waiting).mode,'home');}
   fx.advance(2);assert.equal(fx.stats.settled,2);assert(W.data.every(Number.isFinite));
 });
 
@@ -222,4 +222,13 @@ test('rejoining a peeled subset never disturbs carriers that are already home',(
   fx.release({ids:[0,1]});fx.advance(.3);fx.rejoin({duration:.4});fx.advance(.2);
   for(let i=2;i<12;i++)assert.deepEqual(row(W.data,i),row(base,i));
   fx.advance(.2);assert.equal(fx.stats.home,12);
+});
+
+
+test('custom source anchors keep animating while home and after a completed rejoin',()=>{
+  const source=K.materialisation.anchors.points([[0,1,0],[0,2,0]],{pose(out,t){out.position[0]=t;}}),{fx,W,stage}=fixture(2,{source});
+  fx.advance(.2);near(W.data[0],.2);assert.equal(stage.geometryOwned[0],1);
+  fx.release({normalImpulse:0});fx.advance(.1);fx.rejoin({duration:.3});fx.advance(.3);assert.equal(fx.stats.home,2);near(W.data[0],.6);
+  fx.advance(.2);near(W.data[0],.8);const saved=fx.snapshot();fx.advance(.2);fx.restore(saved);fx.advance(.2);near(W.data[0],1);
+  fx.dispose();assert.equal(stage.geometryOwned[0],0);assert.equal(Math.round(W.data[11])&K.materialisation.FLAG,0);
 });

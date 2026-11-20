@@ -75,6 +75,10 @@ automatically prepares a changed timestamp. `live: true` reads an upstream
 surface's current rows; use it for separate, externally updated geometry, not the
 carrier rows being rewritten by this effect. For other CPU deformation systems,
 provide a time-based custom sampler or pose callback to avoid feedback.
+A custom `source` without `restore(index, packedRow)` remains a world-space
+kinematic writer at home, so its animated anchors keep moving after rejoin. It
+retains active ownership and explicit fragment appearance. Native splat anchors
+provide `restore` and return control, skinning and rest-space paint to the rig.
 
 Charts supply destinations or positions for splat carriers. This does not remove
 texels or tear triangles from a rendered atlas mesh. Use SDF/splat source geometry

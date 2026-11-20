@@ -411,14 +411,17 @@
         row.fill(0, 12, 16);
       }
       normals(i, null, true);
-      ownership.deactivate(owner, [id]);
-      if (stage.rig?.free) stage.rig.free[id] = free[i];
+      if (home.restore) {
+        ownership.deactivate(owner, [id]);
+        if (stage.rig?.free) stage.rig.free[id] = free[i];
+      } else activate(i);
       s.mode = HOME;
       s.target = 'home';
       s.links = [[i, 1]];
       s.pending = null;
       cloneSample(s.display, cache.get('home')[i]);
       s.position.splice(0, 3, ...s.display.position);
+      if (!home.restore) write(i);
       stage.touch(id);
       stage.repaint?.(id);
     }
@@ -735,7 +738,7 @@
     }
     function write(i) {
       const s = state[i];
-      if (s.mode === HOME || s.mode === WAIT) return;
+      if ((s.mode === HOME || s.mode === WAIT) && home.restore) return;
       const id = ids[i],
         q = id * 16,
         out = s.display;
@@ -1066,7 +1069,7 @@
         homeVelocity[i].splice(0, 3, ...snap.homeVelocity[i]);
         previousHome[i].splice(0, 3, ...snap.previousHome[i]);
         D.set(snap.rows[i], ids[i] * 16);
-        if (state[i].mode === HOME || state[i].mode === WAIT) {
+        if ((state[i].mode === HOME || state[i].mode === WAIT) && home.restore) {
           ownership.deactivate(owner, [ids[i]]);
           if (stage.rig?.free) stage.rig.free[ids[i]] = free[i];
           normals(i, null, true);
@@ -1096,7 +1099,7 @@
       restore,
       paint(id, rgba) {
         const i = indexOf.get(id);
-        if (i === undefined || state[i].mode === HOME || state[i].mode === WAIT) return;
+        if (i === undefined || ((state[i].mode === HOME || state[i].mode === WAIT) && home.restore)) return;
         const s = state[i].display;
         rgba[0] = (s.color & 255) / 255;
         rgba[1] = ((s.color >>> 8) & 255) / 255;
@@ -1127,6 +1130,11 @@
         refreshAnchors(elapsed);
         for (let i = 0; i < n; i++) attach(i);
         ownership.release(owner);
+        if (!home.restore)
+          for (let i = 0; i < n; i++) {
+            D[ids[i] * 16 + 11] &= ~api.FLAG;
+            if (stage.rig?.free) stage.rig.free[ids[i]] = free[i];
+          }
         disposed = true;
         for (const list of [stage.systems, stage.painters]) {
           const index = list.indexOf(binding);
