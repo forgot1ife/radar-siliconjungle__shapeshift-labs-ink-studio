@@ -89,7 +89,7 @@ function depthBounds(row, view) {
 export function createDepthSorter() {
   const counts = new Uint32Array(65536);
   let depth, keys, order;
-  return function sort(world, view, time, instances, placements) {
+  return function sort(world, view, time, instances, placements, stabilize) {
     const { count, data } = world;
     const stride = instances ? 2 : 1;
     const total = count + (instances?.reduce((sum,row) => sum + row.asset.count, 0) ?? 0);
@@ -157,6 +157,12 @@ export function createDepthSorter() {
       }
     }
     for (const i of world.back ?? []) if (i < count) depth[i] = min;
+    if (stabilize) {
+      const sorted = order.subarray(0, count);
+      for (let i = 0; i < count; i++) sorted[i] = i;
+      sorted.sort((a, b) => depth[a] - depth[b]);
+      return stabilize(sorted, depth);
+    }
     const scale = 65535 / (max - min || 1);
     counts.fill(0);
     for (let i = 0; i < total; i++) counts[keys[i] = (depth[i] - min) * scale | 0]++;

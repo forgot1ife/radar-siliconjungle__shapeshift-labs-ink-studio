@@ -66,6 +66,25 @@ The CPU and WebGL renderers share these coefficients for native splats, water an
 renderer also applies them to sampled atmosphere fields. Existing materials and media use their legacy
 settings until a profile is attached.
 
+## Stable transparency during motion
+
+Set `look.stableTransparency` to `true` when overlapping glass, optical splats or other translucent splats
+keep switching order as the camera moves. The depth tolerance defaults to 0.04 world units along the
+camera axis. Set `look.stableTransparency` to an object with a `depthTolerance` field to tune it.
+Depth-separated layers return to their current back-to-front order, and opaque or explicitly
+background splats remain ordering boundaries.
+
+WebGL retains the order between frames of the same world. Set `frame.resetTransparency` at a cut or
+`frame.stableTransparency` to override the scene setting. Time rewinds and large changes in camera
+direction start a fresh order. In the coverage-aware glass pass, nearby translucent splats stay
+together at the pane boundary. Stabilized WebGL instances use the renderer's expanded geometry path.
+
+For Node image sequences, create `K.stableTransparency.history()` and pass it as `transparencyHistory`
+to successive `render()` calls. Call `history.reset()` at a cut. Individual images without history use
+the baked splat indices to resolve nearby layers deterministically. The CPU's surface order also
+applies the tolerance to the local fragment depths. The CLI carries history through clips, sheets
+and turntables. Use `--stable-transparency on` or `off` to override the scene setting.
+
 ## Measured render budgets
 
 Run the headless benchmark from the repository root. It covers the fog observatory, the shaped-mist ravine, sparse illuminated mist pockets, and the lens workshop's transparent layers.

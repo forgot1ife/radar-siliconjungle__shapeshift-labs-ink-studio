@@ -55,6 +55,7 @@ tone mapping, and grading are inactive. Pass `reuseOrder: false` or
 | `clean`, `lineClean`, `damp` | Control isolated-pixel cleanup, line cleanup, and per-pixel flicker damping. |
 | `edges`, `lightShape` | Toggle surface edge sprites and per-pixel line shading. |
 | `scale`, `stepAnimation` | Change the splat size or disable the shared per-pixel animation clock stepping. |
+| `stableTransparency` | Hold the order of nearby translucent splats during motion. See [stable transparency](scene-optics.md#stable-transparency-during-motion). |
 | `water: false` | Compare the scene with water optics disabled. |
 | `portal`, `fade` | Render an oriented destination view or apply a scene fade. See [place travel and portals](portals.md). |
 

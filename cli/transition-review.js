@@ -1,5 +1,6 @@
 const { render, upscale } = require('./render.js');
 const ArtEffects = require('../src/art-effects.js');
+const { history: transparencyHistory } = require('../src/splat-order.js');
 const { volumeHistory } = require('../src/scene-optics.js');
 
 const defaults = Object.freeze({ pixelDelta:.12, popFraction:.18, lightingDelta:.065, paletteDelta:.055 });
@@ -109,7 +110,7 @@ function evidence(from, to, thresholds, comparison, flag = true) {
 }
 
 function stream(camera) {
-  return { ...camera, artHistory:ArtEffects.history({ frames:24 }), volumeHistory:volumeHistory() };
+  return { ...camera, artHistory:ArtEffects.history({ frames:24 }), volumeHistory:volumeHistory(), transparencyHistory:transparencyHistory() };
 }
 
 function capture(world, settings, { rows, fps, neighbors, preroll }, pose) {
@@ -137,6 +138,8 @@ function capture(world, settings, { rows, fps, neighbors, preroll }, pose) {
           incoming.artHistory.clear();
           outgoing.volumeHistory.clear();
           incoming.volumeHistory.clear();
+          outgoing.transparencyHistory.reset();
+          incoming.transparencyHistory.reset();
         }
         const image = draw(incoming && offset >= 0 ? playback : outgoing);
         if (offset === -1 && incoming) {
@@ -148,6 +151,7 @@ function capture(world, settings, { rows, fps, neighbors, preroll }, pose) {
           const active = playback || outgoing;
           active.artHistory.clear();
           active.volumeHistory.clear();
+          active.transparencyHistory.reset();
         }
       });
     }

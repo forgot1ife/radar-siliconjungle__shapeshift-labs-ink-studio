@@ -125,14 +125,24 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
     let maskSites, siteState, maskTexture, glassWorld, glassData, glassIndices;
     const rasterKeys = new WeakMap();
     let rasterKey = 0;
-    const sort = createDepthSorter();
+    const sort = createDepthSorter(), transparencyAPI = toolkit.KIT?.procedural?.splatOrder;
+    const mainTransparency = new WeakMap(), portalTransparency = new WeakMap();
     let surfacePipeline;
     let simple, simpleUnavailable = false, keyProgram, damp, copy, spriteProgram, spriteEnvProgram, spriteLayer, spriteTable, anchors;
     let lastWorld, lastData, lastCount, lastOutput, lastDetail, lastEnvironment, fineValues, materials, anchorCount = 0;
     let packed = empty, historyIndex = 0, historyValid = false, previousVP, previousColorGrade;
     let toneKey, tone, sorted, instanceDraw, expandInstances, lastInstances;
 
-    function orderFor(world, frame, camera, time, isNew, plan, width, height, scale) {
+    function orderFor(world, frame, camera, time, isNew, plan, width, height, scale,
+      tolerance, histories, source) {
+      const sceneTime = frame.time ?? world.lookSnapshot?.time ?? 0;
+      const seeking = tolerance && sorted?.source === source && sorted.histories === histories && sceneTime < sorted.sceneTime;
+      let history = histories.get(source);
+      if (!tolerance || frame.order) histories.delete(source);
+      else {
+        if (!history) histories.set(source, history = transparencyAPI.history());
+        if (frame.resetTransparency || seeking) history.reset();
+      }
       if (frame.order) {
         pipeline.setOrder(frame.order);
         sorted = null;
@@ -143,12 +153,23 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       const clock = moving.length ? time : 0;
       const viewport = plan ? [width,height,scale,camera.tangent,camera.clipNear,+camera.ortho] : [];
       if (canReuse && !isNew && (frame.changedRows?.length === 0 || plan && !world.count && !frame.changedRows) &&
-          sorted?.clock === clock && sorted.revision === plan?.orderRevision && sameValues(sorted.viewport,viewport) &&
-          sameValues(sorted.view, camera.view) && sameValues(sorted.moving, moving) && sameValues(sorted.back, back)) return;
+          !frame.resetTransparency && !seeking && sorted?.tolerance === tolerance && sorted.clock === clock &&
+          (!tolerance || sorted.histories === histories) &&
+          sorted.revision === plan?.orderRevision && sameValues(sorted.viewport,viewport) &&
+          sameValues(sorted.view, camera.view) && sameValues(sorted.moving, moving) && sameValues(sorted.back, back)) {
+        sorted.sceneTime = sceneTime;
+        return;
+      }
       const visible = plan && groupVisibility(plan,camera,width,height,scale);
-      pipeline.setOrder(sort(world, camera.view, time, visible, plan?.rows), !!plan);
+      const backRows = tolerance && back.length ? new Set(back) : null;
+      const { data, opticalSplats } = world;
+      const stabilize = tolerance ? (order, depths) => history.sort(order, {
+        data: source.data, layout: frame.instances, view: camera.view, time: sceneTime, tolerance, depthAt: i => depths[i],
+        transparentAt: i => transparencyAPI.isTransparent(data, i, data[i * 16 + 3], opticalSplats?.[i * 12 + 3], backRows)
+      }) : undefined;
+      pipeline.setOrder(sort(world, camera.view, time, visible, plan?.rows, stabilize), !!plan);
       sorted = canReuse ? { view: camera.view, moving: Int32Array.from(moving), back: Int32Array.from(back),
-        clock, revision:plan?.orderRevision, viewport } : null;
+        clock, tolerance, sceneTime, source, histories, revision:plan?.orderRevision, viewport } : null;
     }
 
     function prepareDetail(world, budget) {
@@ -517,11 +538,13 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
     }
 
     function render(world, frame, width, height, output, cameraOverride, plane = zero, cover) {
+      const source = world, histories = plane === zero ? mainTransparency : portalTransparency;
       const camera = cameraOverride ?? makeCamera(world, frame, width, height);
       if (world.shadowLod && frame.shadowArt !== false)
         world = toolkit.KIT?.shadowArt?.frame(world, camera.shadowFootprint) ?? world;
       const { raw = false, outline = true, dither = 0.35, scale = 1 } = frame;
       const look = world.look ?? {};
+      const tolerance = transparencyAPI?.transparency(frame.stableTransparency ?? look.stableTransparency)?.depthTolerance ?? 0;
       const budget = raw ? null : detailAPI?.prepare(look.detailBudgets);
       const globalCleanup = !raw && (frame.clean ?? !!look.clean);
       const needsDetailFlags = budget?.affectsCleanup && (globalCleanup || budget?.enablesCleanup);
@@ -529,7 +552,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       const wantsRelight = lighting && (frame.relighting ?? world.relighting);
       let group = frame.instances;
       // Per-pixel material, palette, and detail rules index the expanded world.
-      if (group && (frame.order || wantsRelight || world.opticalSplats || instancePlan(group).hasOpticalSplats || !raw && (constraintDefinition || look.pixel && world.pix ||
+      if (group && (frame.order || tolerance || wantsRelight || world.opticalSplats || instancePlan(group).hasOpticalSplats || !raw && (constraintDefinition || look.pixel && world.pix ||
           needsDetailFlags || budget?.fineOn || budget?.fineOff))) {
         expandInstances ??= createExpandedInstances();
         const expanded = expandInstances(world,group,frame.changedRows);
@@ -694,7 +717,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         fineValues = fineTiles;
       } else fine.bind();
       uploadBones(world.anim?.bones);
-      orderFor(world, frame, camera, time, isNew, plan, width, height, scale);
+      orderFor(world, frame, camera, time, isNew, plan, width, height, scale, tolerance, histories, source);
       if (patterned) {
         if (isNew || materials?.world !== world || materials.values !== world.pix ||
             materials.ramps !== world.ramps || materials.rampOff !== world.rampOff || materials.patterns !== world.pats) {
@@ -745,7 +768,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
           u_constraintDefault:constraints.defaultSlot,u_constraintMap:constraintMap,u_constraintMask:maskAt,
           u_lookSites:10,u_maskTextures:14,u_maskTime:t,u_lookProjection:camera.projection,u_lookRadius:camera.radius,u_lookOrtho:+camera.ortho,
           u_pal:pal,u_n:palCount,u_grade:+Boolean(grade),u_out:grade??pal,u_toneOn:0,u_lookGrid:[width,height] }),
-        u_arrivalPlane: plane, u_splatPlane: clip, ...(layeredGlass&&{u_glassBoundary:13}),
+        u_arrivalPlane: plane, u_splatPlane: clip, ...(layeredGlass&&{u_glassBoundary:13,u_glassTolerance:tolerance}),
         u_sampleWithdrawal: sampleCoverage?.amount(frame.sampleWithdrawal ?? world.sampleWithdrawal ?? 0) ?? 0,
         u_born: [frame.bornAt ?? 0, growth.rate ?? 1, growth.fade ?? 0.5, growth.loop ?? 0],
         u_crisp: +!raw, u_dilate: raw ? 0.3 : 0.15, u_near: camera.clipNear,
@@ -945,9 +968,10 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         portalDestination.resize(width, height);
         portalMask.resize(width, height);
         const nextCamera = withCameraPose(camera, opening.camera(cameraPose(camera)));
-        const { raw, outline, dither, scale, clean, lineClean, colored, tone, edges, water, time, stepAnimation, environment } = frame;
+        const { raw, outline, dither, scale, clean, lineClean, colored, tone, edges, water, time, stepAnimation, environment,
+          stableTransparency, resetTransparency } = frame;
         render(portal.destination, { raw, outline, dither, scale, clean, lineClean, colored, tone, edges, water, time,
-          stepAnimation, environment, ...portal.destinationFrame, damp: false }, width, height, portalDestination.framebuffer,
+          stepAnimation, environment, stableTransparency, resetTransparency, ...portal.destinationFrame, damp: false }, width, height, portalDestination.framebuffer,
           nextCamera, anchorPlane(opening.to));
       }
       const spriteCover = render(world, visible ? { ...frame, damp: false } : frame, width, height,

@@ -550,6 +550,7 @@ const view = extra =>
       paintCorrections: opt['paint-corrections'] !== 'off',
       colored: !!opt.colored,
       splatOrder: opt['splat-order'],
+      stableTransparency: onOffOption('stable-transparency'),
       fine: !!opt.fine,
       clean: !!opt.clean,
       ortho: !!opt.ortho,
@@ -759,7 +760,7 @@ const CMD = {
         'layered horizon: --horizon-bands on|off|file.json',
         'art direction: --art-direction on|off|painted-pixel|storm-silhouette|soft-dawn|file.json',
         'effect palette options: --effect-palettes on|off|file.json',
-        'art options: --palette-remap off --color-curves off --lut <file.cube|file.json|off> --color-stack <file.json|off> --ink off --effects off --stable on|off|file.json --snap on|off --dither-space screen|world|object --dither-spacing n --dither-origin x,y,z --resolve native|coverage|clusters --splat-order center|surface --volume-scale 2 --volume-steps 8 --volume-jitter off|blue-noise|spatiotemporal'
+        'art options: --palette-remap off --color-curves off --lut <file.cube|file.json|off> --color-stack <file.json|off> --ink off --effects off --stable on|off|file.json --snap on|off --dither-space screen|world|object --dither-spacing n --dither-origin x,y,z --resolve native|coverage|clusters --splat-order center|surface --stable-transparency on|off --volume-scale 2 --volume-steps 8 --volume-jitter off|blue-noise|spatiotemporal'
       ].join('\n')
     );
   },
@@ -1426,13 +1427,14 @@ const CMD = {
   sheet() {
     const artHistory = require('../src/art-effects.js').history({ frames: 24 });
     const volumeHistory = lib().KIT.atmosphere.history();
+    const transparencyHistory = lib().KIT.stableTransparency.history();
     const w = buildPreview(), diagnostics = previewPasses(),
       ts = times(),
       cols = num('cols', Math.min(4, ts.length)),
       imgs = [];
     for (const t of ts) {
       pose(w, t);
-      const im = R.render(w, view({ t, artHistory, volumeHistory, w: num('w', 600), h: num('h', 420), ...diagnostics?.settings }));
+      const im = R.render(w, view({ t, artHistory, volumeHistory, transparencyHistory, w: num('w', 600), h: num('h', 420), ...diagnostics?.settings }));
       diagnostics?.capture(im, opt.px1 ? 1 : im.px);
       imgs.push(displayFrame(im, w));
     }
@@ -1587,6 +1589,7 @@ const CMD = {
     CMD.turn(w);
   },
   turn(w0) {
+    const transparencyHistory = lib().KIT.stableTransparency.history();
     const w = w0 || build(pos[0]),
       n = num('n', 8),
       t = num('t', 0),
@@ -1595,7 +1598,7 @@ const CMD = {
     pose(w, t);
     for (let k = 0; k < n; k++) {
       const yaw = w.cam.yaw + (k / n) * Math.PI * 2,
-        im = R.render(w, view({ t, yaw, w: num('w', 600), h: num('h', 420) }));
+        im = R.render(w, view({ t, yaw, transparencyHistory, w: num('w', 600), h: num('h', 420) }));
       imgs.push(R.upscale(im, im.px));
       labs.push('y' + yaw.toFixed(1));
     }
@@ -1604,6 +1607,7 @@ const CMD = {
   clip() {
     const artHistory = require('../src/art-effects.js').history({ frames: 24 });
     const volumeHistory = lib().KIT.atmosphere.history();
+    const transparencyHistory = lib().KIT.stableTransparency.history();
     const w = buildPreview(), diagnostics = previewPasses(),
       fps = num('fps', 12),
       from = num('from', 0),
@@ -1616,7 +1620,7 @@ const CMD = {
     for (let k = 0; k < n; k++) {
       const t = from + k / fps;
       pose(w, t);
-      const im = R.render(w, view({ t, artHistory, volumeHistory, w: num('w', 600), h: num('h', 420),
+      const im = R.render(w, view({ t, artHistory, volumeHistory, transparencyHistory, w: num('w', 600), h: num('h', 420),
         ...camera?.(k/(n-1)), ...diagnostics?.settings }));
       diagnostics?.capture(im, opt.px1 ? 1 : im.px);
       ts.push(t);

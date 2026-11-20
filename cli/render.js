@@ -15,6 +15,7 @@ const ArtDirection = require('../src/art-direction.js');
 const SilhouetteProtection = require('../src/silhouette-protection.js');
 const DetailBudgets = require('../src/detail-budgets.js');
 const ShadowArt = require('../src/shadow-art.js');
+const SplatOrder = require('../src/splat-order.js');
 const OpticalMaterials = require('../src/optical-materials.js');
 const SplatRelighting = require('../src/splat-relighting.js');
 const MaterialPixelStyle = require('../src/material-pixel-style.js');
@@ -147,6 +148,7 @@ function renderFrame(world, o, preparedPalettes) {
   const integrateFootprint = o.splatFilter === 'footprint';
   const orderMode = o.splatOrder ?? look.splatOrder ?? 'center';
   const sortedSurfaces = orderMode === 'surface';
+  const transparency = SplatOrder.transparency(o.stableTransparency ?? look.stableTransparency);
   const fragmentBudget = o.fragmentBudget ?? 500000;
   if (!['center', 'surface'].includes(orderMode) ||
       (sortedSurfaces && (!Number.isSafeInteger(fragmentBudget) || fragmentBudget < 1 || fragmentBudget > 2e6)))
@@ -344,6 +346,7 @@ function renderFrame(world, o, preparedPalettes) {
   const relative = SplatRelighting.frame(world, o, climate);
   const lightingOptions = (o.relighting ?? world.relighting) ? { ...o, liveSun: false } : o;
   const { celestial,sun,flash,clouds } = resolveLighting(world,lightingOptions,climate,windState,direction);
+  const transparencySource = world.data;
   const shadowFootprint = 2 * dist * tangent * (o.artGridScale || 1) / H;
   if (!sun && o.shadowArt !== false) world = ShadowArt.frame(world, shadowFootprint);
   const travel = (at, birth, time) => {
@@ -708,6 +711,29 @@ function renderFrame(world, o, preparedPalettes) {
   const order = new Uint32Array(N);
   for (let i = 0; i < N; i++) order[i] = i;
   order.sort((a, b) => depth[a] - depth[b]);
+  if (transparency) {
+    const { depthTolerance: tolerance } = transparency;
+    const depthAt = i => depth[i];
+    const back = world.back?.length ? new Set(world.back) : null;
+    const transparentAt = i => SplatOrder.isTransparent(d, i, AL[i], optical?.[i * OpticalMaterials.STRIDE + 3], back);
+    // Keep atlas sprites as depth barriers in the center-order path.
+    let spriteSpans;
+    if (sprites.length) {
+      spriteSpans = new Uint32Array(N);
+      let next = 0;
+      for (const i of order) {
+        while (next < sprites.length && sprites[next].z >= -depth[i]) next++;
+        spriteSpans[i] = next;
+      }
+    }
+    const sameSpan = spriteSpans ? (a, b) => spriteSpans[a] === spriteSpans[b] : undefined;
+    const history = !reflectionPlane && o.transparencyHistory;
+    if (history) {
+      if (o.resetTransparency) history.reset();
+      history.sort(order, { data: transparencySource, view: V, time: sceneTime, tolerance, depthAt, transparentAt,
+        sameSpan });
+    } else SplatOrder.stabilize(order, tolerance, depthAt, transparentAt, undefined, sameSpan);
+  }
   const mediaOptions = (water || aerial || cloudView) && atmosphereOptions();
   const hazeCoverage = effectRules?.ramps.get('fog')?.geometry && world.fog.max > 0 && new Float32Array(W * H);
   const rayMedia = mediaOptions && mediaSampler(volumes, water, rayAt, W, mediumHorizon, mediaOptions, air);
@@ -872,8 +898,15 @@ function renderFrame(world, o, preparedPalettes) {
     if (sprites.length) playSprites(through,true);
     if (counters && deferred.size) counters.deferredFlushes++;
     for (const [p, layers] of deferred) {
-      if (sort) layers.sort((a, b) => b.sort - a.sort || a.index - b.index);
-      else if (sprites.length) layers.sort((a,b)=>b.center-a.center || a.index-b.index);
+      if (sort) {
+        layers.sort((a, b) => b.sort - a.sort || a.index - b.index);
+        if (transparency) SplatOrder.stabilize(layers, transparency.depthTolerance, entry => -entry.sort,
+          entry => entry.transparent, entry => entry.index);
+      } else if (sprites.length) {
+        layers.sort((a,b)=>b.center-a.center || a.index-b.index);
+        if (transparency) SplatOrder.stabilize(layers, transparency.depthTolerance, entry => -entry.center,
+          entry => entry.transparent, entry => entry.index);
+      }
       for (const entry of layers) {
         const args = entry.sample;
         if (!sort) {
@@ -1218,6 +1251,7 @@ function renderFrame(world, o, preparedPalettes) {
         }
         if (deferred) {
           const entry = { sort: flags & 4 ? Infinity : surfaceZ, index: n, center: -cz,
+            transparent: !wd && !(flags & 4),
             sample: [i, surfaceZ, clamp((surfaceZ - (eyeD - R)) / (2 * R), 0, 1), a, pr, pg, pb,
               wd, emits, highlight, paletteId, detailParticle, projected, coat, glass, lookPass && { ...lookPass.mark },
               aerial || cloudView ? surfaceZ : undefined, undefined, fogMix, rule, reflected?.slice()] };

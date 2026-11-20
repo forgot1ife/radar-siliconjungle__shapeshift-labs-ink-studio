@@ -39,6 +39,7 @@ uniform vec2 u_viewport;
 uniform float u_focal, u_time, u_scale, u_snap, u_dilate, u_near, u_ortho, u_idx;
 uniform float u_paintMarker; flat out int v_paint;
 ${relighting ? relightTable + 'flat out vec4 v_relight;' : ''}
+${layeredGlass ? 'uniform float u_glassTolerance; flat out float v_glassNearDepth;' : ''}
 ${optical ? `uniform highp sampler2D u_optical;
 flat out vec4 v_optical;
 flat out vec3 v_scatterTint, v_reflectTint;
@@ -226,6 +227,9 @@ void main(){
 ${water && !portal ? '  v_waterAxial = -cam.z;' : ''}
 ${environment ? '  v_envAxial = -cam.z;' : ''}
   vec4 clip = u_proj * cam;
+  ${layeredGlass ? `
+  vec4 nearGlass = u_proj * vec4(cam.xy, min(cam.z + u_glassTolerance, -u_near), cam.w);
+  v_glassNearDepth = nearGlass.z / nearGlass.w * 0.5 + 0.5;` : ''}
   ${contributions || masked ? 'v_policySlot = contributionSlot(a_index);' : ''}
   ${masked ? 'if (u_idx < 2.5) placeMask(a_index, v_policySlot, pos, cam.xyz, abs(determinant(FM)) > 1e-8 ? inverse(FM) : mat3(1.0), mat3(u_view));' : ''}
   ${portal ? '' : `v_ownerDepth = ${layeredGlass ? '' : 'u_idx > 1.5 ? '}clip.z / clip.w * 0.5 + 0.5${layeredGlass ? '' : ' : 0.0'};`}
@@ -313,6 +317,7 @@ ${layeredGlass && !water ? 'vec4 oa;' : 'layout(location=2) out vec4 oa;'}
 ${layeredGlass ? `layout(location=${water ? 3 : 2}) out vec4 o_back;
 layout(location=${water ? 4 : 3}) out vec4 o_through;
 uniform highp sampler2D u_glassBoundary;
+flat in float v_glassNearDepth;
 float glassDepth(vec4 sampleDepth) {
   return dot(floor(sampleDepth.rgb*255.0+0.5),vec3(1.0,256.0,65536.0)) / 16777215.0;
 }` : ''}
@@ -422,7 +427,9 @@ ${water ? `  vec3 mark; rgb = waterPaint(rgb, gl_FragCoord.xy, u_viewport,
   }
   o = vec4(rgb * a, a);
   ${layeredGlass ? `vec4 pane = texelFetch(u_glassBoundary,ivec2(gl_FragCoord.xy),0);
-  bool behind = pane.a > 0.0 && v_ownerDepth > glassDepth(pane)+0.0000001;
+  // Keep near-coplanar transparent contributions together through crossings.
+  float splitDepth = v_depth < 0.0 || v_color.a < 1.0 ? v_glassNearDepth : v_ownerDepth;
+  bool behind = pane.a > 0.0 && splitDepth > glassDepth(pane)+0.0000001;
   o_back = behind ? o : vec4(0.0);
   o_through = pane.a > 0.0 && !behind ? vec4(0.0,0.0,0.0,a) : vec4(0.0);` : ''}
   float a2 = v_color.a >= 1.0 && v_depth >= 0.0 ? a : 0.0;   // only solid splats write depth

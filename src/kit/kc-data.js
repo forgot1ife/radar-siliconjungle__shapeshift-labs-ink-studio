@@ -456,6 +456,11 @@
       bad('finish.look.stable', error.message);
     }
     try {
+      SplatOrder.transparency(look?.stableTransparency);
+    } catch (error) {
+      bad('finish.look.stableTransparency', error.message);
+    }
+    try {
       PixelLook.toneSettings(look?.tone);
     } catch (error) {
       bad('finish.look.tone', error.message);

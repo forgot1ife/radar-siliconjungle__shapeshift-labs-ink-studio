@@ -118,6 +118,106 @@ const SplatOrder = (() => {
     return true;
   }
 
-  return Object.freeze({ compile, merge });
+  function transparency(value) {
+    if (value === undefined || value === false) return null;
+    if (value === true) return { depthTolerance: 0.04 };
+    if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        Object.keys(value).some(key => key !== 'depthTolerance'))
+      throw new TypeError('Stable transparency expects a boolean or depthTolerance');
+    const depthTolerance = value.depthTolerance ?? 0.04;
+    if (!Number.isFinite(depthTolerance) || depthTolerance < 0)
+      throw new RangeError('Transparency depthTolerance must be finite and nonnegative');
+    return depthTolerance ? { depthTolerance } : null;
+  }
+
+  function isTransparent(data, index, opacity, optical, back) {
+    const flags = data[index * 16 + 11] | 0;
+    return opacity <= 0 || (!(flags & 64) && !back?.has(index) && (opacity < 1 || flags & 16 || optical));
+  }
+
+  const byIndex = index => index;
+
+  // A transparent row can move ahead only when it is within the depth window
+  // of the farthest remaining row. A priority queue picks the previous order
+  // among eligible rows without a nontransitive comparison of depth pairs.
+  function stabilize(order, tolerance, depthAt, transparentAt, rankAt = byIndex, sameSpan = anySpan) {
+    if (!tolerance) return order;
+    let rows, depths, ranks, heap, used;
+    for (let start = 0; start + 1 < order.length;) {
+      if (!transparentAt(order[start])) { start++; continue; }
+      let end = start + 1;
+      while (end < order.length && transparentAt(order[end]) &&
+             depthAt(order[end]) - depthAt(order[end - 1]) <= tolerance &&
+             sameSpan(order[end - 1], order[end])) end++;
+      if (end - start > 1) {
+        rows ??= [];
+        depths ??= [];
+        ranks ??= [];
+        heap ??= [];
+        used ??= [];
+        const count = end - start;
+        for (let i = 0; i < count; i++) {
+          const row = order[start + i];
+          rows[i] = row;
+          depths[i] = depthAt(row);
+          ranks[i] = rankAt(row);
+          used[i] = false;
+        }
+        let first = 0, add = 0, size = 0;
+        for (let position = start; position < end; position++) {
+          while (first < count && used[first]) first++;
+          const limit = depths[first] + tolerance;
+          while (add < count && depths[add] <= limit) {
+            let at = size++;
+            while (at > 0) {
+              const parent = (at - 1) >> 1;
+              if (ranks[heap[parent]] <= ranks[add]) break;
+              heap[at] = heap[parent];
+              at = parent;
+            }
+            heap[at] = add++;
+          }
+          const next = heap[0], tail = heap[--size];
+          if (size) {
+            let at = 0;
+            while (at * 2 + 1 < size) {
+              let child = at * 2 + 1;
+              if (child + 1 < size && ranks[heap[child + 1]] < ranks[heap[child]]) child++;
+              if (ranks[tail] <= ranks[heap[child]]) break;
+              heap[at] = heap[child];
+              at = child;
+            }
+            heap[at] = tail;
+          }
+          used[next] = true;
+          order[position] = rows[next];
+        }
+      }
+      start = end;
+    }
+    return order;
+  }
+
+  function anySpan() { return true; }
+
+  function history() {
+    let previous, ranks;
+    return Object.freeze({
+      reset() { previous = ranks = undefined; },
+      sort(order, { data, layout, view, time, tolerance, depthAt, transparentAt, sameSpan }) {
+        const direction = [view[2], view[6], view[10]];
+        if (previous && (previous.data !== data || previous.layout !== layout || ranks.length !== order.length || previous.tolerance !== tolerance ||
+            time < previous.time || direction.reduce((dot, axis, i) => dot + axis * previous.direction[i], 0) < 0.866))
+          ranks = undefined;
+        if (ranks) stabilize(order, tolerance, depthAt, transparentAt, index => ranks[index], sameSpan);
+        ranks ??= new Int32Array(order.length);
+        for (let i = 0; i < order.length; i++) ranks[order[i]] = i;
+        previous = { data, layout, direction, time, tolerance };
+        return order;
+      }
+    });
+  }
+
+  return Object.freeze({ compile, merge, transparency, isTransparent, stabilize, history });
 })();
 if (typeof module !== 'undefined') module.exports = SplatOrder;
