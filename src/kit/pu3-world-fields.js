@@ -374,6 +374,13 @@
       },
       validateState(state) {
         getSolver().restore(state.fluid);
+        for(const [table,schema,limit] of [[state.gate,gates,1],[state.pump,pumps,Infinity]])
+          check(record(table)&&Object.keys(table).length===Object.keys(schema).length&&
+            Object.keys(schema).every(key=>Number.isFinite(table[key])&&table[key]>=0&&table[key]<=limit),
+          'Saved water controls do not match the configured gates and pumps');
+        check(record(state.manual)&&Object.entries(state.manual).every(([key,value])=>own(inputs,key)&&
+          Number.isFinite(value)&&value>=0&&value<=(key.startsWith('gate.')?1:1e9)),
+        'Invalid saved manual water control');
         if (legacyErosion) check(Number.isFinite(state.eroded)&&state.eroded>=0,'Invalid eroded bed volume');
         if(sedimentModel){
           sedimentModel.validate(state.sediment,state.fluid.bed);

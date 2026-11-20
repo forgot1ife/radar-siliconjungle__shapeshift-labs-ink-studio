@@ -495,6 +495,22 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
   }
   function scene([mode,file,reference]) {
     const input=load(file);
+    if(mode==='upgrade'){
+      ensure(input.world&&typeof opt.to==='string','Prefab upgrades need a world or checkpoint and --to PREFAB');
+      ensure(opt.migration===undefined||typeof opt.migration==='string','Use --migration FILE for the mappings');
+      const dryRun=Boolean(opt['dry-run']);
+      if(dryRun&&typeof opt.out==='string')
+        ensure(![file,opt.migration].some(source=>typeof source==='string'&&path.resolve(source)===path.resolve(opt.out)),
+          'The dry-run report needs a separate output path');
+      const result=W.upgradePrefab(input.world,reference,opt.to,{
+        checkpoint:input.checkpoint,migration:opt.migration===undefined?{}:read(opt.migration)
+      });
+      if(dryRun)respond(result.report);
+      else if(result.report.ok)respond(result.checkpoint??result.world);
+      else process.stdout.write(JSON.stringify(result.report,null,opt.json?0:2)+'\n');
+      if(!result.report.ok)process.exitCode=2;
+      return;
+    }
     if (mode==='apply'){
       ensure(input.document || input.world && !input.checkpoint,'Expected a world manifest or JSON scene');
       const dryRun = Boolean(opt['dry-run']);
@@ -521,7 +537,7 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
     else if (mode==='stamp') result=W.stamp(world,reference,opt.as,opt.args?args():{});
     else if (mode==='remix') result=W.remix(world,reference,opt.as,opt.edits?read(opt.edits):[]);
     else if (mode==='history') result=W.history.generate(world,read(reference));
-    else throw Error('Use scene apply|stamp|remix|capture|history|promote');
+    else throw Error('Use scene apply|stamp|remix|capture|upgrade|history|promote');
     R.validate(result.world);
     respond(opt['dry-run']?{changed:result.paths,...(result.events?{events:result.events}:{})}:result.world);
   }

@@ -65,11 +65,11 @@
     check(Array.isArray(result.connections) && result.connections.length <= 50000 && Array.isArray(result.commands),
       'World connections and commands must be arrays');
     for (const [key, prefab] of Object.entries(result.prefabs)) {
-      check(Object.keys(prefab).every(name => ['entities','systems','connections','ports','params','revision','source','packs','lookAsset'].includes(name)),
+      check(Object.keys(prefab).every(name => ['entities','systems','connections','ports','params','revision','source','packs','lookAsset','sockets'].includes(name)),
         'Unknown prefab property in ' + key);
       check(Number.isSafeInteger(prefab.revision ?? 1) && (prefab.revision ?? 1) > 0, 'Invalid prefab revision for ' + key);
       check(record(prefab.entities ?? {}) && record(prefab.systems ?? {}) && Array.isArray(prefab.connections ?? []) &&
-        record(prefab.ports ?? {}) && record(prefab.params ?? {}) && Array.isArray(prefab.packs ?? []),
+        record(prefab.ports ?? {}) && record(prefab.params ?? {}) && record(prefab.sockets ?? {}) && Array.isArray(prefab.packs ?? []),
         'Invalid prefab ' + key);
     }
     return data.freeze(result);
@@ -181,10 +181,9 @@
     const ports=source.entities[key]?.ports;
     return own(ports,pin)?ports[pin]:value;
   }
-  function stamp(source, name, as, {params = {}, position = [0,0,0], overrides = [], lookAsset} = {}) {
-    const definition = source.prefabs[name];
-    check(own(source.prefabs,name) && id(as) && vector(position) && record(params), 'Unknown or invalid prefab instance ' + name);
-    check(!own(source.entities,as), 'Prefab instance already exists: ' + as);
+  function prefabParts(source, name, as, {params = {}, position = [0,0,0], overrides = [], lookAsset} = {},
+    definition = source.prefabs[name]) {
+    check(record(definition) && id(name) && id(as) && vector(position) && record(params), 'Unknown or invalid prefab instance ' + name);
     for (const key of Object.keys(params)) check(own(definition.params,key), 'Unknown prefab parameter ' + key);
     const values = {...definition.params,...params};
     const dependencies=definition.packs??[];
@@ -206,13 +205,13 @@
         return port(value.$port);
       }
       if (own(value,'$local')) {
-        check(Object.keys(value).length === 1 && (own(definition.entities,value.$local) || own(definition.systems,value.$local)),
+        check(Object.keys(value).length === 1 && (value.$local==='@root'||own(definition.entities,value.$local) || own(definition.systems,value.$local)),
           'Unknown local prefab reference ' + value.$local);
-        return as + '.' + value.$local;
+        return nameOf(value.$local);
       }
       return Object.fromEntries(Object.entries(value).map(([k,v]) => [k,resolve(v)]));
     }
-    const nameOf = key => as + '.' + key;
+    const nameOf = key => key==='@root'?as:as + '.' + key;
     function port(value) {
       const [system, pin] = endpoint(value);
       check(own(definition.systems,system), 'Unknown internal prefab system ' + system);
@@ -221,6 +220,7 @@
     const ports = Object.fromEntries(Object.entries(definition.ports ?? {}).map(([key,value]) => [key,port(value)]));
     const look = K.authoring.looks.override(resolve(definition.lookAsset), lookAsset);
     const entities = {[as]:{kind:'assembly',position,prefab:name,revision:definition.revision ?? 1,ports,packs:dependencies,
+      ...(definition.sockets!==undefined&&{sockets:resolve(definition.sockets)}),
       ...(look !== undefined && {lookAsset:look})}};
     const systems = {};
     for (const [key, item] of Object.entries(definition.entities ?? {})) {
@@ -234,15 +234,28 @@
     const instance = apply({entities,systems,connections},overrides,{validate:null}).world;
     for (const [section, entries] of [['entities',instance.entities],['systems',instance.systems]]) {
       for (const key of Object.keys(entries))
-        check((key === as && section === 'entities' || key.startsWith(as + '.')) && !own(source[section],key),
-          'Prefab override changes ownership or reuses ID ' + key);
+        check(key === as && section === 'entities' || key.startsWith(as + '.'),
+          'Prefab override changes ownership ' + key);
     }
     for (const entity of Object.values(instance.entities)) {
       for (const binding of [entity.lookAsset, entity.visual?.lookAsset])
         if (binding !== undefined && binding !== false) K.authoring.looks.bind(binding, assets());
     }
+    return instance;
+  }
+  function stamp(source,name,as,options={}){
+    check(own(source.prefabs,name)&&!own(source.entities,as),'Unknown prefab or occupied assembly '+name+'/'+as);
+    const instance=prefabParts(source,name,as,options);
+    for(const section of ['entities','systems'])for(const key of Object.keys(instance[section]))
+      check(!own(source[section],key),'Prefab would reuse ID '+key);
+    const entities={...instance.entities};
+    if(entities[as]?.kind==='assembly'){
+      const {params={},position=[0,0,0],overrides=[],lookAsset}=options;
+      entities[as]={...entities[as],prefabStamp:{params,position,overrides,
+        ...(lookAsset!==undefined&&{lookAsset}),members:{entities:Object.keys(entities),systems:Object.keys(instance.systems)}}};
+    }
     return apply(source,[
-      {op:'merge',path:['entities'],value:instance.entities},
+      {op:'merge',path:['entities'],value:entities},
       {op:'merge',path:['systems'],value:instance.systems},
       {op:'set',path:['connections'],value:[...source.connections,...instance.connections]}
     ]);
@@ -262,6 +275,7 @@
     const ids=new Set([...entityKeys,...systemKeys]);
     const local=key=>key.slice(prefix.length);
     function refs(value) {
+      if (value===instance)return {$local:'@root'};
       if (typeof value==='string'&&ids.has(value))return {$local:local(value)};
       if (typeof value==='string'&&value.startsWith(prefix)&&value.includes('/')){
         const parts=value.split('/');
@@ -275,11 +289,11 @@
     for(const key of entityKeys){
       const entity=refs(source.entities[key]);
       const parent=source.entities[key].parent, host=source.entities[key].anchor?.entity;
-      check((!parent||parent===instance||entityKeys.includes(parent))&&(!host||entityKeys.includes(host)),
+      check((!parent||parent===instance||entityKeys.includes(parent))&&(!host||host===instance||entityKeys.includes(host)),
         'Cannot capture an assembly with an external attachment: '+key);
       if(parent&&parent!==instance)entity.parent=local(parent);
       else delete entity.parent;
-      if(host)entity.anchor.entity=local(host);
+      if(host)entity.anchor.entity=host===instance?'@root':local(host);
       entities[local(key)]=entity;
     }
     for(const key of systemKeys) systems[local(key)]=refs(source.systems[key]);
@@ -297,9 +311,10 @@
       ports[key]=port;
     }
     const prefab={entities,systems,connections,ports,packs:root.packs??[],revision:1,...(root.prefab?{source:root.prefab}:{}),
+      ...(root.sockets!==undefined&&{sockets:root.sockets}),
       ...(root.lookAsset !== undefined && {lookAsset:root.lookAsset})};
     return apply(source,[{op:'set',path:['prefabs',name],value:prefab}]);
   }
   K.world = {format, manifest, apply, stamp, remix, capture};
-  K.world.data = Object.freeze({own,record,safeKey,id,vector,check,copy,equal,read,selector,endpoint,portOf});
+  K.world.data = Object.freeze({own,record,safeKey,id,vector,check,copy,equal,read,selector,endpoint,portOf,prefabParts});
 })(KIT);

@@ -109,6 +109,8 @@ Set `finish.look.effects`, or pass `artEffects` to `render`. Each effect accepts
 | `cycle` | `colors`, discrete `rate` and `phase`, with an optional named `material`. Multiple cycle rules can be supplied. |
 | `trail`, `smear` | Independent palettes and timing, prior frame count, duration and depth bias. Smears also expose discrete `steps` and maximum `reach`. |
 
+For trails that follow the camera and a moving object or surface, use [motion-aware afterimages](motion-afterimages.md).
+
 Call `studio.load().ArtEffects.history()` and reuse the result as `artHistory` for consecutive frames of the same view. The CLI creates a history for sheets and animation clips. Call `clear()` after a camera cut. Art effects leave the source emission and geometry passes available for inspection.
 
 ## Local splat ordering
@@ -129,3 +131,5 @@ ink-studio atlas examples/art-effects.js --from 0 --to 1.2 --fps 12 --directions
 Use [artist-authored cards and impostors](impostor-atlases.md) to place the resulting atlas back into a scene.
 
 In Node, use `spriteAtlas(world, { width, height, directions, times, fps, pivot, view, maps, pose })`. Supply a `pose(world, time)` callback for scenes that need to advance a stateful timeline or pose a rig. A separate effect history is kept for each direction.
+
+For keyed fragmentation and reassembly with stable ownership, see [world-space reveal and reconstruction](world-reconstruction.md).

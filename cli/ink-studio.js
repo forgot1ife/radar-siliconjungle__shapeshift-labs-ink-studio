@@ -94,8 +94,8 @@ function dataScene(file, override, { installedPacks = false } = {}) {
     spec.finish = { ...spec.finish, look: { ...K.diorama.sceneLook(spec), shadowArt: shadowArtOption() } };
   if (!installedPacks && opt['asset-pack'] !== undefined)
     spec.assetPacks = require('./asset-pack.js').install(K.authoring.assetPacks, spec.assetPacks, opt['asset-pack']);
-  for (const s of spec.solids || [])
-    if (s && s.kind === 'mesh' && typeof s.asset === 'string' && !assets[s.asset]) {
+  for (const s of K.diorama.solids(spec))
+    if (s.kind === 'mesh' && typeof s.asset === 'string' && !assets[s.asset]) {
       const f = ['', '.obj', '.glb', '.gltf']
         .map(e => path.join(dir, s.asset + e))
         .find(q => fs.existsSync(q) && fs.statSync(q).isFile());
@@ -251,7 +251,7 @@ function skyTransitionsOption() {
   if (typeof value !== 'string') die('--sky-transitions needs a JSON array file or off');
   return skyTransitionsOverride ??= JSON.parse(fs.readFileSync(path.resolve(value),'utf8'));
 }
-let shadowArtOverride, compositeOverride, renderGraphOverride;
+let shadowArtOverride, compositeOverride, renderGraphOverride, afterimagesOverride, reconstructionOverride;
 function shadowArtOption() {
   const value = opt['shadow-art'];
   if (value === undefined) return;
@@ -555,6 +555,10 @@ const view = extra =>
         (compositeOverride ??= JSON.parse(fs.readFileSync(path.resolve(opt.composite), 'utf8'))),
       renderGraph: opt['render-graph'] === 'off' ? false : opt['render-graph'] === undefined ? undefined :
         (renderGraphOverride ??= JSON.parse(fs.readFileSync(path.resolve(opt['render-graph']), 'utf8'))),
+      reconstruction: opt.reconstruction === 'off' ? false : opt.reconstruction === undefined ? undefined :
+        (reconstructionOverride ??= JSON.parse(fs.readFileSync(path.resolve(opt.reconstruction), 'utf8'))),
+      afterimages: opt.afterimages === 'off' ? false : opt.afterimages === undefined ? undefined :
+        (afterimagesOverride ??= JSON.parse(fs.readFileSync(path.resolve(opt.afterimages), 'utf8'))),
       fine: !!opt.fine,
       clean: !!opt.clean,
       ortho: !!opt.ortho,
@@ -655,7 +659,8 @@ const CMD = {
         '  authoring inspect <scene> [--authoring snapshot.json] [--part id]   inspect retained parts',
         '  authoring preview <scene> <edits.json> [--authoring snapshot.json] [--image preview.png]   stage and validate edits',
         '  authoring apply <scene> <edits.json> [--authoring snapshot.json] --out snapshot.json   save validated edits',
-        '  scene apply|stamp|remix|capture|history|promote <world> ...  edit or derive a world manifest',
+        '  scene apply|stamp|remix|capture|upgrade|history|promote <world> ...  edit or derive a world manifest',
+        '    scene upgrade <world|checkpoint> <instance> --to PREFAB [--migration FILE] [--dry-run]',
         '    scene apply <scene> <edits.json> --dry-run   preview edited paths and look targets',
         '  sim run|resume|fork|reset|replay|diff|sweep|render ...  run or compare fixed-tick simulations',
         '    sim run <world> --workers N [--profile]   advance eligible systems in deterministic Node worker partitions',
@@ -769,7 +774,7 @@ const CMD = {
         'layered horizon: --horizon-bands on|off|file.json',
         'art direction: --art-direction on|off|painted-pixel|storm-silhouette|soft-dawn|file.json',
         'effect palette options: --effect-palettes on|off|file.json',
-        'art options: --palette-remap off --color-curves off --lut <file.cube|file.json|off> --color-stack <file.json|off> --ink off --effects off --stable on|off|file.json --snap on|off --dither-space screen|world|object --dither-spacing n --dither-origin x,y,z --resolve native|coverage|clusters --splat-order center|surface --stable-transparency on|off --composite file.json|off --render-graph file.json|off --volume-scale 2 --volume-steps 8 --volume-jitter off|blue-noise|spatiotemporal'
+        'art options: --palette-remap off --color-curves off --lut <file.cube|file.json|off> --color-stack <file.json|off> --ink off --effects off --stable on|off|file.json --snap on|off --dither-space screen|world|object --dither-spacing n --dither-origin x,y,z --resolve native|coverage|clusters --splat-order center|surface --stable-transparency on|off --composite file.json|off --render-graph file.json|off --afterimages file.json|off --reconstruction file.json|off --volume-scale 2 --volume-steps 8 --volume-jitter off|blue-noise|spatiotemporal'
       ].join('\n')
     );
   },
@@ -1435,6 +1440,7 @@ const CMD = {
   },
   sheet() {
     const artHistory = require('../src/art-effects.js').history({ frames: 24 });
+    const afterimageHistory = lib().KIT.afterimages.history();
     const volumeHistory = lib().KIT.atmosphere.history();
     const transparencyHistory = lib().KIT.stableTransparency.history();
     const w = buildPreview(), diagnostics = previewPasses(),
@@ -1443,7 +1449,7 @@ const CMD = {
       imgs = [];
     for (const t of ts) {
       pose(w, t);
-      const im = R.render(w, view({ t, artHistory, volumeHistory, transparencyHistory, w: num('w', 600), h: num('h', 420), ...diagnostics?.settings }));
+      const im = R.render(w, view({ t, artHistory, afterimageHistory, volumeHistory, transparencyHistory, w: num('w', 600), h: num('h', 420), ...diagnostics?.settings }));
       diagnostics?.capture(im, opt.px1 ? 1 : im.px);
       imgs.push(displayFrame(im, w));
     }
@@ -1615,6 +1621,7 @@ const CMD = {
   },
   clip() {
     const artHistory = require('../src/art-effects.js').history({ frames: 24 });
+    const afterimageHistory = lib().KIT.afterimages.history();
     const volumeHistory = lib().KIT.atmosphere.history();
     const transparencyHistory = lib().KIT.stableTransparency.history();
     const w = buildPreview(), diagnostics = previewPasses(),
@@ -1629,7 +1636,7 @@ const CMD = {
     for (let k = 0; k < n; k++) {
       const t = from + k / fps;
       pose(w, t);
-      const im = R.render(w, view({ t, artHistory, volumeHistory, transparencyHistory, w: num('w', 600), h: num('h', 420),
+      const im = R.render(w, view({ t, artHistory, afterimageHistory, volumeHistory, transparencyHistory, w: num('w', 600), h: num('h', 420),
         ...camera?.(k/(n-1)), ...diagnostics?.settings }));
       diagnostics?.capture(im, opt.px1 ? 1 : im.px);
       ts.push(t);

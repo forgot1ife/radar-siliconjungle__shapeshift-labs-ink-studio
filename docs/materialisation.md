@@ -10,6 +10,12 @@ There is no second cloud hiding an unchanged sculpture.
 This builds on `K.flow`, shared wind, `K.splatFrames`, stage rigs and GPU bones,
 material-coordinate charts, and `K.procedural.motion.transportSplats`.
 `K.particles`, `K.dissolve.at`, `K.morph`, and surface advection retain their APIs.
+The newer [reconstruction tracks](world-reconstruction.md) already provide
+seekable rigid-cell fragmentation with attached paint. Use them for that visual
+case; this binding adds wind-driven carriers, foreign live targets, explicit
+handoffs and simulation state. Reconstruction skips actively owned rows; use
+distinct selections, or bake a reconstructed pose before transferring it to
+materialisation.
 Use those smaller tools independently when a full detach/gather/return lifecycle
 is unnecessary.
 

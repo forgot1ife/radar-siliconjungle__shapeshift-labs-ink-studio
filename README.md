@@ -288,6 +288,8 @@ console.log(world.count);
 
 `K.diorama.scene(spec)` wraps a specification as a scene with a `build` method. `K.diorama.kinds` exposes the supported solid fields, and `K.diorama.styles` exposes style definitions. Programmatic mesh assets go in the second argument as `{ assets: { name: mesh } }`.
 
+Use the [headless scene editor](docs/scene-editor.md) to select solids, edit transforms and materials, and save the resulting diorama JSON.
+
 The larger [lab/data-shrine.json](lab/data-shrine.json) demonstrates joins, folded and warped geometry, parented parts, lights, particles and tap effects.
 
 ## Animation and puppets
@@ -753,6 +755,8 @@ Common rendering controls:
 | `--snap`, `--dither-space screen\|world\|object`, `--resolve native\|coverage\|clusters` | Configure camera snapping, dither coordinates, and pixel resolve. Use `--stable off` to disable the scene's stability profile. |
 | `--splat-order center\|surface` | Choose global center ordering or local ordering using the sampled surface plane. |
 | `--stable-transparency on\|off` | Stabilize close translucent layers through camera motion. |
+| `--afterimages file.json\|off` | Set scene-space object and surface trails. See [motion-aware afterimages](docs/motion-afterimages.md). |
+| `--reconstruction file.json\|off` | Animate fragmentation and reassembly of selected splats. See [world-space reveal and reconstruction](docs/world-reconstruction.md). |
 | `--composite file.json\|off` | Set independent world and screen-layer resolutions. See [mixed-resolution compositing](docs/mixed-resolution.md). |
 | `--render-graph file.json\|off` | Order and scope screen-space passes. See [the render graph](docs/render-graph.md). |
 | `--volume-scale`, `--volume-steps`, `--volume-jitter` | Override the atmosphere volume's sampling settings. |

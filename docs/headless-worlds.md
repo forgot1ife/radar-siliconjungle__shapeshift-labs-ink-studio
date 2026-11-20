@@ -666,6 +666,8 @@ The optional JSON `--args` accepts `position`, `params`, and local edit
 connections and exposes public ports as `assembly/port`. Prefabs can require
 asset-pack IDs or exact revisions. `scene remix` modifies a definition and
 `scene capture` saves a placed, edited assembly under a new prefab ID.
+[Prefab upgrades](prefab-upgrades.md) migrate a placed assembly and
+check its dependencies and checkpoint state before saving.
 
 `world/input` drives an unconnected typed input, `world/patch` edits live
 entity and metadata records, `world/event` emits a named event, and

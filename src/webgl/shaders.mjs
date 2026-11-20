@@ -37,7 +37,7 @@ uniform mat4 u_view, u_proj;
 uniform bool u_geometryDepth;
 uniform vec2 u_viewport;
 uniform float u_focal, u_time, u_scale, u_snap, u_dilate, u_near, u_ortho, u_idx;
-uniform float u_paintMarker; flat out int v_paint;
+uniform float u_paintMarker; uniform int u_afterimageStart; flat out int v_paint;
 ${relighting ? relightTable + 'flat out vec4 v_relight;' : ''}
 ${layeredGlass ? 'uniform float u_glassTolerance; flat out float v_glassNearDepth;' : ''}
 ${optical ? `uniform highp sampler2D u_optical;
@@ -89,7 +89,8 @@ void main(){
   vec4 t1 = texelFetch(u_data, ivec2(col + 1, row), 0);
   vec4 t2 = texelFetch(u_data, ivec2(col + 2, row), 0);
   vec4 t3 = ${instances ? 'a_instance != 0 ? vec4(0.0) : ' : ''}texelFetch(u_data, ivec2(col + 3, row), 0);
-  v_paint = u_paintMarker != 0.0 && t3.z == u_paintMarker ? 1 : 0;
+  v_paint = (u_paintMarker != 0.0 && t3.z == u_paintMarker ||
+    u_afterimageStart > 0 && a_index >= u_afterimageStart) ? 1 : 0;
   ${materialStyles ? 'v_pixelStyle = texelFetch(u_materialStyles, ivec2(record & 511, row), 0);' : ''}
   vec3 pos = t0.xyz; float alpha = t0.w;
   if (alpha <= 0.0 || pos.y < -30.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }   // (what is put away is put far below: it is not drawn from there)
@@ -534,7 +535,7 @@ bool constrainPalette(ivec2 p, vec3 inputColor, out vec3 color) {
 
 export function pixelShaderSources(PixelLook, { water = false, airPockets = false, layered = false, atlas = false,
   paletteConstraints = false, masked = false, contributions = false, layeredGlass = false, materialStyles = false,
-  environment = false, relighting = false } = {}) {
+  environment = false, relighting = false, packedTone = false } = {}) {
   const waterPixelGLSL = `
 uniform highp sampler2D u_waterMask;
 ivec2 waterPixel(ivec2 p) {
@@ -561,7 +562,8 @@ uniform float u_edge;
 // the tone look (a diorama's look.tone, or the Tone option: PixelLook's stipple): brightness below the cutoff is black, the rest
 // mapped onto the stops (u_toneStops: colour, and its place in .a), each pixel between two stops taking one or the other by its rank
 // in a fixed pattern (Bayer or blue noise) on the screen's art grid
-uniform float u_toneOn, u_toneCut, u_toneAmt; uniform int u_toneN; uniform highp sampler2D u_toneStops, u_toneTh;
+uniform float u_toneOn, u_toneCut, u_toneAmt; uniform int u_toneN; uniform highp sampler2D u_toneStops;
+${packedTone ? 'uniform ivec2 u_toneThSize;' : 'uniform highp sampler2D u_toneTh;'}
 uniform vec3 u_pal[64], u_out[64], u_outl[64];   // (u_outl: what each colour is shown as where a carried light falls on it)
 uniform int u_n;
 uniform float u_grade; uniform float u_bars; uniform int u_remapLine;
@@ -1040,8 +1042,10 @@ ${paletteConstraints ? '    vec3 constrained; if (constrainPalette(p, c, constra
   ${contributions ? '' : '}'}
   if (u_toneOn > 0.5) { float lu = dot(c, vec3(0.30, 0.55, 0.15)); if (lu <= u_toneCut) return vec3(0.0);
     float v = (lu - u_toneCut) / (1.0 - u_toneCut); int lo = 0; for (int i = 0; i < 46; i++) { if (lo >= u_toneN - 2 || v <= texelFetch(u_toneStops, ivec2(lo + 1, 0), 0).a) break; lo++; }
-    vec4 s0 = texelFetch(u_toneStops, ivec2(lo, 0), 0), s1 = texelFetch(u_toneStops, ivec2(lo + 1, 0), 0); ivec2 th = textureSize(u_toneTh, 0), sz = textureSize(u_depth, 0);
-    float share = (v - s0.a) / max(1e-5, s1.a - s0.a), rank = texelFetch(u_toneTh, ivec2(p.x % th.x, (sz.y - 1 - p.y) % th.y), 0).r;
+    vec4 s0 = texelFetch(u_toneStops, ivec2(lo, 0), 0), s1 = texelFetch(u_toneStops, ivec2(lo + 1, 0), 0); ivec2 th = ${packedTone ? 'u_toneThSize' : 'textureSize(u_toneTh, 0)'}, sz = textureSize(u_depth, 0);
+    ivec2 rankAt = ivec2(p.x % th.x, (sz.y - 1 - p.y) % th.y);
+    float share = (v - s0.a) / max(1e-5, s1.a - s0.a),
+      rank = ${packedTone ? 'texelFetch(u_toneStops, rankAt + ivec2(0, 1), 0).r' : 'texelFetch(u_toneTh, rankAt, 0).r'};
     return share >= 0.5 + (rank - 0.5) * u_toneAmt ? s1.rgb : s0.rgb; }
   vec3 best = u_pal[0]; float bd = 1e9; int bi = 0;
   for (int i = 0; i < 64; i++) {

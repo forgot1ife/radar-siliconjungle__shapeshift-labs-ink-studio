@@ -116,6 +116,8 @@
     ghost: 'bool',
     separate: 'bool',
     turn: 'vec3',
+    transform: 'obj',
+    modifiers: 'list',
     bump: 'vec2',
     hold: 'bool'
   };
@@ -159,6 +161,33 @@
     fence: { need: { a: 'vec3', b: 'vec3' }, may: { h: 'pos', bay: 'pos', pickets: 'num' } },
     pipe: { need: { pts: 'pts' }, may: { r: 'pos', wall: 'pos', collar: 'pos' } }
   };
+  const unaryKinds = ['fold', 'warp', 'shell', 'swell', 'rough', 'bubbles'];
+  const modifierKinds = Object.fromEntries(unaryKinds.map(kind => {
+    const { of, ...need } = DIO.kinds[kind].need;
+    return [kind, { need, may: DIO.kinds[kind].may }];
+  }));
+  modifierKinds.fold.may = { ...modifierKinds.fold.may, axis: ['x', 'y', 'z'] };
+  modifierKinds.warp.may = { ...modifierKinds.warp.may, taper: 'vec2' };
+  modifierKinds.join = { need: { how: 'join', shape: 'solid' }, may: DIO.kinds.join.may };
+  modifierKinds.mask = { need: { mode: ['keep', 'cut'], shape: 'solid' } };
+  const builtKinds = ['pillar', 'arch', 'stairs', 'fence', 'pipe'];
+  const activeModifiers = solid => (solid.modifiers ?? []).filter(modifier => modifier.enabled !== false);
+
+  DIO.operandFields = solid => Object.entries(DIO.kinds[solid?.kind]?.need ?? {})
+    .filter(([, type]) => type === 'solid').map(([field]) => field);
+  DIO.solids = function* (spec, { activeOnly = false } = {}) {
+    function* walk(solid) {
+      if (!solid || typeof solid !== 'object' || Array.isArray(solid)) return;
+      yield solid;
+      for (const field of DIO.operandFields(solid)) yield* walk(solid[field]);
+      if (Array.isArray(solid.modifiers)) {
+        for (const modifier of solid.modifiers)
+          if (modifier?.shape && (!activeOnly || modifier.enabled !== false)) yield* walk(modifier.shape);
+      }
+    }
+    if (Array.isArray(spec?.solids)) for (const solid of spec.solids) yield* walk(solid);
+  };
+
   const MOTION = {
     turn: {
       need: { part: 'str' },
@@ -209,6 +238,17 @@
   // ---------------- checking ----------------
   const isNum = v => typeof v === 'number' && Number.isFinite(v),
     isVec = (v, n) => Array.isArray(v) && v.length === n && v.every(isNum);
+  function solidTransform(value) {
+    if (value === undefined) return null;
+    const fields = ['translation', 'rotation', 'scale', 'pivot'];
+    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !fields.includes(key)))
+      throw new TypeError('A solid transform supports translation, rotation, scale and pivot');
+    const { translation = [0, 0, 0], rotation = [0, 0, 0], scale = 1, pivot } = value;
+    if (![translation, rotation, ...(pivot === undefined ? [] : [pivot])].every(v => isVec(v, 3) && Array.from(v).every(isNum)) ||
+        !isNum(scale) || scale < .02 || scale > 20)
+      throw new RangeError('A transform needs finite XYZ vectors and uniform scale from 0.02 to 20');
+    return { translation, rotation, scale, pivot };
+  }
   const lev = (a, b) => {
     const d = [];
     for (let i = 0; i <= a.length; i++) {
@@ -252,6 +292,10 @@
     return out;
   };
   DIO.sceneLook = spec => styleOf(spec)?.finish.look;
+  DIO.sceneMaterials = spec => {
+    const { palette, roles } = styleOf(spec);
+    return { palette, roles };
+  };
   function applySurface(material, definition) {
     if (typeof definition === 'string') return K.surface.preset(definition, material);
     if (!definition || typeof definition !== 'object' || Array.isArray(definition))
@@ -419,6 +463,16 @@
       RenderGraph.prepare(look?.renderGraph);
     } catch (error) {
       bad('finish.look.renderGraph', error.message);
+    }
+    try {
+      K.afterimages.prepare(look?.afterimages);
+    } catch (error) {
+      bad('finish.look.afterimages', error.message);
+    }
+    try {
+      K.reconstruction.prepare(look?.reconstruction);
+    } catch (error) {
+      bad('finish.look.reconstruction', error.message);
     }
     try {
       SilhouetteProtection.prepare(look?.silhouetteProtection);
@@ -652,7 +706,7 @@
       if (type === 'solid') return solidOk(v, path, true);
       if (type === 'outline') return outlineOk(v, path);
       if (type === 'join') {
-        if (!K.sdf.JOIN[v]) {
+        if (!Object.hasOwn(K.sdf.JOIN, v)) {
           const n = nearest(v, Object.keys(K.sdf.JOIN));
           bad(
             path,
@@ -696,12 +750,50 @@
       for (const [k, t] of Object.entries(Object.assign({}, extra, def.need, def.may)))
         if (o[k] !== undefined && t !== 1) typeOk(o[k], t, path + '.' + k);
     };
+    function checkModifiers(stack, path) {
+      if (!Array.isArray(stack)) return;
+      const ids = new Set();
+      for (let i = 0; i < stack.length; i++) {
+        const modifier = stack[i], at = path + '[' + i + ']';
+        if (!modifier || typeof modifier !== 'object' || Array.isArray(modifier)) {
+          bad(at, 'a modifier is an object');
+          continue;
+        }
+        if (!TargetSelectors.name(modifier.id) || ids.has(modifier.id))
+          bad(at + '.id', 'modifier IDs must be nonempty and unique within the stack');
+        ids.add(modifier.id);
+        const kind = modifier.kind;
+        if (!Object.hasOwn(modifierKinds, kind)) {
+          bad(at + '.kind', 'unknown sculpt modifier', 'kinds: ' + Object.keys(modifierKinds).join(', '));
+          continue;
+        }
+        const def = modifierKinds[kind];
+        fields(modifier, at, def, { id: 'str', enabled: 'bool' });
+        if (Object.hasOwn(modifier, 'do')) bad(at + '.do', 'a sculpt modifier uses kind');
+        if (kind === 'fold') {
+          if ([modifier.polar, modifier.mirror, modifier.repeat].filter(value => value !== undefined).length !== 1)
+            bad(at, 'a fold needs exactly one of polar, mirror or repeat');
+          if (modifier.polar !== undefined && (!Number.isSafeInteger(modifier.polar) || modifier.polar < 1))
+            bad(at + '.polar', 'polar needs a positive whole repeat count');
+          if (modifier.count !== undefined && (!isVec(modifier.count, 3) ||
+              !Array.from(modifier.count).every(n => Number.isSafeInteger(n) && n > 0)))
+            bad(at + '.count', 'repeat counts must be positive whole numbers');
+        }
+        if (kind === 'warp') {
+          const { twist, bend, taper } = modifier;
+          if ([twist, bend, taper].filter(value => value !== undefined).length !== 1 || twist === 0 || bend === 0)
+            bad(at, 'a warp needs one nonzero twist or bend, or a taper');
+          if (taper !== undefined && (!isVec(taper, 2) || !Array.from(taper).every(n => n > 0)))
+            bad(at + '.taper', 'taper needs two positive scale factors');
+        }
+      }
+    }
     let area = 0;
     const res0 = st.finish.res || 0.09;
     function solidOk(s, path, inner) {
       if (!s || typeof s !== 'object')
         return bad(path, 'a solid is an object with a "kind"', 'kinds: ' + Object.keys(DIO.kinds).join(', '));
-      const def = DIO.kinds[s.kind];
+      const def = Object.hasOwn(DIO.kinds, s.kind) && DIO.kinds[s.kind];
       if (!def) {
         const n = nearest(s.kind, Object.keys(DIO.kinds));
         return bad(
@@ -711,6 +803,13 @@
         );
       }
       fields(s, path, def, COMMON);
+      checkModifiers(s.modifiers, path + '.modifiers');
+      let scale = 1;
+      try {
+        scale = solidTransform(s.transform)?.scale ?? 1;
+      } catch (error) {
+        bad(path + '.transform', error.message);
+      }
       if (K.drawing.kind(s)) {
         try {
           K.drawing.prepare(s);
@@ -766,7 +865,7 @@
                 ? (s.rad || 8) * 0.56
                 : 1,
         g = isNum(s.res) ? s.res : res0;
-      if (!inner && !s.carve) area += (12.6 * r * r) / (g * g);
+      if (!inner && !s.carve) area += (12.6 * (r * scale) ** 2) / (g * g);
     }
     if (!Array.isArray(spec.solids))
       bad(
@@ -778,7 +877,12 @@
     for (const [g, v] of Object.entries(groups))
       if (!v || !isNum(v.blend))
         bad('groups.' + g, 'a group says how far its members melt into each other', '{ "blend": 0.2 }');
-    for (const [p, v] of Object.entries(spec.parts || {})) {
+    const partDefinitions = spec.parts ?? {};
+    for (const [p, v] of Object.entries(partDefinitions)) {
+      if (!v || typeof v !== 'object' || Array.isArray(v)) {
+        bad('parts.' + p, 'a part definition must be an object');
+        continue;
+      }
       if (!parts.has(p))
         bad(
           'parts.' + p,
@@ -790,6 +894,20 @@
         bad('parts.' + p + '.parent', 'no part called "' + v.parent + '"');
       if (v.parent === p) bad('parts.' + p + '.parent', 'a part cannot hang from itself');
       keys(v, 'parts.' + p, { joint: 1, parent: 1 });
+    }
+    const checkedParts = new Set();
+    for (const part of Object.keys(partDefinitions)) {
+      const chain = new Set();
+      let name = part;
+      while (typeof name === 'string' && Object.hasOwn(partDefinitions, name) && !checkedParts.has(name)) {
+        if (chain.has(name)) {
+          if (partDefinitions[name]?.parent !== name) bad('parts.' + name + '.parent', 'part parents form a cycle');
+          break;
+        }
+        chain.add(name);
+        name = partDefinitions[name]?.parent;
+      }
+      for (const name of chain) checkedParts.add(name);
     }
     const listOf = (name, table) => {
       const l = spec[name];
@@ -912,11 +1030,11 @@
     st0.finish = K.authoring.environments.apply(st0.finish,spec.environmentPreset,catalog,st0.palette);
     st0.finish.look = K.authoring.looks.scene(st0.finish.look, catalog);
     let pal = st0.palette;
-    const meshLooks = {};
-    for (const s of spec.solids)
+    const meshLooks = new Map();
+    for (const s of DIO.solids(spec, { activeOnly: true }))
       if (s.kind === 'mesh' && s.mat === undefined) {
         const mesh = K.mesh.fit(env.assets[s.asset], { size: s.size || 4, at: s.at, turn: s.spin, up: s.up });
-        meshLooks[s.asset] = { mesh, look: K.mesh.look(mesh, { hues: s.hues || 5, pal }) };
+        meshLooks.set(s, { mesh, look: K.mesh.look(mesh, { hues: s.hues || 5, pal }) });
       }
     const { detailBudgets, shadowArt } = st0.finish.look ?? {};
     const B = (env.makeBuilder || makeBuilder)(seed, pal, detailBudgets === undefined && shadowArt === undefined ?
@@ -975,8 +1093,43 @@
             : o.gear !== undefined
               ? K.poly2.gear(o.gear, o.r || 1, o.depth || (o.r || 1) * 0.2)
               : K.poly2.rect(o.rect[0], o.rect[1]);
+    function deform(base, s, o) {
+      if (s.kind === 'fold') return S.fold(base, s.polar
+        ? { polar: s.polar, c: s.centre || [0, 0, 0], axis: s.axis }
+        : s.mirror ? { mirror: s.mirror, c: s.centre || [0, 0, 0] }
+          : { repeat: s.repeat, count: s.count || [1, 1, 1] }, o);
+      if (s.kind === 'warp') return S.warp(base, {
+        c: s.centre || [0, 0, 0],
+        ...(s.twist !== undefined ? { twist: s.twist } : s.bend !== undefined ? { bend: s.bend } : { taper: s.taper }),
+        ...(s.wide && { wide: s.wide })
+      }, o);
+      if (s.kind === 'shell') return S.shell(base, s.t, o);
+      if (s.kind === 'swell') return S.swell(base, s.by, o);
+      if (s.kind === 'rough') {
+        const sc = s.scale || 1.5;
+        return S.rough(base, (x, y, z) => B.n3(x * sc, y * sc, z * sc) - 0.5, s.by, o);
+      }
+      return S.bubbles(base, { cell: s.cell || 0.5, h: s.h || 0.12, ...o });
+    }
     const made = {},
       make = (s, held) => {
+        const transform = solidTransform(s.transform);
+        const recipe = () => makeSolid(s, held);
+        let p;
+        if (transform) {
+          const { translation, rotation, scale, pivot = s.at ?? [0, 0, 0] } = transform;
+          const basis = M.tr(B.frame(...rotation).flat()), inverseBasis = M.tr(basis);
+          const direction = vector => M.app(basis, vector);
+          const translatedPivot = V.add(pivot, translation);
+          const point = vector => V.mad(translatedPivot, direction(V.sub(vector, pivot)), scale);
+          const inverse = vector => V.mad(pivot, M.app(inverseBasis, V.sub(vector, translatedPivot)), 1 / scale);
+          p = S.transformSolids({ point, inverse, direction, scale }, recipe);
+        } else p = recipe();
+        if (s.id) made[s.id] = p;
+        return p;
+      },
+      makeSolid = (s, held) => {
+        const modifiers = activeModifiers(s);
         const o = { res: s.res, objectId: s.part ?? s.id };
         if (s.id || s.surfaceId || s.tags?.length) o.target = {
           ...(s.id && { entity: s.id }), ...(s.surfaceId && { surface: s.surfaceId }), ...(s.tags?.length && { tags: s.tags })
@@ -989,66 +1142,41 @@
         if (s.group) Object.assign(o, grp[s.group]);
         if (s.carve) o.neg = true;
         if (s.ghost) o.ghost = true;
-        if (s.separate) o.model = { separate: true, name: s.id ?? s.part ?? s.kind };
+        if (s.separate && !modifiers.length) o.model = { separate: true, name: s.id ?? s.part ?? s.kind };
         if (s.bump) o.bump = s.bump;
         if (held || s.hold) o.hold = true;
         if (s.turn) o.ax = B.frame(s.turn[0], s.turn[1], s.turn[2]);
-        const m = matOf(s.mat),
-          sub = q => make(q, true),
-          k = s.kind;
+        const m = matOf(s.mat), sub = q => make(q, true), k = s.kind;
+        const baseOptions = modifiers.length ? { ...o, hold: true } : o;
+        if (s.mat !== undefined && (k === 'join' || unaryKinds.includes(k))) baseOptions.mat = m;
         let p;
-        if (k === 'ground') p = S.ground(m, Object.assign({ rad: s.rad || 8 }, s.stretch ? { zs: s.stretch } : {}, o));
-        else if (k === 'ball') p = S.ball(s.at, s.r, m, o);
-        else if (k === 'rock') p = S.rock(s.at, s.r, m, o);
-        else if (k === 'box') p = S.box(s.at, s.half, m, Object.assign(s.round ? { rd: s.round } : {}, o));
+        if (k === 'ground') p = S.ground(m, Object.assign({ rad: s.rad || 8 }, s.stretch ? { zs: s.stretch } : {}, baseOptions));
+        else if (k === 'ball') p = S.ball(s.at, s.r, m, baseOptions);
+        else if (k === 'rock') p = S.rock(s.at, s.r, m, baseOptions);
+        else if (k === 'box') p = S.box(s.at, s.half, m, Object.assign(s.round ? { rd: s.round } : {}, baseOptions));
         else if (k === 'lathe')
-          p = S.lathe(s.at, s.h, Array.isArray(s.r) && Array.isArray(s.r[0]) ? t => K.kf(t, s.r.flat()) : s.r, m, o);
-        else if (k === 'torus') p = S.torus(s.at, s.R, s.r, m, o);
+          p = S.lathe(s.at, s.h, Array.isArray(s.r) && Array.isArray(s.r[0]) ? t => K.kf(t, s.r.flat()) : s.r, m, baseOptions);
+        else if (k === 'torus') p = S.torus(s.at, s.R, s.r, m, baseOptions);
         else if (k === 'tube')
-          p = S.tube(s.pts, Array.isArray(s.r) ? s.r[0] : s.r, Array.isArray(s.r) ? s.r[1] : s.r, m, o);
-        else if (K.drawing.kind(s)) p = K.drawing.solid(S, s, m, o);
+          p = S.tube(s.pts, Array.isArray(s.r) ? s.r[0] : s.r, Array.isArray(s.r) ? s.r[1] : s.r, m, baseOptions);
+        else if (K.drawing.kind(s)) p = K.drawing.solid(S, s, m, baseOptions);
         else if (k === 'regular')
-          p = S.regular(s.shape, s.at, s.r, m, Object.assign(s.round ? { rd: s.round } : {}, o));
+          p = S.regular(s.shape, s.at, s.r, m, Object.assign(s.round ? { rd: s.round } : {}, baseOptions));
         else if (k === 'extrude')
-          p = S.extrude(outline(s.outline), s.at, s.depth, m, Object.assign(s.round ? { rd: s.round } : {}, o));
-        else if (k === 'revolve') p = S.revolve(outline(s.outline), s.at, m, o);
-        else if (k === 'puff') p = S.puff(outline(s.outline), s.at, s.height, m, o);
+          p = S.extrude(outline(s.outline), s.at, s.depth, m, Object.assign(s.round ? { rd: s.round } : {}, baseOptions));
+        else if (k === 'revolve') p = S.revolve(outline(s.outline), s.at, m, baseOptions);
+        else if (k === 'puff') p = S.puff(outline(s.outline), s.at, s.height, m, baseOptions);
         else if (k === 'mesh') {
-          const ml = meshLooks[s.asset] || {
+          const ml = meshLooks.get(s) || {
             mesh: K.mesh.fit(env.assets[s.asset], { size: s.size || 4, at: s.at, turn: s.spin, up: s.up })
           };
-          p = S.mesh(ml.mesh, s.mat === undefined ? ml.look : m, Object.assign({ cells: s.cells, thick: s.thick }, o));
-        } else if (k === 'join') p = S.join(s.how, sub(s.a), sub(s.b), Object.assign({ r: s.size, n: s.steps }, o));
-        else if (k === 'fold')
-          p = S.fold(
-            sub(s.of),
-            s.polar
-              ? { polar: s.polar, c: s.centre || [0, 0, 0], axis: s.axis }
-              : s.mirror
-                ? { mirror: s.mirror, c: s.centre || [0, 0, 0] }
-                : { repeat: s.repeat, count: s.count || [1, 1, 1] },
-            o
-          );
-        else if (k === 'warp')
-          p = S.warp(
-            sub(s.of),
-            Object.assign(
-              { c: s.centre || [0, 0, 0] },
-              s.twist !== undefined ? { twist: s.twist } : s.bend !== undefined ? { bend: s.bend } : { taper: s.taper },
-              s.wide ? { wide: s.wide } : {}
-            ),
-            o
-          );
-        else if (k === 'shell') p = S.shell(sub(s.of), s.t, o);
-        else if (k === 'swell') p = S.swell(sub(s.of), s.by, o);
-        else if (k === 'rough') {
-          const sc = s.scale || 1.5;
-          p = S.rough(sub(s.of), (x, y, z) => B.n3(x * sc, y * sc, z * sc) - 0.5, s.by, o);
-        } else if (k === 'bubbles') p = S.bubbles(sub(s.of), Object.assign({ cell: s.cell || 0.5, h: s.h || 0.12 }, o));
-        else {
+          p = S.mesh(ml.mesh, s.mat === undefined ? ml.look : m, Object.assign({ cells: s.cells, thick: s.thick }, baseOptions));
+        } else if (k === 'join') p = S.join(s.how, sub(s.a), sub(s.b), Object.assign({ r: s.size, n: s.steps }, baseOptions));
+        else if (unaryKinds.includes(k)) p = deform(sub(s.of), s, baseOptions);
+        else if (builtKinds.includes(k)) {
           const mats = { stone: m, post: m, rail: m, metal: m },
-            oo = Object.assign({}, s, { mats, tag: s.part, res: s.res, objectId: o.objectId, target: o.target });
-          p =
+            oo = Object.assign({}, s, { mats, tag: s.part, res: s.res, objectId: baseOptions.objectId, target: baseOptions.target });
+          const buildRecipe = () =>
             k === 'pillar'
               ? K.build.pillar(S, s.at, s.h, oo)
               : k === 'arch'
@@ -1058,8 +1186,33 @@
                   : k === 'fence'
                     ? K.build.fence(S, s.a, s.b, oo)
                     : K.build.pipe(S, s.pts, oo);
+          if (baseOptions.hold) {
+            const pieces = S.takeSolids(buildRecipe);
+            p = pieces.length === 1 ? pieces[0] : S.join('union', pieces[0], pieces.slice(1), { hold: true, r: 0, mat: m });
+          } else p = buildRecipe();
         }
-        if (s.id) made[s.id] = p;
+        if (modifiers.length) {
+          const res = p.res;
+          for (const modifier of modifiers) {
+            const options = { hold: true };
+            let reach = p.reach;
+            if (modifier.kind === 'join' || modifier.kind === 'mask') {
+              const operand = sub(modifier.shape);
+              reach = Math.max(reach, operand.reach);
+              if (modifier.kind === 'join') {
+                const exact = ['union', 'cut', 'common'].includes(modifier.how);
+                p = S.join(modifier.how, p, operand, { ...options, r: modifier.size ?? (exact ? 0 : undefined), n: modifier.steps });
+              } else {
+                const keep = modifier.mode === 'keep';
+                p = S.join(keep ? 'common' : 'cut', p, operand, {
+                  ...options, r: 0, mat: p.mat, mask: true
+                });
+              }
+            } else p = deform(p, modifier, options);
+            p.reach += reach;
+          }
+          p = S.add(p, p.mat, { ...o, res, bump: undefined, reach: p.reach });
+        }
         return p;
       };
     if (modelOptions) {
@@ -1094,7 +1247,7 @@
         for (const solid of groups.get(name)) make(solid);
         let detail = name === null ? resolution ?? 0.08 :
           Math.min(resolution ?? 0.08, ...groups.get(name).map(solid => solid.res ?? Infinity));
-        const hasBody = groups.get(name).some(solid => !solid.separate && !solid.carve);
+        const hasBody = groups.get(name).some(solid => (!solid.separate || activeModifiers(solid).length) && !solid.carve);
         const restBounds = (name === null ? bounds : undefined) ?? (hasBody ? S.modelBounds(detail * 2) : undefined);
         if (resolution === undefined && name === null && restBounds) {
           const volume = restBounds.max.reduce((v, high, i) => v * (high - restBounds.min[i]), 1);
@@ -1123,10 +1276,14 @@
       }) : [];
       return { meshes, joints, animations };
     }
-    const drawingBounds = new Map();
+    const authoredBounds = new Map();
     function placeSolid(s) {
       const p = make(s);
-      if (K.drawing.kind(s) && p.geometryBounds) drawingBounds.set(s, p.geometryBounds);
+      if (p.geometryBounds && (K.drawing.kind(s) || s.transform)) authoredBounds.set(s, p.geometryBounds);
+      else if ((s.transform || activeModifiers(s).length) && s.kind !== 'ground') {
+        const at = p.bc ?? (s.at && V.add(s.at, s.transform?.translation ?? [0, 0, 0]));
+        if (at) authoredBounds.set(s, { min: at, max: at });
+      }
     }
     for (const s of spec.solids) if (!s.part) placeSolid(s);
     S.bake();
@@ -1139,7 +1296,7 @@
       lo = [1e9, 1e9, 1e9],
       hi = [-1e9, -1e9, -1e9];
     for (const s of spec.solids) {
-      const b = drawingBounds.get(s) ?? (s.at && s.kind !== 'ground' ? { min: s.at, max: s.at } : null);
+      const b = authoredBounds.get(s) ?? (s.at && s.kind !== 'ground' ? { min: s.at, max: s.at } : null);
       if (b) for (let a = 0; a < 3; a++) {
         lo[a] = Math.min(lo[a], b.min[a]);
         hi[a] = Math.max(hi[a], b.max[a]);

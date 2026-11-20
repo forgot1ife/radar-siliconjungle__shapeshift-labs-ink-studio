@@ -85,7 +85,7 @@
     check(descriptor && types[descriptor.type]?.(value), 'Invalid value for ' + name);
     return freeze(copy(value));
   }
-  function compile(world, implementations = {}) {
+  function compile(world, implementations = {}, interfacesOnly = false) {
     const systems = {};
     const catalog = W.materials.catalog(world);
     const ports = {inputs:{},outputs:{}};
@@ -108,6 +108,7 @@
         check(id(key) && typeof handler === 'function', 'Invalid action ' + name + '/' + key);
       systems[name] = system;
     }
+    if(interfacesOnly)return {systems,ports};
     const chunks=W.simulationChunks.compile(world,systems);
     const aggregates=W.simulationAggregate.bind(systems,chunks);
     if (world.visual?.volume!==undefined) check(typeof world.visual.volume==='string'&&
@@ -857,5 +858,5 @@
     return {tick:a.tick,time:{before:a.tick*a.world.dt,after:b.tick*b.world.dt},edits:Q.keyedChanges(a,b)};
   }
   W.runtime = Object.freeze({register,validate,create,replay,diff,firstDivergence:W.stepDebug.firstDivergence,
-    checkpointFormat,runFormat,partitionKernel});
+    checkpointFormat,runFormat,partitionKernel,prefabInterfaces:(world,{implementations}={})=>compile(world,implementations,true)});
 })(KIT);
