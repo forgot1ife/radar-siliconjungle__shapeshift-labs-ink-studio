@@ -97,7 +97,9 @@
     const maxEvents = bounded(options.maxEvents ?? 1024, 100000, 'event');
     const contactPoints = bounded(options.points ?? 12, 64, 'contact point');
     const maxSplats = bounded(options.maxSplats ?? 250000, 2000000, 'splat');
-    const gravity = options.gravity ?? 18, scale = options.collisionScale ?? 1;
+    const gravity = options.gravity ?? 18, scale = options.collisionScale ?? 1, seed = options.seed ?? 17;
+    if (!Number.isSafeInteger(seed) || st.physicsOwned && (!(st.physicsOwned instanceof Uint8Array) || st.physicsOwned.length < st.N))
+      throw new RangeError('Invalid destruction seed or stage ownership mask');
     const ground = options.ground ?? (() => 0), solid = options.solid ?? ((x, y, z) => y - ground(x, z));
     if (!Number.isFinite(gravity) || gravity < 0 || !positive(scale) || typeof ground !== 'function' || typeof solid !== 'function')
       throw new RangeError('Invalid destruction gravity or collision settings');
@@ -134,7 +136,7 @@
       if (!ids.length || owner.size + ids.length > maxSplats) throw new RangeError('Empty group or destruction splat budget exceeded');
       const unique = new Set();
       for (const id of ids) {
-        if (!Number.isSafeInteger(id) || id < 0 || id >= st.N || unique.has(id) || owner.has(id) || occupied.has(id)) throw new RangeError('Structural splat ownership must be distinct and in range');
+        if (!Number.isSafeInteger(id) || id < 0 || id >= st.N || unique.has(id) || owner.has(id) || occupied.has(id) || st.physicsOwned?.[id]) throw new RangeError('Structural splat ownership must be distinct and in range');
         unique.add(id);
         const q = id * 16;
         if (!Array.from(D.subarray(q, q + 16)).every(Number.isFinite)) throw new RangeError('Structural geometry must be finite');
@@ -144,9 +146,9 @@
       if (!positive(mass) || !positive(strength) || !['rubble', 'debris'].includes(mode) || !Number.isFinite(fragmentSize) || fragmentSize < 0 ||
         spec.motion !== undefined && typeof spec.motion !== 'function' || spec.solid !== undefined && typeof spec.solid !== 'function')
         throw new RangeError('Invalid structural mass, strength, fragments or motion');
-      const saved = new Float32Array(ids.length * 16), free = new Uint8Array(ids.length);
-      ids.forEach((id, k) => { saved.set(D.subarray(id * 16, id * 16 + 16), k * 16); free[k] = st.rig?.free[id] ?? 0; owner.set(id, spec.id); });
-      groups.set(spec.id, { id: spec.id, ids, saved, free, mass, strength, mode, fragmentSize,
+      const saved = new Float32Array(ids.length * 16), appearance = new Float32Array(ids.length * 2), free = new Uint8Array(ids.length);
+      ids.forEach((id, k) => { saved.set(D.subarray(id * 16, id * 16 + 16), k * 16); appearance[k * 2] = st.base[id * 16 + 3]; appearance[k * 2 + 1] = st.base[id * 16 + 7]; free[k] = st.rig?.free[id] ?? 0; owner.set(id, spec.id); });
+      groups.set(spec.id, { id: spec.id, ids, saved, appearance, free, mass, strength, mode, fragmentSize,
         anchor: Boolean(spec.anchor), breakable: spec.breakable !== false, static: Boolean(spec.static), motion: spec.motion,
         solid: spec.solid, guide: guide(ids, D), intact: true, damage: 0, v: [0, 0, 0], w: [0, 0, 0], sampled: false });
     }
@@ -267,7 +269,7 @@
         for (const id of g.ids) { const q = id * 16, x = D[q] - g.center[0], y = D[q + 1] - g.center[1], z = D[q + 2] - g.center[2]; radius2 += x * x + y * y + z * z; }
         const inertia = Math.max(g.mass * radius2 / g.ids.length * 2 / 3, g.mass * 0.001);
         const dv = V.mul(impulse, 1 / g.mass), dw = V.mul(V.cross(V.sub(p, g.center), impulse), 1 / inertia);
-        const kicks = fragments.map((ids, k) => [0, 1, 2].map(a => (K.hash(g.ids[0] + k, a + 7, options.seed ?? 17) - 0.5) * scatter * 2));
+        const kicks = fragments.map((ids, k) => [0, 1, 2].map(a => (K.hash(g.ids[0] + k, a + 7, seed) - 0.5) * scatter * 2));
         const mean = [0, 0, 0];
         kicks.forEach((kick, k) => { for (let a = 0; a < 3; a++) mean[a] += kick[a] * fragments[k].length / g.ids.length; });
         return { g, mode, life, direct: removed.has(g.id), pieces: fragments.map((ids, k) => {
@@ -280,6 +282,7 @@
       const result = [];
       for (const plan of plans) {
         const g = plan.g; g.intact = false; g.damage = Math.max(1, g.damage);
+        for (const id of g.ids) st.physicsOwned[id] = 1;
         for (const piece of plan.pieces) {
           const body = plan.mode === 'rubble' ? rubble.spawn(piece.ids, piece) : debris.spawn(piece.ids, { ...piece, life: plan.life });
           body.group = g.id; body.mass = piece.mass;
@@ -416,7 +419,7 @@
       for (const shot of projectiles) shot.active = false;
       projectiles.length = 0; events.length = 0; accumulator = 0; clock = 0; serial = 0;
       for (const g of groups.values()) {
-        g.ids.forEach((id, k) => { D.set(g.saved.subarray(k * 16, k * 16 + 16), id * 16); if (st.rig) st.rig.free[id] = g.free[k]; st.touch(id); });
+        g.ids.forEach((id, k) => { D.set(g.saved.subarray(k * 16, k * 16 + 16), id * 16); st.base[id * 16 + 3] = g.appearance[k * 2]; st.base[id * 16 + 7] = g.appearance[k * 2 + 1]; if (st.rig) st.rig.free[id] = g.free[k]; st.physicsOwned[id] = 0; st.touch(id); });
         g.intact = true; g.damage = 0; g.v = [0, 0, 0]; g.w = [0, 0, 0]; g.sampled = false;
       }
       for (const edge of links) edge.active = true;
@@ -428,6 +431,7 @@
         center: g.center.slice(), velocity: g.v.slice(), angularVelocity: g.w.slice(),
         pieces: rubble.bodies.filter(b => b.group === id).length + debris.chunks.filter(b => b.group === id).length };
     }
+    st.physicsOwned ??= new Uint8Array(st.N);
     for (const id of owner.keys()) occupied.set(id, true);
     bindings.set(st, occupied);
     const api = { release, sever, impact, sweep, launch, sync, update, reset, inspect,

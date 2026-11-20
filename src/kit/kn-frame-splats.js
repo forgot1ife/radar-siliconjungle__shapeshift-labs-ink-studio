@@ -46,6 +46,7 @@
       const length = V.len(delta);
       const [x, y, z] = V.lerp(a, b, 0.5);
       const i = pool.first + used++;
+      if (stage.physicsOwned?.[i]) return;
       const axis = length > 1e-9 ? V.mul(delta, 1 / length) : null;
       pool.put(stage, i, x, y, z, paint.width, paint.packed, paint.density, axis, Math.max(paint.width, length / 2));
       // Restore stroke flags if this slot previously held a model.
@@ -92,6 +93,7 @@
         const transpose = M.tr(matrix);
         for (let r = 0; r < rows.length; r += SNAPSHOT_STRIDE) {
           const i = pool.first + used++;
+          if (stage.physicsOwned?.[i]) continue;
           const o = i * 16;
           const point = rows.subarray(r, r + 3);
           const p = deform ? Array.from(point) : point;
@@ -117,6 +119,8 @@
           D[o + 9] = C[5];
           D[o + 10] = C[8];
           D[o + 11] = rows[r + 11];
+          stage.base[o + 3] = D[o + 3];
+          stage.base[o + 7] = D[o + 7];
           stage.touch(i);
         }
         return true;
@@ -170,6 +174,7 @@
             if (V.len(normal) < 1e-10) continue;
             const [x, y, z] = V.lerp(left, right, u);
             const index = pool.first + used++;
+            if (stage.physicsOwned?.[index]) continue;
             pool.put(stage, index, x, y, z, size, paint.packed, paint.density, V.norm(normal), size * 0.16);
             stage.D[index * 16 + 11] = paint.flags;
           }

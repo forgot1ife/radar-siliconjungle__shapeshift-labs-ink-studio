@@ -196,3 +196,21 @@ test('the interactive scene can fire both weapons in either order without exhaus
     assert.equal(physics.stats.intact, 7);assert.deepEqual(world.data.subarray(0, (world.count - 32) * 16), before.subarray(0, (world.count - 32) * 16));
   }
 });
+
+test('frame models and pool cleanup cannot overwrite or hide released geometry, and reset returns ownership', () => {
+  const C = makeBuilder(3);C.iso(0, 0, 0, 0.12, C.P[3], 3);
+  const model = K.frameSplats.capture(C.finish()), B = makeBuilder(4);
+  let x = 2, visible = true;
+  const frame = K.frameSplats(B, 1, draw => { if (visible) draw.model(model, [x, 3, 0]); });
+  const W = B.finish(), stage = K.stage(W);stage.add(frame);stage.update(0, 0);
+  const d = stage.add(K.destruction(stage, { gravity: 0, groups: [{ id: 'vehicle', ids: [frame.first] }] }));
+  d.release('vehicle', { v: [1, 0, 0] });x = 20;
+  stage.update(1 / 60, 1 / 60);near(W.data[0], 2 + 1 / 60, 0.001);assert(W.data[3] > 0);
+  visible = false;stage.update(1 / 60, 2 / 60);assert(W.data[3] > 0);assert(W.data[1] > 2.9);
+  stage.repaintAll([frame.first]);stage.update(0, 1);
+  assert(W.data[3] > 0);
+  near(W.data[7], C.finish().data[7]);
+  assert.equal(stage.physicsOwned[frame.first], 1);
+  d.reset();assert.equal(stage.physicsOwned[frame.first], 0);
+  visible = true;stage.update(0, 1);near(W.data[0], 20);
+});

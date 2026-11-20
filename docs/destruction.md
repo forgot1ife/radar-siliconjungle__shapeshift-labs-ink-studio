@@ -47,7 +47,14 @@ splat indices, or a shared `selector` such as `{ object: 'gate' }`,
 `{ material: 'stone' }` or `{ tag: 'breakable' }`. Selectors are resolved once
 at creation. Selection shares the same metadata as rendering and look tools.
 A splat cannot belong to two groups or two destruction bindings on a stage.
-Do not also hand these splats to another physics writer.
+Do not also hand these splats to another physics writer. Released rows are
+marked in `stage.physicsOwned`. Rigs, frame splats and pool writes/hides respect
+this mask, so their kinematic animation cannot erase physics-owned geometry.
+Frame and pool writers also keep their paint baselines current, so repainting
+a detached model preserves its appearance. Custom animation writers should skip masked rows. Keep frame-model calls in a
+stable order, or reserve a separate pool per bound model; do not compact or
+reuse those slots for unrelated models after a release. Bind a frame model
+after its initial pose has been drawn so reset can capture that pose.
 
 | Group option | Default and behavior |
 | --- | --- |
