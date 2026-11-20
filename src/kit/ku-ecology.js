@@ -5,7 +5,7 @@
   const record=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
   const vector=(v,n)=>Array.isArray(v)&&v.length===n&&v.every(finite);
   function check(ok,message){if(!ok)throw new RangeError(message);}
-  function copy(value,budget={left:2000000}) {
+  function copy(value,budget={left:4000000}) {
     check(--budget.left>=0,'Ecology state exceeds serialization budget');
     if(value===null||typeof value==='string'||typeof value==='boolean')return value;
     if(typeof value==='number'){check(finite(value),'Ecology state must be finite');return value;}
@@ -36,6 +36,7 @@
     const channels=Object.keys(definitions);check(channels.length>0&&channels.length<=24,'Ecology needs one to 24 channels');
     const materials=copy(options.materials??{default:{}}), materialNames=Object.keys(materials);
     check(materialNames.length>0&&materialNames.length<=256&&materialNames.every(name),'Invalid ecology materials');
+    check(Object.values(materials).every(record)&&record(options.environment??{}),'Invalid ecology material or environment');
     for(const row of Object.values(materials))for(const [field,value]of Object.entries(row))check(definitions[field]&&finite(value)&&value>=definitions[field].min&&value<=definitions[field].max,'Invalid material channel '+field);
     const materialAt=options.materialAt??(()=>materialNames[0]),heightAt=options.heightAt??(()=>0);
     check(typeof materialAt==='function'&&typeof heightAt==='function','Ecology habitat needs material and height samplers');
@@ -52,6 +53,7 @@
     let signature=2166136261;
     const hash=s=>{for(let i=0;i<s.length;i++)signature=Math.imul(signature^s.charCodeAt(i),16777619)>>>0;};
     hash(JSON.stringify({width,height,cellSize,origin,definitions,types,processes:specs.map(p=>[p.id,p.version??1])}));
+    for(const byte of new Uint8Array(points.buffer))signature=Math.imul(signature^byte,16777619)>>>0;
     for(const key of channels)for(const byte of new Uint8Array(initial[key].buffer))signature=Math.imul(signature^byte,16777619)>>>0;
     let time=0,tick=0,acc=0,version=1,randomState=(seed>>>0)||1,serial=0,environment=copy(options.environment??{}),busy=false;
     const events=[],contacts=[],seen=new Set(),runtimes=[];
@@ -86,7 +88,7 @@
         set,add(key,i,amount){check(finite(amount),'Invalid ecology delta');const s=definitions[channel(key)];set(key,i,clamp(current(key,i)+amount,s.min,s.max));},
         transfer(key,from,to,amount){check(finite(amount)&&amount>=0&&from!==to,'Invalid ecology transfer');const s=definitions[channel(key)];
           const value=Math.max(0,Math.min(amount,current(key,from)-s.min,s.max-current(key,to)));set(key,from,current(key,from)-value);set(key,to,current(key,to)+value);return value;},
-        emit(kind,data={}){check(name(kind),'Invalid ecology event kind');output.push({kind,process:id,time:time+step,tick:tick+1,...copy(data)});}
+        emit(kind,data={}){check(name(kind),'Invalid ecology event kind');check(record(data),'Ecology event data must be a record');output.push({...copy(data),kind,process:id,time:time+step,tick:tick+1});}
       });
     }
     function flush(work,pending){for(const[key,rows]of pending)for(const[i,value]of rows)work[key][i]=value;}
@@ -125,6 +127,7 @@
       check(typeof id==='string'&&id.length>0&&id.length<=256&&finite(at)&&at>=time-1e-9,'Invalid ecology contact identity or time');
       if(seen.has(id))return false;
       check(contacts.length<maxContacts,'Ecology contact budget exceeded');
+      check(record(raw.values??{}),'Ecology contact values must be a record');
       for(const[key,value]of Object.entries(raw.values??{})){const s=definitions[channel(key)];check(finite(value)&&value>=s.min&&value<=s.max,'Invalid ecology contact value');}
       const row=copy({...raw,id,time:at,radius:raw.radius??0});contacts.push(row);seen.add(id);serial++;
       if(seen.size>4096)seen.delete(seen.values().next().value);return true;
@@ -138,7 +141,9 @@
         finite(s.acc)&&s.acc>=0&&s.acc<step+.25&&Number.isSafeInteger(s.serial)&&s.serial>=0&&Number.isInteger(s.randomState),'Incompatible ecology snapshot');
       check(record(s.fields)&&Object.keys(s.fields).length===channels.length&&channels.every(k=>Array.isArray(s.fields[k])&&s.fields[k].length===N&&s.fields[k].every(v=>finite(v)&&v>=definitions[k].min-1e-6&&v<=definitions[k].max+1e-6)),'Invalid ecology snapshot channels');
       check(Array.isArray(s.processes)&&s.processes.length===runtimes.length&&s.processes.every((p,i)=>p.id===runtimes[i].id)&&Array.isArray(s.contacts)&&s.contacts.length<=maxContacts&&Array.isArray(s.events)&&s.events.length<=maxEvents&&Array.isArray(s.seen)&&s.seen.length<=4096&&record(s.environment),'Invalid ecology snapshot processes or events');
-      for(const c of s.contacts)check(name(c.type)&&vector(c.p,3)&&finite(c.time)&&c.time>=s.time&&finite(c.radius)&&c.radius>=0&&typeof c.id==='string','Invalid saved ecology contact');
+      for(const c of s.contacts){check(name(c.type)&&vector(c.p,3)&&finite(c.time)&&c.time>=s.time&&finite(c.radius)&&c.radius>=0&&typeof c.id==='string'&&record(c.values??{}),'Invalid saved ecology contact');
+        for(const [key,v]of Object.entries(c.values??{}))check(definitions[key]&&finite(v)&&v>=definitions[key].min&&v<=definitions[key].max,'Invalid saved ecology contact value');}
+      check(s.seen.every(id=>typeof id==='string'&&id.length>0&&id.length<=256)&&s.events.every(record),'Invalid saved ecology event records');
       const old=runtimes.map(p=>p.runtime.save());
       try{runtimes.forEach((p,i)=>p.runtime.restore(s.processes[i].state));}catch(error){runtimes.forEach((p,i)=>p.runtime.restore(old[i]));throw error;}
       for(const key of channels)fields[key].set(s.fields[key]);time=s.time;tick=s.tick;acc=s.acc;serial=s.serial;randomState=s.randomState;environment=s.environment;

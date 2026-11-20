@@ -753,8 +753,10 @@
       },
       restore(s) {
         const arrays = { burn, heat, frost, fuel, gh, gen }, sets = { burning, warm, scar, timed };
-        if (!s || s.width !== N || s.height !== NZ || s.cellSize !== cellSize || !s.origin?.every((v, i) => v === origin[i]) ||
-          ![s.iceG, s.iceW, s.acc].every(Number.isFinite) ||
+        if (!s || s.width !== N || s.height !== NZ || s.cellSize !== cellSize || !Array.isArray(s.origin) || s.origin.length !== 2 || !s.origin.every((v, i) => v === origin[i]) ||
+          ![s.iceG, s.iceW, s.acc].every(Number.isFinite) || s.iceG < 0 || s.iceG > 1 || s.iceW < -1 || s.iceW > 1 || s.acc < 0 ||
+          !Array.from(s.burn ?? []).every(v => v >= 0 && v <= 1) || !Array.from(s.heat ?? []).every(v => v >= 0 && v <= 1e6) ||
+          !Array.from(s.gen ?? []).every(v => Number.isInteger(v) && v >= 0 && v <= 255) ||
           Object.keys(arrays).some(k => s[k]?.length !== NN || !Array.from(s[k]).every(Number.isFinite)) ||
           Object.keys(sets).some(k => !Array.isArray(s[k]) || s[k].length > NN || !s[k].every(i => Number.isSafeInteger(i) && i >= 0 && i < NN)))
           throw new RangeError('Invalid fire snapshot');
