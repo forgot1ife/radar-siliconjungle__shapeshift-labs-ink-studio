@@ -10,8 +10,18 @@ vec3 axialPosition(vec2 pixel, float axial, vec2 size) {
   return vec3(screen * (u_ortho > 0.5 ? 1.0 : axial), -axial);
 }`;
 
+const materialStyleThreshold = `
+float pixelStyleThreshold(int mode, ivec2 p) {
+  const float ordered[16] = float[16](0.0,8.0,2.0,10.0,12.0,4.0,14.0,6.0,3.0,11.0,1.0,9.0,15.0,7.0,13.0,5.0);
+  if (mode == 1) return (ordered[(p.x & 3) + ((p.y & 3) << 2)] + 0.5) / 16.0;
+  if (mode == 2) return ((p.x + p.y) & 1) != 0 ? 0.75 : 0.25;
+  return (float((p.x + p.y) & 3) + 0.5) / 4.0;
+}
+`;
+
 export function splatShaderSources(ascii, sampleCoverage, {
-  water = false, airPockets = false, layered = false, atlas = false, portal = false, instances = false, contributions = false, masked = false, textured = false, layeredGlass = false, coverageRules
+  water = false, airPockets = false, layered = false, atlas = false, portal = false, instances = false,
+  contributions = false, masked = false, textured = false, layeredGlass = false, coverageRules, materialStyles = false
 } = {}) {
   const SPLAT_VS = `#version 300 es
 precision highp float; precision highp int;
@@ -49,6 +59,7 @@ uniform vec4 u_lamp[8]; uniform float u_lamps[8]; uniform int u_lampN; uniform f
 flat out vec4 v_fm; flat out vec4 v_ft; flat out float v_fk; flat out float v_lit; flat out float v_ix;
 ${contributions || masked ? `${policyUniforms}flat out int v_policySlot;` : ''}
 ${masked ? maskUniforms + maskVaryings(textured).replaceAll('LOOK_IO','out') + maskVertex(textured) : ''}
+${materialStyles ? 'uniform highp sampler2D u_materialStyles; uniform bool u_materialPatterned; flat out vec4 v_pixelStyle; flat out float v_pixelFog;' : ''}
 void main(){
   int record = a_index;
   ${instances ? `ivec2 inst = ivec2((a_instance & 15) * 16, a_instance >> 4);
@@ -62,6 +73,7 @@ void main(){
   vec4 t1 = texelFetch(u_data, ivec2(col + 1, row), 0);
   vec4 t2 = texelFetch(u_data, ivec2(col + 2, row), 0);
   vec4 t3 = ${instances ? 'a_instance != 0 ? vec4(0.0) : ' : ''}texelFetch(u_data, ivec2(col + 3, row), 0);
+  ${materialStyles ? 'v_pixelStyle = texelFetch(u_materialStyles, ivec2(record & 511, row), 0);' : ''}
   vec3 pos = t0.xyz; float alpha = t0.w;
   if (alpha <= 0.0 || pos.y < -30.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }   // (what is put away is put far below: it is not drawn from there)
   mat3 cov = mat3(t1.x, t1.y, t1.z,  t1.y, t2.x, t2.y,  t1.z, t2.y, t2.z);
@@ -86,11 +98,16 @@ void main(){
     }
     if (pos.y < -30.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
     alpha *= meta.z;
+    ${materialStyles ? 'float originalShade = t1.w; vec2 originalRamp = v_pixelStyle.zw;' : ''}
     if (meta.y > 0.0) for (int i = 0; i < 16; i++) {
       if (i >= int(meta.y)) break;
       vec4 pair = texelFetch(u_instances, inst + ivec2(5 + i / 2, 0), 0);
       vec2 swap = i % 2 == 0 ? pair.xy : pair.zw;
-      if (t1.w == swap.x) { t1.w = swap.y; break; }
+      ${materialStyles ? `
+      if (originalShade == swap.x) t1.w = swap.y;
+      if (originalRamp.x == swap.x) v_pixelStyle.z = swap.y;
+      if (originalRamp.y == swap.x) v_pixelStyle.w = swap.y;` :
+      'if (t1.w == swap.x) { t1.w = swap.y; break; }'}
     }
   }` : ''}
   vec3 color = vec3(mod(t1.w, 256.0), mod(floor(t1.w / 256.0), 256.0), floor(t1.w / 65536.0)) / 255.0;
@@ -238,6 +255,12 @@ ${water && !portal ? '  v_waterAxial = -cam.z;' : ''}
     ivec2 fq = ivec2((a_index & 511) * 3, row); vec4 f1 = texelFetch(u_fine, fq + ivec2(1, 0), 0), f2 = texelFetch(u_fine, fq + ivec2(2, 0), 0);
     if (f2.w > 0.5 && f1.w == t1.w) { vec3 pu = T * (FM * f1.xyz) * sc, pw = T * (FM * f2.xyz) * sc; float dt = pu.x * pw.y - pw.x * pu.y;
       if (abs(dt) > 1e-4 * (abs(pu.x * pw.y) + abs(pw.x * pu.y) + 1e-9)) { v_fm = vec4(pw.y, -pw.x, -pu.y, pu.x) / dt; v_ft = texelFetch(u_fine, fq, 0); v_fk = fogk; } } }
+  ${materialStyles ? `
+  int styleCode = int(v_pixelStyle.y);
+  if (!plain || color != colorF || v_lit > 0.0 ||
+      (u_materialPatterned && (styleCode & 1024) != 0) ||
+      t1.w != (fract(v_pixelStyle.y) >= 0.25 ? v_pixelStyle.w : v_pixelStyle.z)) v_pixelStyle.y = 0.0;
+  v_pixelFog = fogk;` : ''}
   v_color = vec4(min(color, 1.0), alpha);
   v_gl = (flags & 16) != 0 ? 1.0 : 0.0;   // glass
   v_as = (flags & 128) != 0 ? 1.0 : 0.0; v_ast = v_as > 0.5 ? float(((kraw >> 12) & 1) | (((kraw >> 14) & 1) << 1)) : 0.0;   // text (K.ascii): the dab asks for it (and maybe for a set of its own), or it lies inside a zone (0.5 on the zone's surface)
@@ -253,6 +276,8 @@ ${portal ? 'flat in vec3 v_portalDepth; uniform mat4 u_proj; uniform float u_ort
 in float v_gl; in float v_as; in float v_ast;
 ${ascii ? ascii.fsDecl : 'uniform float u_gly;\n'}uniform float u_crisp, u_hard;
 flat in vec4 v_fm; flat in vec4 v_ft; flat in float v_fk; flat in float v_lit; flat in float v_ix; uniform vec3 u_fpal[64]; uniform vec3 u_fog;
+${materialStyles ? `flat in vec4 v_pixelStyle; flat in float v_pixelFog; uniform float u_materialGridScale;
+${materialStyleThreshold}` : ''}
 uniform float u_idx;
 layout(location=0) out vec4 o;
 layout(location=1) out vec4 od;
@@ -315,6 +340,11 @@ ${ascii ? ascii.fsMain : ''}  float power = -0.5 * (v_conic.x * v_d.x * v_d.x + 
     oa = vec4(0.0); return; }
   bool solid = u_crisp > 0.5 && v_color.a >= 1.0;
   float a = solid && u_hard > 0.5 ? (g > 0.5 ? 1.0 : 0.0) : contributionAlpha(power,v_color.a,solid);
+  ${materialStyles ? `
+  if (solid && u_hard < 0.5 && v_pixelStyle.x > 0.0) {
+    float width = 0.36 * (2.0 - v_pixelStyle.x);
+    a = 0.99 * (width > 0.0 ? smoothstep(0.5 - width, 0.5 + width, g) : step(0.5, g));
+  }` : ''}
   if (a < 0.004) discard;
   vec3 rgb = v_color.rgb;
   if (v_fk >= 0.0) {   // inked detail: this pixel's own place on the dab's tile
@@ -322,6 +352,13 @@ ${ascii ? ascii.fsMain : ''}  float power = -0.5 * (v_conic.x * v_d.x * v_d.x + 
     float f = ij.y == 0 ? v_ft.x : ij.y == 1 ? v_ft.y : ij.y == 2 ? v_ft.z : v_ft.w;
     int ci = int(mod(floor(f / (ij.x == 0 ? 1.0 : ij.x == 1 ? 64.0 : ij.x == 2 ? 4096.0 : 262144.0)), 64.0));
     rgb = mix(u_fpal[min(ci, 63)], u_fog, v_fk); }
+${materialStyles ? `
+  else if ((int(v_pixelStyle.y) & 2048) != 0) {
+    float rank = pixelStyleThreshold(int(v_pixelStyle.y) & 7, ivec2(gl_FragCoord.xy / u_materialGridScale));
+    float pk = fract(v_pixelStyle.y) * 2.0 > rank ? v_pixelStyle.w : v_pixelStyle.z;
+    vec3 shade = vec3(mod(pk, 256.0), mod(floor(pk / 256.0), 256.0), floor(pk / 65536.0)) / 255.0;
+    rgb = mix(shade, u_fog, v_pixelFog);
+  }` : ''}
 ${contributions ? `  if (v_policySlot > 0) {
     ivec2 p = ivec2(floor(gl_FragCoord.xy * u_lookViewportScale));
     p.y = int(u_lookGrid.y) - 1 - p.y;
@@ -443,7 +480,7 @@ bool constrainPalette(ivec2 p, vec3 inputColor, out vec3 color) {
 }
 
 export function pixelShaderSources(PixelLook, { water = false, airPockets = false, layered = false, atlas = false,
-  paletteConstraints = false, masked = false, contributions = false, layeredGlass = false } = {}) {
+  paletteConstraints = false, masked = false, contributions = false, layeredGlass = false, materialStyles = false } = {}) {
   const waterPixelGLSL = `
 uniform highp sampler2D u_waterMask;
 ivec2 waterPixel(ivec2 p) {
@@ -460,7 +497,7 @@ ivec2 waterPixel(ivec2 p) {
 void main(){ vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
   const POST_FS = `#version 300 es
 precision highp float;
-${paletteConstraints ? 'precision highp int;' : ''}
+${paletteConstraints || materialStyles ? 'precision highp int;' : ''}
 uniform sampler2D u_scene, u_depth, u_crispScene, u_crispDepth;
 uniform vec3 u_line;
 uniform float u_edge;
@@ -703,6 +740,19 @@ const ivec2 N4o[4] = ivec2[4](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 
 /* edge sprites (K.pixel.edge, an option): drawn first in a pass of their own (SPR_VS / SPR_FS: each stands on a point pinned to its
    surface), into u_sprLayer: which cell (8 + steps from the edge's own colour, or 100 + a palette colour), ramp and band */
 uniform highp sampler2D u_sprLayer; uniform float u_sprOn, u_markA; bool g_spr = false;
+${materialStyles ? `uniform highp sampler2D u_materialStyles;
+${materialStyleThreshold}
+float materialLight(float t, int id, int rampSize, ivec2 p) {
+  int code = int(texelFetch(u_materialStyles, ivec2(id & 511, id >> 9), 0).y);
+  int mode = code & 7, steps = (code >> 3) & 127;
+  if (mode == 0 && steps == 0) return t;
+  int bands = min(steps == 0 ? rampSize : steps, rampSize) - 1;
+  if (bands < 1) return t;
+  float level = clamp(t, 0.0, 1.0) * float(bands);
+  return (mode == 0 ? floor(level + 0.5) :
+    floor(level) + float(fract(level) > pixelStyleThreshold(mode, p))) / float(bands);
+}
+` : ''}
 vec3 pixColour(ivec2 p, vec3 c) {
   int i = dabAt(p); if (i < 0) return c; vec4 A = pixA(i); if (A.x < 0.5) return c;
   // (only where the dab is what shows: nothing soft in front of it, no light carried onto it)
@@ -729,6 +779,7 @@ ${water ? `  vec3 mark;
     if (wide) { vec4 Bj = pixB(j); if (dot(n, vec3(Aj.w, Bj.x, Bj.y)) >= 0.8) { s7 += Aj.y; c7 += 1.0; } } }
   float t = cnt > 0.0 ? sum / cnt : A.y;
   if (shp && c7 > 0.0) t = mix(t, s7 / c7, smoothstep(0.5, 0.85, c7 / 25.0));
+  ${materialStyles ? 't = materialLight(t, i, rlen(r), p);' : ''}
   int ci;
   if (A.z < 0.5) ci = rampAt(r, bandOf(r, t));
   else { vec4 h = hitOf(p, i, n); g_q = p; Cell C = cellOf(int(A.z + 0.5) - 1, r, h.xyz, n, unfoldN(Bq.zw, n), t, h.w); ci = C.body;

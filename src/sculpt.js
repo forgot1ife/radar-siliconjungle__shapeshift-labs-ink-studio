@@ -8,6 +8,12 @@
 function makeSculpt(B, rest) {
   const { P, n3, fbm, disc, stick, fib, TAU, clamp, norm, R } = B;
   const detailBudget = B.detailBudget;
+  const pixelStyles = new WeakMap();
+  function materialStyle(value) {
+    if (value === undefined || value === false) return null;
+    if (!pixelStyles.has(value)) pixelStyles.set(value, MaterialPixelStyle.prepare(value));
+    return pixelStyles.get(value);
+  }
   const budgetFor = detailBudget && (p => detailBudget.match({
     object: p.renderOwner, entity: p.renderOwner, ...p.renderTarget
   }));
@@ -957,7 +963,11 @@ function makeSculpt(B, rest) {
       t = r[1];
     }
     if (AA && S.keepAttrs) B.attrNext(AA.curv * res, AA.cav, AA.up, AA.along);
-    let ci = ramp[clamp(Math.floor(t * ramp.length), 0, ramp.length - 1)],
+    const style = materialStyle(m.pixelStyle ?? m0.pixelStyle);
+    if (style?.highlight && !m.em && !m.glass)
+      t = MaterialPixelStyle.lighting(t, style.highlight, nx, ny, nz, L, S.view || VIEW0);
+    const shade = style && (style.mode || style.steps) ? MaterialPixelStyle.rampPair(t, style.steps, ramp) : null;
+    let ci = shade ? shade[shade[2] < .5 ? 0 : 1] : ramp[clamp(Math.floor(t * ramp.length), 0, ramp.length - 1)],
       flat = false;
     if (RLOG && !PRB)
       RLOG.set(ramp, (RLOG.get(ramp) || 0) + 1); /* which ramps a diorama is shaded on, for `ink-studio ramps` */
@@ -972,9 +982,8 @@ function makeSculpt(B, rest) {
     /* a wet or polished thing has a small hard highlight where it mirrors the sun to the eye. The eye is taken to be at S.view (set it to the
        way the camera looks from); gloss: { c (palette index), at (how small: 0.95), c2 and at2 (a dimmer ring round it) } */
     const surface = m.surface === undefined ? m0.surface : m.surface;
-    selected?.(m);
     let glint = false;
-    if (m.gloss && !surface && !m.em && !flat) {
+    if (m.gloss && !style?.highlight && !surface && !m.em && !flat) {
       const g = m.gloss,
         vw = S.view || VIEW0,
         hx = L[0] + vw[0],
@@ -990,6 +999,7 @@ function makeSculpt(B, rest) {
       }
     }
     if (PRB) return ci;
+    selected?.(m, style, style?.mode && !flat && !m.glass && shade?.[0] !== shade?.[1] ? shade : null);
     const fl =
       FLO || m.motionAt?.(x, y, z) || m.fl || (m.em ? EM : glint ? GLINT : (m.leaf || m.blade) && !m.still ? (m.leaf ? WINDL : WINDG) : undefined);
     if (m.leaf && !flat) {
@@ -1583,12 +1593,18 @@ function makeSculpt(B, rest) {
     const preview = typeof globalThis !== 'undefined' && globalThis.INK_LOOK_ALBEDO;
     const capture = B.describeAlbedo && (preview || S.captureAlbedo || stagedAlbedo(material.surface) || stagedAlbedo(material.top?.surface));
     const fine = owner?.detailBudget?.fine;
-    if (!capture && !B.describeSplats) return light(material, ...sample, undefined, fine);
+    const collectStyle = B.describePixelStyle && (material.pixelStyle || material.top?.pixelStyle);
+    if (!capture && !B.describeSplats && !collectStyle) return light(material, ...sample, undefined, fine);
     const first = B.count();
-    let effective = material;
-    if (material.top) light(material, ...sample, used => { effective = used; }, fine);
+    let effective = material, style, pair;
+    if (material.top || collectStyle) light(material, ...sample, (used, settings, shades) => {
+      effective = used;
+      style = settings;
+      pair = shades;
+    }, fine);
     else light(material, ...sample, undefined, fine);
     const end = B.count();
+    if (style) B.describePixelStyle?.(first, end, style, pair);
     const surfaceId = effective.surfaceId ?? (effective === material ? undefined : effective.surface?.id) ?? material.surfaceId;
     B.describeSplats?.(first, end, {
       object: owner?.renderOwner ?? owner,

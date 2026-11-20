@@ -104,6 +104,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
     const detailAPI = toolkit.DetailBudgets ?? toolkit.KIT?.detailBudgets;
     const detailPlans = new WeakMap();
     let detailTable, uploadedDetailFlags;
+    let materialStyleTable, materialStyleUpload;
     const data = table(2048, 0, maxSize), bones = table(768, 4, maxSize);
     const fine = table(1536, 7, maxSize), pattern = table(2048, 10, maxSize);
     const toneStops = resources.texture(), toneRanks = resources.texture();
@@ -159,6 +160,29 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         fine, flags: flags && flags.some(Boolean) ? flags : null };
       detailPlans.set(world, detail);
       return detail;
+    }
+
+    function bindMaterialStyles(world, group, plan, dirtyRows) {
+      const source = world.materialPixelStyles, previous = materialStyleUpload;
+      const fresh = !previous || previous.group !== group || previous.source !== source ||
+        previous.count !== world.count;
+      if (fresh) {
+        let rows = source;
+        if (plan) {
+          rows = new Float32Array((world.count + plan.sharedCount) * 4);
+          if (source) rows.set(source.subarray(0, world.count * 4));
+          for (const asset of plan.assets) if (asset.materialPixelStyles)
+            rows.set(asset.materialPixelStyles, (world.count + asset.offset) * 4);
+        }
+        materialStyleUpload = { group, source, rows, count: world.count };
+        materialStyleTable.upload(rows, (world.count + (plan?.sharedCount ?? 0)) * 4);
+      } else if (dirtyRows?.length && source) {
+        if (plan) for (const row of dirtyRows) {
+          const from = row * 512 * 4, end = Math.min(from + 512 * 4, world.count * 4);
+          previous.rows.set(source.subarray(from, end), from);
+        }
+        materialStyleTable.upload(previous.rows, (world.count + (plan?.sharedCount ?? 0)) * 4, dirtyRows);
+      } else materialStyleTable.bind();
     }
 
     function resolveProgram(patterned, glass, ao, definition, grade) {
@@ -392,6 +416,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       gl.useProgram(shader.p);
       shader.set({
         ...options,
+        u_materialGridScale: options.u_materialGridScale ?? 1,
         u_viewport: [width, height], u_lookViewport: [width,height],
         ...(options.lookGrid && { u_lookViewportScale: [options.lookGrid[0]/width,options.lookGrid[1]/height] }),
         u_focal: height / 2 / options.tangent
@@ -506,6 +531,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       const isNew = world !== lastWorld || world.data !== lastData || world.count !== lastCount || group !== lastInstances;
       const pixel = toolkit.KIT?.pixel;
       const patterned = !raw && !!(look.pixel && world.pix && pixel?.gpu);
+      const materialStyles = !raw && !!(world.materialPixelStyles || group && instancePlan(group).hasMaterialPixelStyles);
       const colored = !raw && !patterned && !coverage && (frame.colored ?? true);
       const detail = prepareDetail(world, budget);
       const scopedCleanup = !!needsDetailFlags && !!detail?.flags;
@@ -527,6 +553,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       const ownsPixels = patterned || !!constraints && !coverage || scopedCleanup;
       owner.resize(ownsPixels ? width : 1, ownsPixels ? height : 1);
       if (scopedCleanup) detailTable ??= table(512, 7, maxSize);
+      if (materialStyles) materialStyleTable ??= table(512, 16, maxSize);
       key.resize(patterned ? width : 1, patterned ? height : 1);
       if (cover && patterned && frame.edges !== false) portalSpriteLayer ??= target(2, { depth: true });
       if (cleaning) cleaned.resize(width, height);
@@ -552,6 +579,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         instanceDraw ??= createInstanceDraw(table,data,maxSize);
         plan = instanceDraw.bind(group,world,dirty,lastInstances !== group);
       } else data.upload(world.data, world.count * 16, dirty);
+      if (materialStyles) bindMaterialStyles(world, group, plan, dirty);
       if (hasFine && (isNew || fineValues !== fineTiles)) {
         fine.upload(fineTiles, world.count * 12);
         fineValues = fineTiles;
@@ -595,12 +623,13 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       gl.blendEquation(gl.FUNC_ADD);
       const shader = pipeline.programFor({
         water: !!wet, airPockets: wet?.airPockets, layered: wet?.layered, atlas: wet?.atlas, portal: plane !== zero || !!cover,
-        instances: !!plan, contributions:coverage && !!constraints, masked, textured:constraints?.textured, layeredGlass
+        instances: !!plan, contributions:coverage && !!constraints, masked, textured:constraints?.textured, layeredGlass, materialStyles
       });
       gl.useProgram(shader.p);
       const growth = world.grow ?? {};
       shader.set({
         u_data: 0, u_bones: 4, u_fine: 7, ...(plan && { u_instances: 15 }), u_fineOn: +hasFine, u_fpal: pal, u_view: camera.view,
+        ...(materialStyles && { u_materialStyles: 16, u_materialPatterned: patterned }),
         u_proj: camera.projection, u_time: time, u_scale: scale, u_ortho: +camera.ortho,
         ...(constraints && (coverage || masked) && { u_constraintSlots:9,u_constraintRows:8,
           u_constraintDefault:constraints.defaultSlot,u_constraintMap:constraintMap,u_constraintMask:maskAt,
@@ -620,7 +649,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         textureUnit(13,glassBoundary.textures[0]);
       }
       drawGeometry(shader, geometry, rw, rh, { u_idx: 0, u_snap: +(!raw && !colored), u_hard: 0,
-        background, tangent, lookGrid:coverage&&[width,height],layeredGlass }, water, wet);
+        u_materialGridScale: samples, background, tangent, lookGrid:coverage&&[width,height],layeredGlass }, water, wet);
       if (colored)
         drawGeometry(shader, contours, width, height, { u_idx: 0, u_snap: 1, u_hard: 0, background, tangent }, water, wet);
       if (ownsPixels)
@@ -671,15 +700,17 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       }
       const destination = damping ? finished.framebuffer : output;
       let resolve;
-      if (coverage || constraints) {
+      const styledPattern = patterned && materialStyles;
+      if (coverage || constraints || styledPattern) {
         const cache = coverage ? contributionPost : constrainedPosts;
-        const mode = (wet ? 1+Number(wet.airPockets)+2*Number(wet.layered)+4*Number(wet.atlas) : 0) + 16*Number(masked) + 32*Number(layeredGlass);
+        const mode = (wet ? 1+Number(wet.airPockets)+2*Number(wet.layered)+4*Number(wet.atlas) : 0) +
+          16*Number(masked) + 32*Number(layeredGlass) + 64*Number(styledPattern) + 128*Number(!!constraints);
         if (!cache.has(mode)) cache.set(mode,program(pixelShaderSources(toolkit.PixelLook,{
           water:!!wet,airPockets:wet?.airPockets,layered:wet?.layered,atlas:wet?.atlas,
-          paletteConstraints:!coverage,masked,contributions:coverage,layeredGlass
+          paletteConstraints:!!constraints && !coverage,masked,contributions:coverage,layeredGlass,materialStyles:styledPattern
         }).POST_FS));
         resolve = cache.get(mode);
-        if (!coverage) {
+        if (constraints && !coverage) {
           constraintSlots.bind();
           textureUnit(8,constraintRows);
           if (masked) textureUnit(7, owner.textures[1]);
@@ -700,6 +731,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
           u_constraintMap: constraintMap, u_constraintMask: maskAt, u_maskOwner: 7 } : {}),
         u_scene: 1, u_depth: 2, u_crispScene: 5, u_crispDepth: 6, u_keyTex: 15,
         u_pixOn: +patterned, u_keyOn: +patterned, u_sprOn: +sprites,
+        ...(styledPattern && { u_materialStyles: 16 }),
         u_idxTex: 9,
         u_sprLayer: 13, u_markA: +cleaning, u_pal: pal, u_n: palCount, u_luma: 0,
         u_bypass: +raw, u_colored: +colored, u_dither: dither * 0.3 * (world.dither ?? 1),
@@ -839,6 +871,9 @@ export function createRenderer(canvas, { toolkit, specialize = true, reuseOrder 
       throw new TypeError('Render expects a world with packed splats, a count, and a palette');
     if (world.fine && world.fine.length < world.count * 12 || world.pix && world.pix.length < world.count * 8)
       throw new RangeError('Ink Studio material data is shorter than the splat count');
+    if (world.materialPixelStyles != null && (!(world.materialPixelStyles instanceof Float32Array) ||
+        world.materialPixelStyles.length < world.count * 4))
+      throw new RangeError('Ink Studio material pixel styles must cover the splat count');
     const plan = frame.instances === undefined ? null : instancePlan(frame.instances);
     if (plan) validateSize(world.count,plan);
     const logicalCount = world.count + (plan?.count ?? 0);

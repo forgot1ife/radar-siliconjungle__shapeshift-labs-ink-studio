@@ -1,4 +1,4 @@
-import { instancePlan, transformed } from './instances.mjs';
+import { instancePlan, transformed, stampInstancePixelStyle } from './instances.mjs';
 
 const rowSamples = 512;
 const instanceWidth = 256, instanceStride = 64;
@@ -45,15 +45,16 @@ function baseDirtyRows(world, rows) {
 
 export function createExpandedInstances() {
   let source, placementGroup, storage, revision;
-  let sourceData, sourceCount, sourceFine, sourcePix, sourceMetadata;
+  let sourceData, sourceCount, sourceFine, sourcePix, sourceMetadata, sourceStyles;
   let packed;
   return function expand(world, group, changedRows) {
     const plan = instancePlan(group);
     if (world !== source || group !== placementGroup || world.data !== sourceData || world.count !== sourceCount ||
-        world.fine !== sourceFine || world.pix !== sourcePix || world.renderMetadata !== sourceMetadata) {
+        world.fine !== sourceFine || world.pix !== sourcePix || world.renderMetadata !== sourceMetadata ||
+        world.materialPixelStyles !== sourceStyles) {
       storage = group.flatten(world);
-      const { data, count, fine, pix, renderMetadata } = storage;
-      packed = { data, count, fine, pix, renderMetadata };
+      const { data, count, fine, pix, renderMetadata, materialPixelStyles } = storage;
+      packed = { data, count, fine, pix, renderMetadata, materialPixelStyles };
       source = world;
       placementGroup = group;
       sourceData = world.data;
@@ -61,6 +62,7 @@ export function createExpandedInstances() {
       sourceFine = world.fine;
       sourcePix = world.pix;
       sourceMetadata = world.renderMetadata;
+      sourceStyles = world.materialPixelStyles;
       revision = plan.revision;
       return { world:storage };
     }
@@ -75,6 +77,7 @@ export function createExpandedInstances() {
         if (!(row.version > revision)) continue;
         const at = world.count + row.start;
         transformed(storage.data,row,at);
+        stampInstancePixelStyle(storage.materialPixelStyles, row, at);
         const end = Math.ceil((at + row.asset.count) / rowSamples);
         for (let r=Math.floor(at / rowSamples); r<end; r++) dirty.add(r);
       }

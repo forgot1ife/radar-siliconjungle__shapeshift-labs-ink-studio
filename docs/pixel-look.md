@@ -761,6 +761,24 @@ The browser renderer expands shared GPU instance groups when scoped cleanup
 or fine-tile rules need to resolve their individual splats. Spacing-only rules
 apply at bake time and can use the shared instance path.
 
+## Material-specific pixel styles
+
+Set `pixelStyle` on a JavaScript sculpt material or inside a JSON solid's
+`mat` object. Each setting is optional.
+
+| Setting | Effect |
+| --- | --- |
+| `edgeHardness` | Controls the coverage transition of solid splats. Use 0 for a broad soft edge and 1 for a sharp cutoff. |
+| `dither` | Selects `bayer`, `checker`, or `diagonal` interpolation between neighboring ramp shades on the art-pixel grid. `none` uses discrete ramp shades. |
+| `highlight` | Shapes the baked highlight as a `spot`, `streak`, or `rim`. An object with `shape` and `strength` sets a strength between 0 and 1. The default strength is 0.75. |
+| `shadeSteps` | Limits lighting to 2–64 evenly spaced steps in the material's ramp, up to the number of available swatches. |
+
+Highlights use the sculpt's light and view direction at bake time.
+Headless and WebGL renders apply the authored coverage and ramp dithering.
+Raw views keep the baked shading and bypass those two render-time controls.
+The separate scene-wide palette dither still applies at palette resolve.
+Explicit texture colors and fine tiles keep priority over ramp dithering.
+
 ## Shared look selectors
 
 Use `finish.look.targets` in a diorama, `visual.look.targets` on a world,

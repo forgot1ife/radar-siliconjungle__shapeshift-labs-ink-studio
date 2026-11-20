@@ -3,11 +3,15 @@ const ContributionRules = (() => {
   const cutoff = 4.5, minimum = .004, maximum = .99;
   const solidLow = .38, solidHigh = .62;
   const clamp = n => Math.max(0, Math.min(1, n));
-  function alpha(power, density, solid) {
+  function alpha(power, density, solid, materialEdge = 0) {
     if (power > 0 || power < -cutoff) return 0;
     const g = density * Math.exp(power);
     if (!solid) return Math.min(maximum, g);
-    const t = clamp((g - solidLow) / (solidHigh - solidLow));
+    if (materialEdge >= 2) return g >= .5 ? maximum : 0;
+    const width = materialEdge ? .36 * (2 - materialEdge) : 0;
+    const low = materialEdge ? .5 - width : solidLow;
+    const high = materialEdge ? .5 + width : solidHigh;
+    const t = clamp((g - low) / (high - low));
     return maximum * t * t * (3 - 2 * t);
   }
   function axis({ axis = 'y', origin = [0,0,0] }) {

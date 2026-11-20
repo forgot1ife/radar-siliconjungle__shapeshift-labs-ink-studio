@@ -12,6 +12,7 @@ const ArtInk = require('../src/art-ink.js');
 const ArtDirection = require('../src/art-direction.js');
 const SilhouetteProtection = require('../src/silhouette-protection.js');
 const DetailBudgets = require('../src/detail-budgets.js');
+const MaterialPixelStyle = require('../src/material-pixel-style.js');
 const EffectPalettes = require('../src/effect-palettes.js');
 const ArtEffects = require('../src/art-effects.js');
 const ArtStability = require('../src/art-stability.js');
@@ -680,6 +681,8 @@ function render(world, o, preparedPalettes) {
         ? world.pix
         : null,
     win = PIX ? new Int32Array(W * H).fill(-1) : null;
+  const materialStyles = o.raw ? null : world.materialPixelStyles;
+  const artScale = o.artGridScale || 1;
   // Keep later translucent coats when the opaque receiver is recoloured per pixel.
   let surfaceOverlay = null;
   const bend = world.refract === undefined ? 6 : world.refract;
@@ -839,6 +842,8 @@ function render(world, o, preparedPalettes) {
       s2 = SC[i] * SC[i],
       pk = d[q + 7];
     const fieldParticle = i >= baseCount;
+    const jStyle = i * 4, edgeStyle = materialStyles?.[jStyle] || 0;
+    const styleKey = materialStyles?.[jStyle + 1] || 0;
     const staged = stages ? stages.at(fieldParticle ? -1 : i) : null;
     lookPass?.begin();
     const materialSample = staged?.material?.some(rule => rule.mask) ? stageSample(i, [x, y, z]) : undefined;
@@ -1000,6 +1005,11 @@ function render(world, o, preparedPalettes) {
       }
     }
     const bakedCloud = cloudShadow && !liveNormal && !(flags & 6);
+    const lowStyle = materialStyles?.[jStyle + 2], highStyle = materialStyles?.[jStyle + 3];
+    const shadeMode = styleKey & 7;
+    const shadeFraction = (styleKey - Math.floor(styleKey)) * 2;
+    const shadeRaster = fi < 0 && (styleKey & MaterialPixelStyle.PAIR) && !pixelSurface &&
+      !liveNormal && !staged?.material && !add[i] && !wet[i] && pk === (shadeFraction >= .5 ? highStyle : lowStyle);
     const wantsDepth = probe || deferred || aerial || cloudView;
     const probeNormal = !fieldParticle && (wantsDepth || bakedCloud) ? geometrySample(i).normal : null;
     const probeCenter = wantsDepth && [x, y, z];
@@ -1011,8 +1021,8 @@ function render(world, o, preparedPalettes) {
         const dx = ix + 0.5 - sx,
           pw = -0.5 * (k0 * dx * dx + k2 * dy * dy) - k1 * dx * dy;
         let a;
-        if (integrateFootprint) a = footprint(dx, dy, k0, k1, k2, al, solid && !o.soft);
-        else a = ContributionRules.alpha(pw, al, solid && !o.soft);
+        if (integrateFootprint) a = footprint(dx, dy, k0, k1, k2, al, solid && !o.soft, edgeStyle);
+        else a = ContributionRules.alpha(pw, al, solid && !o.soft, edgeStyle);
         if (a < ContributionRules.minimum) continue;
         lookPass?.begin(centerMark);
         let pr = r,
@@ -1021,6 +1031,17 @@ function render(world, o, preparedPalettes) {
           alpha = coverage,
           highlight = glint,
           paletteId = centerPalette;
+        if (shadeRaster) {
+          const shade = shadeFraction > MaterialPixelStyle.thresholds(shadeMode,
+            Math.floor(ix / artScale), Math.floor(iy / artScale)) ? highStyle : lowStyle;
+          if (shade !== pk) {
+            const visibility = reflectInRaster || staged?.lit || splatFlash || coverGain < 1 ? 1 : 1 - fogMix;
+            const gain = visibility / 255;
+            pr += ((shade & 255) - (pk & 255)) * gain;
+            pg += ((shade >> 8 & 255) - (pk >> 8 & 255)) * gain;
+            pb += ((shade >> 16) - (pk >> 16)) * gain;
+          }
+        }
         if (fi >= 0) {
           const u = clamp(Math.floor((i00 * dx + i01 * dy) * 2 + 2), 0, 3),
             v = clamp(Math.floor((i10 * dx + i11 * dy) * 2 + 2), 0, 3),
@@ -1251,6 +1272,9 @@ function render(world, o, preparedPalettes) {
             bounceTints.set(sunGains, p * 3);
           } else lit[p] = live.level(i, px, py, pz);
         }
+        const styleKey = materialStyles?.[i * 4 + 1];
+        if (styleKey) lit[p] = MaterialPixelStyle.pixelShade(lit[p], styleKey,
+          Math.floor(x / artScale), Math.floor(y / artScale), ramp?.length || 1);
         if (ev && ev.cell) {
           key[p] = ev.cell(
             px,

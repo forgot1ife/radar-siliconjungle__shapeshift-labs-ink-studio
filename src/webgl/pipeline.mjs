@@ -41,16 +41,18 @@ export function createSplatPipeline(gl, { ascii, specialize = true, sampleCovera
       // explicitly be false before the shader can omit their work.
       programFor(features) {
         check();
-        if (features?.water || features?.portal || features?.instances || features?.contributions || features?.masked || features?.layeredGlass) {
+        if (features?.water || features?.portal || features?.instances || features?.contributions ||
+            features?.masked || features?.layeredGlass || features?.materialStyles) {
           const water = Boolean(features.water), portal = Boolean(features.portal);
           const airPockets = Boolean(features.airPockets), layered = Boolean(features.layered), atlas = Boolean(features.atlas);
           const instances = Boolean(features.instances);
           const contributions = Boolean(features.contributions), masked = Boolean(features.masked), textured = Boolean(features.textured);
-          const layeredGlass = Boolean(features.layeredGlass);
+          const layeredGlass = Boolean(features.layeredGlass), materialStyles = Boolean(features.materialStyles);
           const key = +airPockets + 2 * layered + 4 * atlas + 8 * water + 16 * portal + 32 * instances +
-            64 * contributions + 128 * masked + 256 * textured + 512 * layeredGlass;
+            64 * contributions + 128 * masked + 256 * textured + 512 * layeredGlass + 1024 * materialStyles;
           if (!variants.has(key)) {
-            const shader = splatShaderSources(ascii, sampleCoverage, { water, airPockets, layered, atlas, portal, instances, contributions, masked, textured, layeredGlass, coverageRules });
+            const shader = splatShaderSources(ascii, sampleCoverage, { water, airPockets, layered, atlas, portal, instances,
+              contributions, masked, textured, layeredGlass, coverageRules, materialStyles });
             variants.set(key, resources.program(shader.vertex, shader.fragment));
           }
           return variants.get(key);

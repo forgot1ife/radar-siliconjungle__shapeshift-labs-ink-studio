@@ -133,7 +133,7 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     cidx = [],
     nrms = [];
   let curN = null;
-  let ownerRows, materialRows, targetRows, muteEmission, materialAlbedo;
+  let ownerRows, materialRows, targetRows, muteEmission, materialAlbedo, materialPixelStyles;
   let unnamedOwners = new WeakMap(), unnamedMaterials = new WeakMap();
   const ownerIds = new Map(), materialIds = new Map();
   const ownerNames = [null], materialNames = [null];
@@ -162,6 +162,27 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
       materialAlbedo = next;
     }
     materialAlbedo.fill(rgb + 1, first, end);
+  }
+  function describePixelStyle(first, end, style, pair) {
+    if (first === end || !style.edge && !style.mode && !style.steps) return;
+    if (!materialPixelStyles || materialPixelStyles.length < cap * 4) {
+      const next = new Float32Array(cap * 4);
+      if (materialPixelStyles) next.set(materialPixelStyles);
+      materialPixelStyles = next;
+    }
+    const pack = index => {
+      const [r, g, b] = P[index];
+      return r + 256 * g + 65536 * b;
+    };
+    const low = pair ? pack(pair[0]) : 0, high = pair ? pack(pair[1]) : 0;
+    const key = style.mode + style.steps * 8 + (pair ? MaterialPixelStyle.PAIR + pair[2] * .5 : 0);
+    for (let i = first; i < end; i++) {
+      const j = i * 4;
+      materialPixelStyles[j] = style.edge;
+      materialPixelStyles[j + 1] = key + (pix?.[i * 8] ? MaterialPixelStyle.PATTERN : 0);
+      materialPixelStyles[j + 2] = low;
+      materialPixelStyles[j + 3] = high;
+    }
   }
   // Labels can be shared across several solids or supplied for splats built directly.
   function describeSplats(first, end, { object, material, target } = {}) {
@@ -983,6 +1004,7 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
         renderMetadata: renderRows(),
         ...(precipitationRanges.length && { precipitationRanges: precipitationRanges.slice() }),
         ...(materialAlbedo && { materialAlbedo: materialAlbedo.slice(0, n) }),
+        ...(materialPixelStyles && { materialPixelStyles: materialPixelStyles.slice(0, n * 4) }),
         attr: attr ? Float32Array.from({ length: n * 4 }, (_, i) => attr[i] || 0) : undefined,
         pix: pix ? Float32Array.from({ length: n * 8 }, (_, i) => pix[i] || 0) : undefined,
         ramps: pix ? ramps.map(r => r.slice()) : undefined,
@@ -1039,7 +1061,7 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     bounced = 0;
     cidx.length = 0;
     nrms.length = 0;
-    ownerRows = materialRows = muteEmission = materialAlbedo = undefined;
+    ownerRows = materialRows = muteEmission = materialAlbedo = materialPixelStyles = undefined;
     unnamedOwners = new WeakMap();
     unnamedMaterials = new WeakMap();
     ownerIds.clear();
@@ -1077,6 +1099,7 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     count: () => n,
     describeSplats: renderMetadata ? describeSplats : undefined,
     describeAlbedo,
+    describePixelStyle,
     describePrecipitation,
     born: v => (bornV = v === undefined || v === null || !isFinite(v) ? null : v),
     wet: v => (wetV = v === undefined || v === null || !isFinite(v) ? null : v),

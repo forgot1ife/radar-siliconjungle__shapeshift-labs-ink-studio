@@ -4,7 +4,6 @@
   const valid=p=>Array.isArray(p)&&p.length===3&&Array.from(p).every(Number.isFinite);
   const smooth=(x,a,b)=>{const t=K.clamp((x-a)/(b-a),0,1);return t*t*(3-2*t);};
   const fract=x=>x-Math.floor(x);
-  const opacity=(power,density,soft)=>R.alpha(power,density,!soft&&density>=1);
   function pose(data,i,t,grow){
     const o=i*16, flags=Math.round(data[o+11]), k=flags&15, ph=data[o+12], sp=data[o+13], rg=data[o+14], ex=data[o+15];
     let x=data[o],y=data[o+1],z=data[o+2],a=data[o+3],scale=1,angle=0;
@@ -124,7 +123,8 @@
           const delta=[px,py,pz],x=V.dot(delta,u),y=V.dot(delta,v),cov=rows.subarray(o+4,o+10);
           const A=tensor(cov,u,u), B=tensor(cov,u,v), C=tensor(cov,v,v), det=A*C-B*B;
           if(!(det>0))continue;
-          const density=rows[o+3],alpha=opacity(-.5*(C*x*x-2*B*x*y+A*y*y)/det,density,soft);
+          const density=rows[o+3],alpha=R.alpha(-.5*(C*x*x-2*B*x*y+A*y*y)/det,density,!soft&&density>=1,
+            world.materialPixelStyles?.[i*4]);
           if(alpha<R.minimum)continue;
           const raw=Math.round(data[i*16+11]), target=(provenance??=TargetSelectors.index(world)).row(i);
           const a=i*3, normals=renderMetadata?.normals;
