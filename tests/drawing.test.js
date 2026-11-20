@@ -128,7 +128,7 @@ test('the CLI saves a drawing revision and builds it via the scene entry point',
   cli('render', file, '--authoring', output, '--out', path.join(dir, 'revision.png'));
   assert(fs.statSync(path.join(dir, 'revision.png')).size > 20);
   const glb = path.join(dir, 'revision.glb');
-  cli('export-glb', file, '--authoring', output, '--res', '.04', '--texture-size', '64', '--out', glb);
+  cli('export-glb', file, '--authoring', output, '--res', '.04', '--texture-size', '0', '--out', glb);
   assert.equal(fs.readFileSync(glb).toString('ascii', 0, 4), 'glTF');
 });
 
@@ -140,10 +140,15 @@ test('pointer input commits pen strokes and mouse fills and drops cancelled gest
     releasePointerCapture() { this.captured = undefined; }
   }
   const element = new Target(), commits = [], previews = [];
+  const { document, realize } = K.diorama.scene({ id: 'input', solids: [] }).authoring();
   let kind = 'stroke';
   const input = createDrawingInput(element, {
-    brush: () => ({ kind, width: .2 }), project: event => event.point,
-    preview: mark => previews.push(mark), commit: mark => commits.push(mark)
+    brush: () => ({ kind, depth: .1 }), project: event => event.point,
+    preview: mark => previews.push(mark),
+    commit: mark => {
+      document.create(mark.kind, { parameters: mark });
+      commits.push(mark);
+    }
   });
   function send(type, point, fields = {}) {
     element.dispatchEvent(Object.assign(new Event(type, { cancelable: true }),
@@ -169,6 +174,7 @@ test('pointer input commits pen strokes and mouse fills and drops cancelled gest
   send('pointerup', [0, 1]);
   input.dispose();
   assert.equal(commits.length, 2);
+  assert(realize().world.count > 0);
 });
 
 test('WebGL renders a different frame after editing the same stroke', { skip: !process.env.INK_TEST_CHROME }, t => {
