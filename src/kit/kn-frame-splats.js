@@ -119,8 +119,7 @@
           D[o + 9] = C[5];
           D[o + 10] = C[8];
           D[o + 11] = rows[r + 11];
-          stage.base[o + 3] = D[o + 3];
-          stage.base[o + 7] = D[o + 7];
+          if (stage.base) { stage.base[o + 3] = D[o + 3]; stage.base[o + 7] = D[o + 7]; }
           stage.touch(i);
         }
         return true;

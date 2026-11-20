@@ -155,8 +155,7 @@
         D[o + 2] = z;
         D[o + 3] = alpha;
         D[o + 7] = col;
-        st.base[o + 3] = alpha;
-        st.base[o + 7] = col;
+        if (st.base) { st.base[o + 3] = alpha; st.base[o + 7] = col; }
         if (ax) {
           const p = s * s,
             d = sl * sl - p;
@@ -180,7 +179,7 @@
       hide(st, i) {
         if (st.physicsOwned?.[i]) return;
         st.D[i * 16 + 3] = 0;
-        st.base[i * 16 + 3] = 0;
+        if (st.base) st.base[i * 16 + 3] = 0;
         st.D[i * 16 + 1] = -99;
         st.rows[i >> 9] = 1;
       }
