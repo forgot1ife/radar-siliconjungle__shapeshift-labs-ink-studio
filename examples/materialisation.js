@@ -203,7 +203,7 @@ function materialisationScene({ makeBuilder, makeSculpt, KIT: K, TexturedSurface
           out.position[0] += 0.12 * Math.sin(t * 0.8);
         }
       });
-      const wind = K.flow.sum(K.flow.wind([0.8, 0.12, 0.18]), K.flow.curl(0.65, 0.12));
+      const wind = K.flow.sum(K.flow.wind([0.8, 0.12, 0.18]), K.flow.vortex([0, 1.3, 0], [0, 1, 0], 0.14, 8));
       const fx = stage.add(
         K.materialisation.bind(stage, {
           id: 'relay-body',

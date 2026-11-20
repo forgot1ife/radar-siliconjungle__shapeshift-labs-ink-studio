@@ -207,3 +207,19 @@ test('bindings created mid-scene sample shader motion and shared flow on the sce
 test('offline timeline masks evaluate at the cue time rather than the end of a large advance',()=>{
   const {fx}=fixture(4);fx.timeline([{at:.5,action:'release',options:{mask:(x,y,z,t)=>t<1?1:0}}]);fx.advance(2);assert.equal(fx.stats.drifting,4);
 });
+
+test('visual reconstruction leaves actively materialised carriers to their simulation owner',()=>{
+  const B=makeBuilder(9);for(let i=0;i<3;i++)B.iso(i*.2,1,0,.08,B.P[3],2.6);B.describeSplats(0,3,{object:'surface'});
+  const W=B.finish({look:{reconstruction:{select:{object:'surface'},cell:2,distance:1,keys:[{time:0,state:'solid'},{time:1,state:'fragmented'}]}}}),stage=K.stage(W);
+  const fx=stage.add(K.materialisation.bind(stage,{ids:[0,1]}));fx.release({velocity:[1,0,0]});fx.advance(.2);
+  const current=W.data.slice(),frame=K.reconstruction.frame(W,1);
+  assert.deepEqual(row(frame.data,0),row(current,0));assert.deepEqual(row(frame.data,1),row(current,1));assert.notDeepEqual(row(frame.data,2),row(current,2));
+});
+
+
+test('rejoining a peeled subset never disturbs carriers that are already home',()=>{
+  const {fx,W}=fixture(12,{flow:K.flow.wind([3,1,0])}),base=W.data.slice();
+  fx.release({ids:[0,1]});fx.advance(.3);fx.rejoin({duration:.4});fx.advance(.2);
+  for(let i=2;i<12;i++)assert.deepEqual(row(W.data,i),row(base,i));
+  fx.advance(.2);assert.equal(fx.stats.home,12);
+});

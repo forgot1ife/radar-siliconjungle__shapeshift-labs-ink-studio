@@ -536,11 +536,17 @@
       validateSettings(settings, true);
       if (!targets.has(name)) throw new RangeError('Unknown materialisation target ' + name);
       if (!executingTimeline) refreshAnchors(elapsed);
-      const selected = select(settings),
+      const chosen = select(settings),
         duration = settings.duration ?? 1.4,
         stagger = settings.stagger ?? 0;
       if (!finite(duration, step, 600) || !finite(stagger, 0, 600))
         throw new RangeError('Gathering needs a bounded duration and stagger');
+      const selected = chosen.filter(i => {
+        if (name !== 'home' || (state[i].mode !== HOME && state[i].mode !== WAIT)) return true;
+        state[i].pending = null;
+        if (state[i].mode === WAIT) attach(i);
+        return false;
+      });
       const key = JSON.stringify([name, settings.mapping ?? 'spatial', settings.links ?? 4, settings.transport]);
       let links = mappings.get(key);
       if (!links || settings.remap || typeof settings.transport?.cost === 'function') {
@@ -601,7 +607,7 @@
         progress,
         airborne: gathering ? 4 * blend * (1 - blend) : blend,
         source: cache.get('home')[i],
-        goal: gathering ? targetSample(s, goal) : null,
+        goal: gathering && forces.length ? targetSample(s, goal) : null,
         seed: K.hash(ids[i], seed, 1),
         mode: MODES[s.mode],
         target: s.target,

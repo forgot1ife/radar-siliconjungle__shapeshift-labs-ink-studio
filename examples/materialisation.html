@@ -14,6 +14,6 @@ window.materialisationQA={world,demo,camera,renderer,get paused(){return paused;
 function frame(now){const dt=last===undefined?0:Math.min(.04,(now-last)/1000)*Number(document.querySelector('#speed').value);last=now;if(!paused){let remaining=dt;while(remaining>1e-8){const h=Math.min(.05,remaining);elapsed+=h;demo.stage.update(h,elapsed);remaining-=h;}}
   const changedRows=[];for(let i=0;i<demo.stage.rows.length;i++)if(demo.stage.rows[i]){changedRows.push(i);demo.stage.rows[i]=0;}
   renderer.render(world,{changedRows,width:1056,height:600,time:demo.fx.stats.time,camera,damp:false,stepAnimation:false});stamp??=now;frames++;if(now-stamp>750){fps=Math.round(frames*1000/(now-stamp));frames=0;stamp=now;}
-  const s=demo.fx.stats;document.querySelector('#status').value=`${s.home.toLocaleString()} attached · ${(s.drifting+s.gathering).toLocaleString()} in flight · ${s.settled.toLocaleString()} gathered · ${s.hidden.toLocaleString()} hidden — ${fps} fps`;requestAnimationFrame(frame);}
+  const s=demo.fx.stats;document.querySelector('#status').value=`${(s.home+s.waiting).toLocaleString()} attached · ${(s.drifting+s.gathering).toLocaleString()} in flight · ${s.settled.toLocaleString()} gathered · ${s.hidden.toLocaleString()} hidden — ${fps} fps`;requestAnimationFrame(frame);}
 requestAnimationFrame(frame);
 </script></html>
