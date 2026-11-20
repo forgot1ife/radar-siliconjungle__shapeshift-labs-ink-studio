@@ -108,6 +108,7 @@ function viewMatrix(yaw, pitch, dist, T) {
 // o: t (seconds), yaw, pitch, dist, target, w, h (the size of the stage in screen pixels), zoom (1 = the diorama's own distance), raw (skip the palette)
 const afterimageRows = Symbol('afterimage rows');
 const reconstructionSource = Symbol('reconstruction source');
+const inspectionCamera = Symbol('inspection camera');
 
 function render(world, o, preparedPalettes) {
   const reconstruction = o?.reconstruction ?? world.look?.reconstruction;
@@ -127,6 +128,26 @@ function render(world, o, preparedPalettes) {
         source: o[reconstructionSource] ?? world, poseTime: ArtDirection.time(direction, time), withdrawal: o.sampleWithdrawal ?? world.sampleWithdrawal ?? 0
       }) };
     }
+  }
+  const inspection = o?.inspection ?? world.look?.inspection;
+  if (inspection !== undefined && inspection !== false && !o?.samples && !o?.captureCoverage) {
+    const start = o?.renderStats ? performance.now() : 0;
+    const api = require('../index.js').load().KIT.inspection, settings = api.prepare(inspection);
+    const requested = ArtPasses.select(o?.passes); let camera;
+    const base = render(world, { ...o, inspection: false, passes: [...new Set([...requested, 'depth'])],
+      [inspectionCamera]: view => { camera = view; } }, preparedPalettes);
+    const plan = api.plan(settings, { world, time: o?.t ?? world.lookSnapshot?.time ?? 0,
+      width: base.w, height: base.h, camera, focus: o?.inspectionFocus });
+    const passes = base.passes, range = camera.depthRange;
+    const depthAt = (u,v) => {
+      const x = Math.min(passes.w - 1, Math.floor(u * passes.w)), y = Math.min(passes.h - 1, Math.floor(v * passes.h));
+      return (passes.depth[y * passes.w + x] - range[0]) / (range[1] - range[0]);
+    };
+    const result = api.compose(base, plan, settings, depthAt);
+    if (requested.length) result.passes = ArtPasses.subset(passes, requested);
+    else delete result.passes;
+    if (result.renderStats) result.renderStats.frameMs = performance.now() - start;
+    return result;
   }
   const graph = o?.samples || o?.captureCoverage ? null : RenderGraph.prepare(o?.renderGraph ?? world.look?.renderGraph);
   if (graph?.passes.length) {
@@ -373,6 +394,9 @@ function renderFrame(world, o, preparedPalettes) {
     asp = W / H,
     baseCount = world.count,
     R = world.radius;
+  o[inspectionCamera]?.({view: V, tangent: ortho ? oh : tangent, aspect: asp, ortho,
+    clipNear: near, clipFar: 400, depthRange: [eyeD - R, eyeD + R],
+    eye: [-(V[0]*V[12]+V[1]*V[13]+V[2]*V[14]), -(V[4]*V[12]+V[5]*V[13]+V[6]*V[14]), -(V[8]*V[12]+V[9]*V[13]+V[10]*V[14])]});
   const hex = i => {
       const h = world.pal[i];
       return [((h >> 16) & 255) / 255, ((h >> 8) & 255) / 255, (h & 255) / 255];
