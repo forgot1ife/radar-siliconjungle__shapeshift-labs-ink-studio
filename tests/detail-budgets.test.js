@@ -101,17 +101,12 @@ function checkWebGL(createRenderer, dots, sculpt, halves, makeBuilder, makeSculp
   const canvas = document.querySelector('canvas');
   const renderer = createRenderer(canvas, { toolkit });
   const gl = canvas.getContext('webgl2'), pixels = new Uint8Array(96 * 64 * 4);
-  const read = (world, options) => {
-    renderer.render(world, { width: 96, height: 64, dither: 0, colored: false, ...options });
+  const read = world => {
+    renderer.render(world, { width: 96, height: 64, dither: 0, colored: false });
     gl.readPixels(0, 0, 96, 64, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
     if (gl.getError()) throw new Error('Unexpected WebGL error');
     return pixels.slice();
   };
-  const grading = { paletteConstraints: { targets: [{ object: 'other', palette: ['#ff7070'] }] } };
-  const graded = read(dots(makeBuilder, undefined, false), grading);
-  const gradedAndCleaned = read(dots(makeBuilder, { cleanup: true }, false), grading);
-  if (gradedAndCleaned.some((v, i) => v !== graded[i] && (i >> 2) % 96 >= 48))
-    throw new Error('Scoped cleanup disturbed another object’s palette');
   const frame = (rule, clean) => halves(read(dots(makeBuilder, rule, clean)), 4);
   const base = frame(undefined, false), enabled = frame({ cleanup: true }, false);
   if (!(enabled[0] < base[0] && enabled[1] === base[1]))

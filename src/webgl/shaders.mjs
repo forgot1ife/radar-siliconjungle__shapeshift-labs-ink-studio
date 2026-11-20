@@ -371,11 +371,23 @@ bool constrainPalette(ivec2 p, vec3 inputColor, out vec3 color) {
 
 export function pixelShaderSources(PixelLook, { water = false, airPockets = false, layered = false, atlas = false,
   paletteConstraints = false } = {}) {
+  const waterPixelGLSL = `
+uniform highp sampler2D u_waterMask;
+ivec2 waterPixel(ivec2 p) {
+  vec3 mark = texelFetch(u_waterMask, p, 0).rgb;
+  if (mark.x < 0.98) return p;
+  int body = int(round(mark.y * 255.0)), code = int(round(mark.z * 255.0));
+  ivec2 shift = ivec2(code % 9 - 4, code / 9 - 4);
+  ivec2 dest = clamp(p + shift, ivec2(0), textureSize(u_waterMask, 0) - 1);
+  vec3 other = texelFetch(u_waterMask, dest, 0).rgb;
+  return other.x >= 0.98 && int(round(other.y * 255.0)) == body ? dest : p;
+}
+`;
   const POST_VS = `#version 300 es
 void main(){ vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
   const POST_FS = `#version 300 es
 precision highp float;
-precision highp int;
+${paletteConstraints ? 'precision highp int;' : ''}
 uniform sampler2D u_scene, u_depth, u_crispScene, u_crispDepth;
 uniform vec3 u_line;
 uniform float u_edge;
@@ -389,18 +401,7 @@ uniform float u_grade; uniform float u_bars; uniform int u_remapLine;
 uniform float u_dither, u_luma, u_bypass, u_colored, u_refract, u_ao, u_aor;
 uniform float u_lines, u_lineGap, u_lineK, u_lineLit;
 out vec4 o;
-${water ? waterGLSL(airPockets, layered, atlas) + `
-uniform highp sampler2D u_waterMask;
-ivec2 waterPixel(ivec2 p) {
-  vec3 mark = texelFetch(u_waterMask, p, 0).rgb;
-  if (mark.x < 0.98) return p;
-  int body = int(round(mark.y * 255.0)), code = int(round(mark.z * 255.0));
-  ivec2 shift = ivec2(code % 9 - 4, code / 9 - 4);
-  ivec2 dest = clamp(p + shift, ivec2(0), textureSize(u_waterMask, 0) - 1);
-  vec3 other = texelFetch(u_waterMask, dest, 0).rgb;
-  return other.x >= 0.98 && int(round(other.y * 255.0)) == body ? dest : p;
-}
-` : ''}
+${water ? waterGLSL(airPockets, layered, atlas) + waterPixelGLSL : ''}
 const float BAYER[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
 const ivec2 AOT[8] = ivec2[8](ivec2(2, 0), ivec2(-2, 0), ivec2(0, 2), ivec2(0, -2), ivec2(1, 1), ivec2(-1, 1), ivec2(1, -1), ivec2(-1, -1));
 // light in the air behind a round stained window (a diorama's .glass): the window's centre and radius, the way its light travels, six glass
@@ -629,15 +630,6 @@ const ivec2 N4o[4] = ivec2[4](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 
 /* edge sprites (K.pixel.edge, an option): drawn first in a pass of their own (SPR_VS / SPR_FS: each stands on a point pinned to its
    surface), into u_sprLayer: which cell (8 + steps from the edge's own colour, or 100 + a palette colour), ramp and band */
 uniform highp sampler2D u_sprLayer; uniform float u_sprOn, u_markA; bool g_spr = false;
-uniform highp sampler2D u_detailFlags; uniform bool u_detailCleanup;
-// Keep detail flags in the resolve alpha channel. Half alpha marks pixels the cleaner already preserves.
-float detailAlpha(ivec2 p) {
-  if (!u_detailCleanup) return 1.0;
-  int i = dabAt(p);
-  if (i < 0) return 1.0;
-  float flags = texelFetch(u_detailFlags, ivec2((i >> 2) & 511, i >> 11), 0)[i & 3];
-  return 1.0 - (flags + 8.0) / 255.0;
-}
 vec3 pixColour(ivec2 p, vec3 c) {
   int i = dabAt(p); if (i < 0) return c; vec4 A = pixA(i); if (A.x < 0.5) return c;
   // (only where the dab is what shows: nothing soft in front of it, no light carried onto it)
@@ -845,25 +837,33 @@ void main(){
 ${water ? '  p = waterPixel(p);' : ''}
   if (u_bypass > 0.5) { o = vec4(texelFetch(u_scene, p, 0).rgb, 1.0); return; }
   vec3 c0 = lookAt(p);
-  o = vec4(c0, (g_spr${paletteConstraints ? ' || g_constrained' : ''}) && u_markA > 0.5 ? 0.5 : detailAlpha(p));
+  o = vec4(c0, (g_spr${paletteConstraints ? ' || g_constrained' : ''}) && u_markA > 0.5 ? 0.5 : 1.0);
 }`;
   const CLEAN_FS = `#version 300 es
-precision highp float;
+precision highp float; precision highp int;
 uniform sampler2D u_look, u_dep;
+uniform highp sampler2D u_detailOwners, u_detailFlags;
 uniform float u_keep, u_lineClean;
-uniform bool u_scopedOnly, u_hasDetailFlags;
+uniform bool u_scopedOnly, u_hasDetailFlags, u_detailWater;
 out vec4 o;
+${waterPixelGLSL}
 bool like(vec3 a, vec3 b) { vec3 d = abs(a - b); return max(d.r, max(d.g, d.b)) < 0.004; }
 vec3 at(ivec2 p) { return texelFetch(u_look, clamp(p, ivec2(0), textureSize(u_look, 0) - 1), 0).rgb; }
-float dp(ivec2 p) { ivec2 q = clamp(p, ivec2(0), textureSize(u_dep, 0) - 1); return texelFetch(u_look, q, 0).a < 0.75 ? 0.5 : texelFetch(u_dep, q, 0).r; }
+float dp(ivec2 p) { ivec2 q = clamp(p, ivec2(0), textureSize(u_dep, 0) - 1); return texelFetch(u_look, q, 0).a < 0.75 ? 0.5 : texelFetch(u_dep, u_detailWater ? waterPixel(q) : q, 0).r; }
 const ivec2 N8[8] = ivec2[8](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1), ivec2(-1, -1), ivec2(1, -1), ivec2(-1, 1), ivec2(1, 1));
-int detailFlags(float alpha) { return alpha < 0.75 ? 0 : int(round((1.0 - alpha) * 255.0)); }
+int detailFlags(ivec2 p) {
+  if (!u_hasDetailFlags) return 0;
+  ivec3 owner = ivec3(round(texelFetch(u_detailOwners, u_detailWater ? waterPixel(p) : p, 0).rgb * 255.0));
+  int i = owner.r + owner.g * 256 + owner.b * 65536 - 1;
+  if (i < 0) return 0;
+  return 8 | int(texelFetch(u_detailFlags, ivec2((i >> 2) & 511, i >> 11), 0)[i & 3]);
+}
 bool protects(int flags) { return (flags & 6) != 0; }
 int likes(ivec2 p, vec3 c, out ivec2 one) { int n = 0; one = p; for (int i = 0; i < 8; i++) if (like(c, at(p + N8[i]))) { n++; one = p + N8[i]; } return n; }
 void main(){
   ivec2 p = ivec2(gl_FragCoord.xy); vec3 c0 = at(p); ivec2 q, q2;
   float alpha = texelFetch(u_look, p, 0).a;
-  int flags = u_hasDetailFlags ? detailFlags(alpha) : 0;
+  int flags = detailFlags(p);
   if (alpha < 0.75 || (flags & 2) != 0 || (u_scopedOnly && (flags & 1) == 0)) {
     o = vec4(c0, 1.0); return;
   }
@@ -874,7 +874,7 @@ void main(){
       ivec2 q = clamp(p + N8[i], ivec2(0), textureSize(u_look, 0) - 1);
       if (dp(q) >= 0.995) en++;
       if (u_hasDetailFlags && (e0 || (flags & 8) == 0) &&
-          protects(detailFlags(texelFetch(u_look, q, 0).a))) { o = vec4(c0, 1.0); return; }
+          protects(detailFlags(q))) { o = vec4(c0, 1.0); return; }
     }
     if (!e0 && en > 0 && protects(flags)) { o = vec4(c0, 1.0); return; }
     if (e0 && en <= 1) { int kb = 0, ib = -1; for (int i = 0; i < 4; i++) { if (dp(p + N8[i]) >= 0.995) continue; int k = 0; for (int j = 0; j < 4; j++) if (like(at(p + N8[i]), at(p + N8[j]))) k++; if (k > kb) { kb = k; ib = i; } }

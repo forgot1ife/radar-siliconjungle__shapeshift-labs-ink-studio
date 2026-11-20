@@ -597,7 +597,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
           u_constraintMap: constraintMap } : {}),
         u_scene: 1, u_depth: 2, u_crispScene: 5, u_crispDepth: 6, u_keyTex: 15,
         u_pixOn: +patterned, u_keyOn: +patterned, u_sprOn: +sprites,
-        u_detailCleanup: scopedCleanup, u_detailFlags: scopedCleanup ? 7 : 1, u_idxTex: 9,
+        u_idxTex: 9,
         u_sprLayer: 13, u_markA: +cleaning, u_pal: pal, u_n: palCount, u_luma: 0,
         u_bypass: +raw, u_colored: +colored, u_dither: dither * 0.3 * (world.dither ?? 1),
         u_line: rgb(world.pal[lineIndex] ?? 0),
@@ -616,6 +616,8 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         fullscreen(clean, destination, width, height, {
           u_look: 8, u_dep: 6, u_keep: look.clean?.keep ?? 0.3,
           u_scopedOnly: !globalCleanup, u_hasDetailFlags: scopedCleanup,
+          u_detailOwners: scopedCleanup ? 9 : 8, u_detailFlags: scopedCleanup ? 7 : 8,
+          u_detailWater: scopedCleanup && !!water, u_waterMask: scopedCleanup && water ? 11 : 8,
           u_lineClean: +(frame.lineClean !== false && !!look.pixel)
         });
       }
