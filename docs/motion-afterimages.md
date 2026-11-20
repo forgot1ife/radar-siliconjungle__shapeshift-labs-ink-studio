@@ -14,7 +14,7 @@ Omit `attach` to leave old poses at their scene positions. With `attach`, the hi
 | `opacity`, `color` | Initial opacity from 0 to 1 and an optional hex tint. The default opacity is 0.45. The source's baked colors are used when color is omitted. |
 | `maxSamples`, `motionThreshold` | Maximum splats captured per pose and the distance below which unchanged samples are suppressed. Defaults are 512 splats and 0.01 world units. |
 
-The renderer accepts up to eight trails, 16 retained poses per trail and 2,048 splats per pose. The frame's look and optical media also apply to the ghost geometry.
+The renderer accepts up to eight trails, 16 retained poses per trail and 2,048 splats per pose. The frame's look and optical media also apply to the ghost geometry. Water reflections use the same captured trail poses as the main view.
 
 WebGL manages a history automatically. It accepts an explicit `frame.afterimageHistory` and `frame.resetAfterimages` for camera cuts. Afterimages use the automatic depth sorter. With a host-supplied draw order, the renderer uses the host's rows. Instanced sources and receivers use the expanded draw path.
 

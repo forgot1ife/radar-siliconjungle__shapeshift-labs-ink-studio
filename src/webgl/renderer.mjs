@@ -600,6 +600,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       const trails = !reflectionCapture && !frame.order && afterimageDefinition !== undefined && afterimageDefinition !== false;
       if (trails && !afterimagesAPI) throw new Error('Afterimages need the Ink Studio KIT');
       const rules = trails ? afterimagesAPI.prepare(afterimageDefinition) : [];
+      const normalCaptures = rules.length ? null : captureWater(world, frame, camera, width, height, 0);
       // Per-pixel material, palette, and detail rules index the expanded world.
       if (group && (rules.length || frame[graphOwner] || frame.order || tolerance || wantsRelight || world.opticalSplats || instancePlan(group).hasOpticalSplats || !raw && (constraintDefinition || look.pixel && world.pix ||
           needsDetailFlags || budget?.fineOn || budget?.fineOff))) {
@@ -622,7 +623,8 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
           world = afterimagesAPI.append(world, rows);
         }
       }
-      const captures = captureWater(world, { ...frame, instances: group }, camera, width, height, trailStart);
+      const captures = rules.length ?
+        captureWater(world, { ...frame, instances: group }, camera, width, height, trailStart) : normalCaptures;
       const constraints = !raw && prepareConstraints(world, constraintDefinition, frame.lookMasks === false);
       const coverage = !raw && (frame.coverageAware ?? look.coverageAware) === true;
       const masked = Boolean(constraints?.masked);
