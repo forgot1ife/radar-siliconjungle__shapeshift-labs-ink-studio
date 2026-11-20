@@ -1,3 +1,4 @@
+import { createInspection, inspectionDepth } from './inspection.mjs';
 import { waterReflectionPlan, selectReflectionWorld } from './reflections.mjs';
 import { createRenderGraph, graphOwner } from './render-graph.mjs';
 import { createFrameComposite } from './frame-composite.mjs';
@@ -1033,6 +1034,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       lastDetail = detail;
       lastWater = waterScene;
       lastWaterTime = frame.time;
+      if (!reflectionCapture) frame[inspectionDepth]?.(world, geometry.textures[1], camera);
       return spriteCover;
     }
 
@@ -1096,8 +1098,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       composite(world, frame, plan, layers, output, present);
     }
     let renderGraph;
-    function presentFrame(world, frame, width, height, output) {
-      ({ world, frame } = reconstructFrame(world, frame, reconstructionInstances));
+    function presentGraph(world, frame, width, height, output) {
       const definition = frame.renderGraph ?? world.look?.renderGraph;
       if (definition === false || definition === undefined) return presentMixed(world, frame, width, height, output);
       const api = toolkit.KIT?.renderGraph;
@@ -1108,6 +1109,18 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         throw new RangeError('Render graph exceeds the WebGL viewport or texture size limit');
       renderGraph ??= createRenderGraph(gl, { api, program, resources, target, textureUnit, fullscreen, maxSize });
       renderGraph(world, frame, plan, width, height, output, presentMixed);
+    }
+    let inspection;
+    function presentFrame(world, frame, width, height, output) {
+      ({ world, frame } = reconstructFrame(world, frame, reconstructionInstances));
+      const definition = frame.inspection ?? world.look?.inspection;
+      if (definition === undefined || definition === false) return presentGraph(world, frame, width, height, output);
+      const api = toolkit.KIT?.inspection;
+      if (!api) throw new Error('Target inspection needs the Ink Studio KIT');
+      const settings = api.prepare(definition);
+      if (!settings.targets.length) return presentGraph(world, frame, width, height, output);
+      inspection ??= createInspection(gl, { api, program, resources, target, textureUnit, fullscreen, maxSize, viewportLimit });
+      inspection(world, frame, settings, width, height, output, presentGraph);
     }
     return { render: presentFrame, dispose() { surfacePipeline?.dispose(); pipeline.dispose(); resources.dispose(); } };
   } catch (error) {

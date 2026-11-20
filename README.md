@@ -759,6 +759,8 @@ Common rendering controls:
 | `--stable-transparency on\|off` | Stabilize close translucent layers through camera motion. |
 | `--afterimages file.json\|off` | Set scene-space object and surface trails. See [motion-aware afterimages](docs/motion-afterimages.md). |
 | `--reconstruction file.json\|off` | Animate fragmentation and reassembly of selected splats. See [world-space reveal and reconstruction](docs/world-reconstruction.md). |
+| `--inspection file.json\|off` | Set reusable target brackets, labels, glyph ripples, visibility checks and magnifiers. See [target inspection](docs/target-inspection.md). |
+| `--inspection-focus id` | Prioritize an inspection target without changing the camera. |
 | `--composite file.json\|off` | Set independent world and screen-layer resolutions. See [mixed-resolution compositing](docs/mixed-resolution.md). |
 | `--render-graph file.json\|off` | Order and scope screen-space passes. See [the render graph](docs/render-graph.md). |
 | `--volume-scale`, `--volume-steps`, `--volume-jitter` | Override the atmosphere volume's sampling settings. |
@@ -975,3 +977,5 @@ The package is currently version `0.1.0` and marked private.
 Licensed under the [MIT License](LICENSE).
 
 Surface fragments can detach, follow shared wind, gather into live forms, and rejoin animated parts. See [surface materialisation](docs/materialisation.md) and the [interactive matter relay](examples/materialisation.html).
+
+Named targets can drive shared brackets, labels, glyph ripples, depth visibility and optional magnified views. See [target inspection effects](docs/target-inspection.md) and the [interactive relay observatory](examples/target-inspection.html).
