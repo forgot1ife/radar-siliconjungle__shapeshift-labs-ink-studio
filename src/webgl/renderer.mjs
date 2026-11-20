@@ -110,6 +110,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
     const detailPlans = new WeakMap();
     let detailTable, uploadedDetailFlags;
     let materialStyleTable, materialStyleUpload;
+    let paintOverlay, paintData, lastPaintView;
     const data = table(2048, 0, maxSize), bones = table(768, 4, maxSize);
     const fine = table(1536, 7, maxSize), pattern = table(2048, 10, maxSize);
     const toneStops = resources.texture(), toneRanks = resources.texture();
@@ -391,7 +392,12 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
     function drawGeometry(shader, buffer, width, height, options, water, wet, env) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, buffer.framebuffer);
       gl.viewport(0, 0, width, height);
-      if (options.u_idx) {
+      if (options.u_paintPass) {
+        gl.clearBufferfv(gl.COLOR, 0, zero);
+        gl.clearBufferfv(gl.COLOR, 1, zero);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      } else if (options.u_idx) {
         gl.disable(gl.BLEND);
         if(options.u_idx===3){
           gl.clearBufferfv(gl.DEPTH,0,zero);
@@ -431,6 +437,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       gl.useProgram(shader.p);
       shader.set({
         ...options,
+        u_paintPass: !!options.u_paintPass,
         u_materialGridScale: options.u_materialGridScale ?? 1,
         u_viewport: [width, height], u_lookViewport: [width,height],
         ...(options.lookGrid && { u_lookViewportScale: [options.lookGrid[0]/width,options.lookGrid[1]/height] }),
@@ -581,6 +588,25 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       }
 
       const camera = cameraOverride ?? makeCamera(world, frame, width, height);
+      const paint = world.paintCorrections;
+      let geometryData = world.data, paintActive = false;
+      if (paint && frame.paintCorrections !== false) {
+        if (paintData?.length !== world.count * 16) paintData = new Float32Array(world.count * 16);
+        paintData.set(world.data.subarray(0, world.count * 16));
+        const { view: m, ortho, eye } = camera;
+        paintActive = paint.paint(paintData, world.pal,
+          { direction: [m[2], m[6], m[10]], ...(ortho ? {} : { eye }) });
+        geometryData = paintData;
+      }
+      const paintView = paintActive ? camera.view : undefined;
+      if ((paintView || lastPaintView) && (!paintView || !lastPaintView || !sameValues(paintView, lastPaintView)))
+        historyValid = false;
+      lastPaintView = paintView;
+      const paintOnPatterns = patterned && paintActive;
+      if (paintOnPatterns) {
+        paintOverlay ??= target(2);
+        paintOverlay.resize(width, height);
+      }
       const clip = plane === zero ? zero : planeInView(plane, camera);
       const t = frame.time ?? world.lookSnapshot?.time ?? 0;
       const water = waterUniforms(waterScene, camera, t, plane);
@@ -595,11 +621,13 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       const palCount = Math.min(world.pal.length, 64);
       const fog = world.fog ?? {};
       const dirty = isNew ? undefined : frame.changedRows;
+      const geometryDirty = dirty && paint ?
+        [...new Set([...dirty, ...paint.dirtyRows.filter(row => row * 512 < world.count)])] : dirty;
       let plan;
       if (group) {
         instanceDraw ??= createInstanceDraw(table,data,maxSize);
-        plan = instanceDraw.bind(group,world,dirty,lastInstances !== group);
-      } else data.upload(world.data, world.count * 16, dirty);
+        plan = instanceDraw.bind(group, world, geometryDirty, lastInstances !== group, geometryData);
+      } else data.upload(geometryData, world.count * 16, geometryDirty);
       if (materialStyles) bindMaterialStyles(world, group, plan, dirty);
       if (hasFine && (isNew || fineValues !== fineTiles)) {
         fine.upload(fineTiles, world.count * 12);
@@ -660,6 +688,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         u_sampleWithdrawal: sampleCoverage?.amount(frame.sampleWithdrawal ?? world.sampleWithdrawal ?? 0) ?? 0,
         u_born: [frame.bornAt ?? 0, growth.rate ?? 1, growth.fade ?? 0.5, growth.loop ?? 0],
         u_crisp: +!raw, u_dilate: raw ? 0.3 : 0.15, u_near: camera.clipNear,
+        u_paintMarker: paint?.marker ?? 0,
         u_fog: rgb(world.pal[fog.c ?? 0] ?? 0),
         u_fogp: [fog.start ?? 1, fog.max ?? 0, ...camera.depthRange], ...water, ...env?.uniforms
       });
@@ -673,6 +702,10 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         u_materialGridScale: samples, background, tangent, lookGrid:coverage&&[width,height],layeredGlass }, water, wet, env);
       if (colored)
         drawGeometry(shader, contours, width, height, { u_idx: 0, u_snap: 1, u_hard: 0, background, tangent }, water, wet, env);
+      if (paintOnPatterns) {
+        drawGeometry(shader, paintOverlay, width, height, { u_idx: 0, u_snap: 1, u_hard: 0, u_paintPass: true,
+          tangent, lookGrid: coverage && [width, height] }, water, wet, env);
+      }
       if (ownsPixels)
         drawGeometry(shader, owner, width, height, { u_idx: 1, u_snap: 1, u_hard: 0, tangent });
       if (cover)
@@ -681,8 +714,8 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       gl.disable(gl.BLEND);
       textureUnit(1, geometry.textures[0]);
       textureUnit(2, geometry.textures[1]);
-      textureUnit(5, contours.textures[0]);
-      textureUnit(6, contours.textures[1]);
+      textureUnit(5, paintOnPatterns ? paintOverlay.textures[0] : contours.textures[0]);
+      textureUnit(6, paintOnPatterns ? paintOverlay.textures[1] : contours.textures[1]);
       textureUnit(9, owner.textures[0]);
       const pixelOutline = look.outline === true ? {} : look.outline;
       const mat = materials?.gpu;
@@ -752,6 +785,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
           u_constraintMap: constraintMap, u_constraintMask: maskAt, u_maskOwner: 7 } : {}),
         u_scene: 1, u_depth: 2, u_crispScene: 5, u_crispDepth: 6, u_keyTex: 15,
         u_pixOn: +patterned, u_keyOn: +patterned, u_sprOn: +sprites,
+        u_paintOn: paintOnPatterns,
         ...(styledPattern && { u_materialStyles: 16 }),
         u_idxTex: 9,
         u_sprLayer: 13, u_markA: +cleaning, u_pal: pal, u_n: palCount, u_luma: 0,

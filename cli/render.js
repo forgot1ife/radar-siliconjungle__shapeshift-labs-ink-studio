@@ -314,6 +314,8 @@ function render(world, o, preparedPalettes) {
     -(V[4] * V[12] + V[5] * V[13] + V[6] * V[14]),
     -(V[8] * V[12] + V[9] * V[13] + V[10] * V[14])
   ];
+  const paintView = { direction: [V[2], V[6], V[10]], ...(ortho ? {} : { eye }) };
+  const paint = o.paintCorrections === false ? null : world.paintCorrections;
   const climate = resolveEnvironment(world,o,sceneTime,direction);
   const { skyTime,environment,weather,exposure,cutouts } = climate;
   const effectRules = EffectPalettes.activate(effectPaletteSettings, environment?.parameters);
@@ -343,6 +345,10 @@ function render(world, o, preparedPalettes) {
     d.set(world.data.subarray(0, baseCount * 16));
     if (splatCount) fields.write(d, baseCount, t, { birthIds, travel });
     if (emittedCount) emitted.write(d, baseCount + splatCount, birthIds);
+  }
+  if (paint) {
+    if (d === world.data) d = d.slice(0, baseCount * 16);
+    paint.paint(d, world.pal, paintView);
   }
   const mediumLook = medium => optics?.transform(medium) ?? PixelLook.mediumTransform(paletteRules, medium);
   const colorForVolume = volume => mediumLook(TargetSelectors.medium(volume.id, volume.mediumKind ?? volume.type, volume.tags));
@@ -997,7 +1003,9 @@ function render(world, o, preparedPalettes) {
       if (!glassLooks.has(target)) glassLooks.set(target, optics.transform(target));
       glassLook = glassLooks.get(target);
     }
-    const coat = !retainLayers && PIX && (fieldParticle || hasSurface && (!writesDepth || reflectInRaster || surface.reveals(i)));
+    const correction = paint && d[q + 14] === paint.marker;
+    const coat = !retainLayers && PIX && (correction || fieldParticle ||
+      hasSurface && (!writesDepth || reflectInRaster || surface.reveals(i)));
     if (coat && !surfaceOverlay) surfaceOverlay = new Float32Array(W * H * 4);
     if (audit && (r > 1 || g > 1 || b > 1)) audit.sample('splat', Math.max(0, r), Math.max(0, g), Math.max(0, b));
     r = Math.min(r, 1);
@@ -1488,7 +1496,7 @@ function render(world, o, preparedPalettes) {
         }
       }
     // (o.pick: where on the surface each pixel lies, for the paint-over tool; rows from the bottom, as everything here)
-    if (o.pick) Object.assign(o.pick, { W, H, X: HX, Y: HY, Z: HZ, win, PIX, dep });
+    if (o.pick) Object.assign(o.pick, { W, H, X: HX, Y: HY, Z: HZ, win, PIX, dep, camera: paintView });
     /* edge sprites (K.pixel.edge; o.edges, on by default), as on the page: little pixel pictures stood on points pinned to the
        surface (K.pixel.anchors; the world's pixAnchors), each moving with the dab it stands on, turned the way its surface faces
        on the screen (up, to a side, down), and shown only past the edge of that surface: over the background, over something well

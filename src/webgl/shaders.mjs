@@ -30,6 +30,7 @@ uniform highp sampler2D u_data;
 uniform mat4 u_view, u_proj;
 uniform vec2 u_viewport;
 uniform float u_focal, u_time, u_scale, u_snap, u_dilate, u_near, u_ortho, u_idx;
+uniform float u_paintMarker; flat out int v_paint;
 uniform vec4 u_actor; uniform float u_reveal, u_fade; uniform vec3 u_camdir; uniform ivec2 u_dyn;
 uniform vec4 u_rev, u_rbox;   // the lit part of the world: centre x, z, sin and cos of the view's turn; then near, far, near half-width, far half-width
 uniform vec4 u_sh[16]; uniform int u_shn;
@@ -75,6 +76,7 @@ void main(){
   vec4 t1 = texelFetch(u_data, ivec2(col + 1, row), 0);
   vec4 t2 = texelFetch(u_data, ivec2(col + 2, row), 0);
   vec4 t3 = ${instances ? 'a_instance != 0 ? vec4(0.0) : ' : ''}texelFetch(u_data, ivec2(col + 3, row), 0);
+  v_paint = u_paintMarker != 0.0 && t3.z == u_paintMarker ? 1 : 0;
   ${materialStyles ? 'v_pixelStyle = texelFetch(u_materialStyles, ivec2(record & 511, row), 0);' : ''}
   vec3 pos = t0.xyz; float alpha = t0.w;
   if (alpha <= 0.0 || pos.y < -30.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }   // (what is put away is put far below: it is not drawn from there)
@@ -282,6 +284,7 @@ flat in vec4 v_fm; flat in vec4 v_ft; flat in float v_fk; flat in float v_lit; f
 ${materialStyles ? `flat in vec4 v_pixelStyle; flat in float v_pixelFog; uniform float u_materialGridScale;
 ${materialStyleThreshold}` : ''}
 uniform float u_idx;
+uniform bool u_paintPass; flat in int v_paint;
 layout(location=0) out vec4 o;
 layout(location=1) out vec4 od;
 ${layeredGlass && !water ? 'vec4 oa;' : 'layout(location=2) out vec4 oa;'}
@@ -379,6 +382,12 @@ ${contributions ? `  if (v_policySlot > 0) {
 ${water ? `  vec3 mark; rgb = waterPaint(rgb, gl_FragCoord.xy, u_viewport,
     ${portal ? 'clipped ? axial : v_portalDepth.x' : 'v_waterAxial'}, mark);` : ''}
   ${environment ? 'rgb = envMedia(rgb, gl_FragCoord.xy, u_viewport, v_envAxial);' : ''}
+  if (u_paintPass) {
+    // Every fragment attenuates paint behind it. Only correction splats contribute paint.
+    o = vec4(v_paint != 0 ? rgb * a : vec3(0.0), a);
+    od = vec4(v_paint != 0 ? a : 0.0, 0.0, 0.0, a);
+    return;
+  }
   o = vec4(rgb * a, a);
   ${layeredGlass ? `vec4 pane = texelFetch(u_glassBoundary,ivec2(gl_FragCoord.xy),0);
   bool behind = pane.a > 0.0 && v_ownerDepth > glassDepth(pane)+0.0000001;
@@ -505,6 +514,7 @@ precision highp float;
 ${paletteConstraints || materialStyles ? 'precision highp int;' : ''}
 uniform sampler2D u_scene, u_depth, u_crispScene, u_crispDepth;
 ${environment ? environmentMediaGLSL : ''}
+uniform bool u_paintOn;
 uniform vec3 u_line;
 uniform float u_edge;
 // the tone look (a diorama's look.tone, or the Tone option: PixelLook's stipple): brightness below the cutoff is black, the rest
@@ -934,7 +944,15 @@ vec3 plainAt(ivec2 p) {
   if (u_pixOn > 0.5) { if (u_sprOn > 0.5) {
 ${water || environment ? '      vec4 sl = texelFetch(u_sprLayer, p, 0); if (sl.a > 0.5) { g_spr = true; g_pixed = true; return sl.rgb; }' :
       '      vec4 sl = texelFetch(u_sprLayer, p, 0) * 255.0; if (sl.a > 127.0) { int v = int(sl.r + 0.5), ci = v >= 100 ? v - 100 : rampAt(int(sl.g + 0.5), int(sl.b + 0.5) + v - 8); g_spr = true; g_pixed = true; return u_pal[clamp(ci, 0, 63)]; }'} }
-    c = pixColour(p, c); }
+    if (u_paintOn) {
+      vec3 paint = texelFetch(u_crispScene, p, 0).rgb;
+      float through = 1.0 - texelFetch(u_crispDepth, p, 0).r;
+      if (through > 0.01) {
+        vec3 base = pixColour(p, clamp((c - paint) / through, 0.0, 1.0));
+        if (g_pixed) c = paint + base * through;
+      }
+    } else c = pixColour(p, c);
+  }
   // outline: this pixel sits clearly behind a neighbour, so it is the edge of something nearer
   ivec2 mx = textureSize(u_depth, 0) - 1;
   float dc = texelFetch(u_depth, p, 0).r;

@@ -714,9 +714,10 @@ The CLI and Node `render()` use the CPU renderer. Use the [browser renderer](doc
 | `shimmer <scene> --mode orbit` | Measure pixels that change and quickly change back across frames, and save a GIF. |
 | `compare <scene> <ref.png>` | Render the scene alongside a reference and measure both at the reference's pixel size. |
 | `export-glb <scene or mesh>` | Export indexed mesh geometry, UVs, materials, and available skins and clips. |
-| `paint export <scene>` | Export `paint.png` and the surface coordinates of the rendered view. |
-| `paint absorb <scene>` | Convert edited pixels in `paint.png` into surface-pinned decals. |
-| `paint clear <scene>` | Clear the scene's saved decals. |
+| `paint export <scene> [--layer name]` | Export `paint.png` and the surface coordinates of the rendered view. |
+| `paint absorb <scene> [--layer name]` | Convert edited pixels into permanent paint or a named view correction. |
+| `paint layers|tune <scene>` | List corrections or adjust a named layer with `--layer name`. |
+| `paint clear <scene> [--layer name]` | Clear one correction or all saved paint. |
 | `stats <scene>` | Report splat counts, extents, palette use, build and animation costs. |
 | `perf <scene> --secs 5 --fps 60` | Measure animation work and changed-data upload estimates. |
 | `motion <scene> --from 0 --to 3` | Inspect speed, jumps, low points, still regions and loop error. |
@@ -763,6 +764,19 @@ Use `finish.look.tone` for a luminance-based palette with a black cutoff, ordere
 For per-pixel materials, set `S.pixel = true` before baking and finish the world with `look: { pixel: true }`. `K.pixel` provides surface patterns such as turf, masonry and shingles. Use `K.pixel.edge(material, { up: 'grass', every: 5, share: 0.55 })` to attach sprites that follow the surface as the camera moves. `K.sprite.art` accepts text art for custom sprites, and `K.props` can scatter small objects along paths and at wall bases.
 
 `paint export` and `paint absorb` work with per-pixel scenes. By default, files live in `studio/paint/<scene-id>/`, where `<scene-id>` is the ID returned by the scene. Edit `paint.png` in the scene palette and use magenta (`#ff00ff`) to erase earlier paint. If you choose a custom folder with `--dir`, pass the same folder to `paint` and `render`.
+
+Add `--layer name` to export and absorb an angle-specific correction. Each named layer has its own capture files in `layers/<name>/`, and its surface samples are saved alongside permanent decals in `decals.json`. Named exports use the unpainted view as the editing baseline. Re-exporting a layer from a new view or pose replaces its previous samples the next time you absorb it. Magenta erases samples within the layer being edited.
+
+| Control | Behavior |
+| --- | --- |
+| `--angle` and `--feather` | Set the maximum deviation from the captured view and the width of the fade, in degrees. The defaults are 65° and 35°. |
+| `--opacity` | Set layer opacity from zero to one. |
+| `--region` | Limit the layer to world-space `min` and `max` coordinates with optional inward `feather` in world units. Accepts JSON, a JSON file, or `off`. |
+| `--paint-mask` | During absorb, multiply each sample by the brightness and alpha of a PNG with the same size as the capture. |
+
+Use the first three controls with `paint absorb` or `paint tune`. The CPU and WebGL renderers blend overlapping samples by their visibility from the current camera before resolving the scene palette. Corrections are pinned to the captured world-space surface positions. Use `--paint-corrections off` when rendering an uncorrected comparison.
+
+For programmatic scenes, pass the saved paint document as `paint` in `B.finish()`, or embed it under `finish.paint` in a JSON diorama. Each layer retains `view.direction` toward the capture camera. Perspective captures also retain `view.eye`. A decal row contains its XYZ position, XYZ normal, palette index, and optional opacity. Pass `paintCorrections: false` to either renderer to hide the view corrections.
 
 The [art-pixel rendering guide](docs/art-passes.md) describes the selectable
 render passes, selective ink, camera snapping, stable dithering, art-pixel

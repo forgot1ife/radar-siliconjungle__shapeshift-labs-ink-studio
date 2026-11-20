@@ -305,6 +305,11 @@
         bad('environmentPreset',error.message);
       }
     }
+    try {
+      PaintCorrections.layers(st.finish.paint);
+    } catch (error) {
+      bad('finish.paint', error.message);
+    }
     if (st.finish.skyEnvironment !== undefined && st.finish.skyEnvironment !== false) {
       try {
         SkyEnvironment.compile(st.finish.skyEnvironment);

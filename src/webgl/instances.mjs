@@ -92,7 +92,7 @@ export function createSplatInstances(prototypes, instances) {
     if (!name(id) || !(world?.data instanceof Float32Array) || !Number.isSafeInteger(world.count) ||
         world.count <= 0 || world.count > maxCount || world.count * 16 > world.data.length ||
         world.moving?.length || world.back?.length || world.anim || world.fine || world.pix ||
-        world.surfaceData || world.effectParticles?.length || world.sortRanges?.length)
+        world.surfaceData || world.paintCorrections || world.effectParticles?.length || world.sortRanges?.length)
       throw new TypeError('Expected a stationary baked splat prototype for ' + id);
     let asset = unique.get(world);
     if (!asset) {

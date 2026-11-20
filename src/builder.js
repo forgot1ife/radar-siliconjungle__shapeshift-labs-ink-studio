@@ -989,21 +989,28 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     }
   }
   function finish(meta) {
-    /* paint-over decals (ink-studio paint): pixels painted over a view of the diorama, each pinned where it fell on the surface, as a
-       flat dab one pixel across of that palette colour just in front of it. Whatever builds the diorama puts its decals in
-       INK_DECAL_NEXT as [x, y, z, nx, ny, nz, palette index] (the game's build embeds them as INK_PAINT, by diorama) */
-    const dec = typeof globalThis !== 'undefined' ? globalThis.INK_DECAL_NEXT : null;
-    if (dec && dec.length) {
-      globalThis.INK_DECAL_NEXT = null;
-      const px = 1 / ((meta && meta.detail) || 12);
-      for (const [x, y, z, nx, ny, nz, c] of dec)
-        if (P[c])
-          disc(x + nx * px * 0.3, y + ny * px * 0.3, z + nz * px * 0.3, [nx, ny, nz], px * 0.6, px * 0.12, P[c], 3);
+    const pending = globalThis.INK_DECAL_NEXT;
+    if (pending) globalThis.INK_DECAL_NEXT = null;
+    const paint = meta?.paint ?? pending, px = 1 / (meta?.detail || 12);
+    const legacy = Array.isArray(paint) ? paint : paint?.decals ?? [];
+    for (const [x, y, z, nx, ny, nz, c] of legacy)
+      if (P[c])
+        disc(x + nx * px * 0.3, y + ny * px * 0.3, z + nz * px * 0.3, [nx, ny, nz], px * 0.6, px * 0.12, P[c], 3);
+    const correctionRows = [];
+    if (paint?.layers !== undefined) {
+      for (const group of PaintCorrections.groups(paint, px)) {
+        const { at: [x, y, z], n: [nx, ny, nz] } = group;
+        correctionRows.push({ ...group, index: n });
+        // The renderers resolve this reserved row for their own camera.
+        disc(x + nx * px * .3, y + ny * px * .3, z + nz * px * .3, group.n,
+          px * .65, px * .12, P[0], 0, { nd: true, rg: PaintCorrections.marker });
+      }
     }
     const world = Object.assign(
       {
         data: data.subarray(0, n * 16),
         count: n,
+        ...(correctionRows.length && { paintCorrections: PaintCorrections.bind(correctionRows) }),
         renderMetadata: renderRows(),
         ...(precipitationRanges.length && { precipitationRanges: precipitationRanges.slice() }),
         ...(fallingSnowRanges.length && { fallingSnowRanges: fallingSnowRanges.slice() }),
