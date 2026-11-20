@@ -150,16 +150,6 @@
     const live=Object.fromEntries(sections.map(section=>[section,Object.fromEntries(
       [...owned[section]].filter(name=>own(world[section],name)).map(name=>[name,
         section==='entities'&&name===instance?cleanRoot(root):world[section][name]]) )]));
-    const changes=W.query.keyedChanges(baseline,live,{limit:10000}).slice();
-    if(changes.length>10000){issue('overrides',{reason:'Instance changes exceed the upgrade edit budget'});return finish();}
-    for(const change of recipe.overrides??[]){
-      const at=selector(change.path);
-      const authored=change.op==='set'?[[at,change.value]]:change.op==='merge'?
-        Object.entries(change.value).map(([key,value])=>[[...at,key],value]):[];
-      for(const [path,value] of authored)if(sections.includes(path[0])&&owned[path[0]].has(path[1])&&path.length>=3&&
-        !(path[0]==='entities'&&path[1]===instance&&rootFields.has(path[2]))&&
-        equal(read(baseline,path),value)&&equal(read(live,path),value))changes.push({op:'set',path,value});
-    }
     const rules=Object.entries(migration.overridePaths??{}).map(([from,to])=>{
       const a=selector(from),b=to===null?null:selector(to);
       check(a.length>=2&&sections.includes(a[0])&&(!b||b.length>=2&&sections.includes(b[0])),
@@ -167,11 +157,43 @@
       return [a,b];
     })
       .sort(([a],[b])=>b.length-a.length);
+    let changes=W.query.keyedChanges(baseline,live,{limit:10000}).slice();
+    const overBudget=()=>{
+      if(changes.length<=10000)return false;
+      issue('overrides',{reason:'Instance changes exceed the upgrade edit budget'});
+      return true;
+    };
+    if(overBudget())return finish();
+    const authored=[], wholeArrays=new Set();
+    function remember(path,value){
+      if(record(value)&&Object.keys(value).length){
+        for(const [key,child] of Object.entries(value))remember([...path,key],child);
+        return;
+      }
+      if(!sections.includes(path[0])||!owned[path[0]].has(path[1])||path.length<3||
+        path[0]==='entities'&&path[1]===instance&&rootFields.has(path[2]))return;
+      const current=read(live,path);
+      const sourcePath=[path[0],local(path[1]),...path.slice(2)];
+      const mapsChildren=rules.some(([from])=>from.length>sourcePath.length&&sourcePath.every((key,i)=>String(from[i])===String(key)));
+      if(Array.isArray(value)&&Array.isArray(current)&&!mapsChildren){
+        // A placed vector or keyframe list carries its whole authored value.
+        wholeArrays.add(pointer(path));
+        authored.push({op:'set',path,value:current});
+      }else if(equal(read(baseline,path),value)&&equal(current,value))authored.push({op:'set',path,value});
+    }
+    for(const change of recipe.overrides??[]){
+      const at=selector(change.path);
+      if(change.op==='set'||change.op==='merge')remember(at,change.value);
+    }
+    if(wholeArrays.size)changes=changes.filter(edit=>!edit.path.some((_,i)=>wholeArrays.has(pointer(edit.path.slice(0,i+1)))));
+    const parents=new Set(changes.map(edit=>pointer(edit.path)));
+    changes.push(...authored.filter(edit=>!edit.path.some((_,i)=>parents.has(pointer(edit.path.slice(0,i+1))))));
+    if(overBudget())return finish();
     function mapEditPath(path){
       const [section,name,part]=path;
       if(!sections.includes(section)||!owned[section].has(name))return {mapped:path};
       const sourcePath=[section,local(name),...path.slice(2)];
-      const rule=rules.find(([prefix])=>prefix.every((key,i)=>sourcePath[i]===key));
+      const rule=rules.find(([prefix])=>prefix.every((key,i)=>String(sourcePath[i])===String(key)));
       if(rule&&rule[1]===null)return {mapped:null,rule};
       const next=member(name,section);
       let mapped=rule?[rule[1][0],qualified(rule[1][1]),...rule[1].slice(2),...sourcePath.slice(rule[0].length)]:

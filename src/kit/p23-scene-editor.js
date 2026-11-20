@@ -15,7 +15,8 @@
     return result;
   }
 
-  function sceneIndex(scene) {
+  function sceneIndex(scene, env) {
+    const solids = scene.solids ?? [];
     const nodes = new Map(), byEntity = new Map(), roots = [], parts = new Map(), groups = new Map();
     function parent(kind, name) {
       const node = { key: kind + ':' + name, kind, name, children: [] };
@@ -23,7 +24,7 @@
       return node;
     }
 
-    for (const name of new Set([...Object.keys(scene.parts ?? {}), ...scene.solids.map(solid => solid.part).filter(Boolean)]))
+    for (const name of new Set([...Object.keys(scene.parts ?? {}), ...solids.map(solid => solid.part).filter(Boolean)]))
       parts.set(name, parent('part', name));
     for (const [name, node] of parts) {
       const container = parts.get(scene.parts?.[name]?.parent);
@@ -48,12 +49,18 @@
       if (solid.id !== undefined) byEntity.set(solid.id, key);
       return node;
     }
-    const indexedNodes = scene.solids.map((solid, i) => {
+    const indexedNodes = solids.map((solid, i) => {
       const node = solidNode(solid, [i]);
       const owner = parts.get(solid.part) ?? groups.get(solid.group);
       (owner?.children ?? roots).push(node);
       return node;
     });
+    const linked = A.scenePrefabs.expand(scene, env).instances;
+    for (const [id, { instance, revision, solids }] of linked) {
+      const node = Object.assign(parent('prefab', id), { instance, revision, solids });
+      for (const name of solids) byEntity.set(name, node.key);
+      roots.push(node);
+    }
     const byStroke = new Map();
     if (scene.brushRegion) {
       const brushRegion = parent('brushRegion', 'Brush region');
@@ -73,7 +80,7 @@
 
     // A preview tag identifies anonymous geometry without replacing its render ownership.
     const usedTags = new Set([...nodes.values()].flatMap(node => node.solid?.tags ?? []));
-    const byTag = new Map(), preview = { ...scene, solids: scene.solids.map((solid, i) => {
+    const byTag = new Map(), preview = { ...scene, solids: solids.map((solid, i) => {
       if (solid.id !== undefined) return solid;
       let tag = '@editor/' + i;
       while (usedTags.has(tag)) tag += '_';
@@ -88,8 +95,9 @@
     const baked = source?.data instanceof Float32Array;
     if (baked && !source.spec) throw new TypeError('This splat bake has no retained diorama source');
     const scene = clone(baked ? source.spec : typeof source === 'string' ? JSON.parse(source) : source);
-    function validate(candidate) {
-      const problems = DIO.check(candidate, env);
+    const buildEnv = { ...env, brushSession: A.brushRegions.create() };
+    function validate(candidate, bindings = buildEnv) {
+      const problems = DIO.check(candidate, bindings);
       if (problems.some(problem => problem.level === 'error')) {
         const error = new Error(DIO.report(problems));
         error.problems = problems;
@@ -107,23 +115,23 @@
       const scene = snapshot();
       if (scene !== indexScene || !index) {
         indexScene = scene;
-        index = sceneIndex(scene);
+        index = sceneIndex(scene, buildEnv);
         previewWorld = cachedPick = undefined;
       }
       return index;
     }
     function keys(value, solidsOnly = false) {
       const requested = typeof value === 'string' ? [value] : value;
-      const kinds = solidsOnly ? ['solid'] : ['solid', 'stroke'];
+      const kinds = solidsOnly ? ['solid'] : ['solid', 'stroke', 'prefab'];
       if (!Array.isArray(requested) || Array.from(requested).some(key => !kinds.includes(current().nodes.get(key)?.kind)))
         throw new RangeError(solidsOnly ? 'Edits need keys of solids in the scene tree' :
-          'Selection needs keys of solids or brush strokes in the scene tree');
+          'Selection needs keys of solids, prefab instances, or brush strokes in the scene tree');
       return [...new Set(requested)];
     }
 
     function selectedKeys() {
       const { nodes } = current();
-      return freeze(selection.filter(key => ['solid', 'stroke'].includes(nodes.get(key)?.kind)));
+      return freeze(selection.filter(key => ['solid', 'stroke', 'prefab'].includes(nodes.get(key)?.kind)));
     }
 
     function select(requested, { mode = 'replace' } = {}) {
@@ -155,7 +163,7 @@
         if (modifiers.some((entry, i) => entry !== solid.modifiers[i])) next = { ...next, modifiers };
         return selected.has(solid) ? update(next) : next;
       }
-      const write = () => document.setEnvironment({ solids: snapshot().solids.map(rewrite) });
+      const write = () => document.setEnvironment({ solids: (snapshot().solids ?? []).map(rewrite) });
       if (document.pending()) write();
       else document.transact(label, write);
       return true;
@@ -212,8 +220,28 @@
       else document.transact('Edit material role ' + name, write);
     }
 
-    const brushEnv = { ...env, brushSession: A.brushRegions.create() };
-    const build = () => Object.assign(DIO.build(current().preview, brushEnv), { spec: snapshot() });
+    const build = () => Object.assign(DIO.build(current().preview, buildEnv), { spec: snapshot() });
+
+    function refreshPrefabs(prefabs, { assets = buildEnv.assets } = {}) {
+      const bindings = { ...buildEnv, assets, prefabs: freeze(clone(prefabs)) };
+      validate(snapshot(), bindings);
+      Object.assign(buildEnv, bindings, { brushSession: A.brushRegions.create() });
+      indexScene = undefined;
+    }
+
+    function setPrefabInstance(id, instance) {
+      if (!K.world.data.id(id)) throw new TypeError('A prefab placement needs an instance ID');
+      const value = clone(instance);
+      const instances = { ...snapshot().instances };
+      if (value === null) delete instances[id];
+      else instances[id] = value;
+      const write = () => {
+        document.setEnvironment({ instances: null });
+        document.setEnvironment({ instances });
+      };
+      if (document.pending()) write();
+      else document.transact('Edit prefab instance ' + id, write);
+    }
 
     function setBrushRegion(region) {
       const value = clone(region);
@@ -282,6 +310,8 @@
       updateShape,
       setModifiers,
       updateModifier,
+      setPrefabInstance,
+      refreshPrefabs,
       setBrushRegion,
       applyBrush,
       setMaterial,

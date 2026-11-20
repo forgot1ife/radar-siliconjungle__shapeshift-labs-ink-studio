@@ -107,6 +107,7 @@
   const COMMON = {
     id: 'str',
     surfaceId: 'str',
+    prefabs: 'list',
     tags: 'list',
     mat: 'mat',
     res: 'pos',
@@ -250,6 +251,7 @@
       throw new RangeError('A transform needs finite XYZ vectors and uniform scale from 0.02 to 20');
     return { translation, rotation, scale, pivot };
   }
+  DIO.solidTransform = solidTransform;
   const lev = (a, b) => {
     const d = [];
     for (let i = 0; i <= a.length; i++) {
@@ -311,6 +313,11 @@
     return K.authoring.looks.material(surface, settings.lookAsset, catalog);
   }
   DIO.check = (spec, env) => {
+    try {
+      spec = K.authoring.scenePrefabs.expand(spec, env).spec;
+    } catch (error) {
+      return error.problems ?? [{ level: 'error', path: 'prefabs', problem: error.message, hint: '' }];
+    }
     const out = [],
       bad = (path, problem, hint) => out.push({ level: 'error', path, problem, hint: hint || '' }),
       warn = (path, problem, hint) => out.push({ level: 'warning', path, problem, hint: hint || '' });
@@ -825,6 +832,8 @@
       if (s.part && !inner) parts.add(s.part);
       if (s.tags !== undefined && (!Array.isArray(s.tags) || !s.tags.every(TargetSelectors.name)))
         bad(path + '.tags', 'tags must be a list of names');
+      if (s.prefabs !== undefined && (!Array.isArray(s.prefabs) || !s.prefabs.every(TargetSelectors.name)))
+        bad(path + '.prefabs', 'prefabs must be a list of names');
       if (s.surfaceId !== undefined && !TargetSelectors.name(s.surfaceId))
         bad(path + '.surfaceId', 'surfaceId must be a name');
       if (s.part && inner)
@@ -1013,14 +1022,14 @@
   // ---------------- building ----------------
   const brushField = Symbol('brush field');
   DIO.brushField = (spec, env) => DIO.build(spec, env, { [brushField]: true });
-  DIO.build = (spec, env, modelOptions) => {
+  DIO.build = (source, env, modelOptions) => {
     env = env || {};
-    const problems = DIO.check(spec, env),
+    const problems = DIO.check(source, env),
       errs = problems.filter(p => p.level === 'error');
     if (errs.length) {
       const e = new Error(
         'diorama "' +
-          (spec && spec.id) +
+          (source && source.id) +
           '" has ' +
           errs.length +
           ' mistake' +
@@ -1031,6 +1040,7 @@
       e.problems = problems;
       throw e;
     }
+    const { spec } = K.authoring.scenePrefabs.expand(source, env);
     const st0 = styleOf(spec), catalog = lookCatalog(spec),
       seed = spec.seed === undefined ? 1 : spec.seed,
       effects = spec.effects || [],
@@ -1040,7 +1050,9 @@
     if (spec.brushRegion != null) {
       if (modelOptions) throw new TypeError('Brush regions are baked as splat geometry');
       const { palette, roles, sun } = st0;
-      return (env.brushSession ?? K.authoring.brushRegions.create()).build(spec, env, { palette, roles, sun });
+      const world = (env.brushSession ?? K.authoring.brushRegions.create()).build(spec, env, { palette, roles, sun });
+      world.spec = source;
+      return world;
     }
     st0.finish = K.authoring.environments.apply(st0.finish,spec.environmentPreset,catalog,st0.palette);
     st0.finish.look = K.authoring.looks.scene(st0.finish.look, catalog);
@@ -1146,8 +1158,9 @@
       makeSolid = (s, held) => {
         const modifiers = activeModifiers(s);
         const o = { res: s.res, objectId: s.part ?? s.id };
-        if (s.id || s.surfaceId || s.tags?.length) o.target = {
-          ...(s.id && { entity: s.id }), ...(s.surfaceId && { surface: s.surfaceId }), ...(s.tags?.length && { tags: s.tags })
+        if (s.id || s.surfaceId || s.tags?.length || s.prefabs?.length) o.target = {
+          ...(s.id && { entity: s.id }), ...(s.surfaceId && { surface: s.surfaceId }), ...(s.tags?.length && { tags: s.tags }),
+          ...(s.prefabs?.length && { prefabs: s.prefabs })
         };
         if (s.res === undefined) delete o.res;
         if (s.part) {
@@ -1336,7 +1349,7 @@
       Object.assign(
         { cam, detail: 14, palName: typeof spec.style === 'string' ? spec.style : 'Data', dither: 0.25, radius: 9 },
         st0.finish,
-        { made, spec, paletteRoles: st0.roles,
+        { made, spec: source, paletteRoles: st0.roles,
           ...(spec.light?.surfaceDirection !== undefined && { surfaceLight: spec.light.surfaceDirection }) }
       )
     );
@@ -1450,6 +1463,7 @@
   };
   DIO.scene = (spec, env) => {
     const id = 'drawing:' + spec.id, seed0 = spec.seed ?? 1;
+    const authoredSolids = spec.solids ?? [];
     const editable = s => K.drawing.kind(s) && typeof s.id === 'string';
     const resolve = (seed, snapshot) => {
       if (snapshot === undefined) return { ...spec, seed: seed ?? seed0 };
@@ -1462,7 +1476,7 @@
         return [id, mark];
       }));
       const solids = [];
-      for (const s of spec.solids) {
+      for (const s of authoredSolids) {
         if (!editable(s)) solids.push(s);
         else if (marks.has(s.id)) {
           solids.push(marks.get(s.id));
@@ -1478,7 +1492,7 @@
       if (snapshot === undefined) {
         const start = A.document({ ...A.document().snapshot(), id, seed: seed ?? seed0 });
         start.transact('Load drawings', () => {
-          for (const { id, kind, ...parameters } of spec.solids.filter(editable))
+          for (const { id, kind, ...parameters } of authoredSolids.filter(editable))
             start.create(kind, { id, parameters });
         });
         document = A.document(start.snapshot());

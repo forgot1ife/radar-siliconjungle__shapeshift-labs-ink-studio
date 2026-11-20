@@ -69,3 +69,13 @@ events and causal nodes retain their original IDs.
 In JavaScript, use `KIT.world.upgradePrefab(world, instance, target,
 { migration, checkpoint })`. The function returns a report and makes
 the validated output available when the report is successful.
+
+## Synchronize linked worlds
+
+Keep the same prefab ID across compatible releases to update all of its linked instances across saved worlds. A release file contains `id` and `definition`. Set `definition.revision` to the new revision. Optional `migration` carries the mappings described above. `fromDefinitions` supplies previous definitions keyed by revision when a scene's saved catalog lacks the placed revision.
+
+Run `scene sync-prefab` with the release file followed by the world or checkpoint files. Use `--dry-run` to report the results without writing. Use `--out` with a new directory to publish the complete validated batch. Input files keep their original contents. If an instance needs repairs, the command reports the blocked scene and exits with code 2.
+
+`KIT.world.syncPrefab(scenes, release)` accepts a list of records with `world` and an optional `checkpoint`. It returns the report and, when every scene passes, the updated scenes in input order. Local material and behavior edits carry over, including explicit values that matched old defaults. Local transform vectors carry over as whole values. Compatible checkpoint state stays at the original tick.
+
+For shared visual diorama libraries, see [linked visual prefabs](scene-editor.md#linked-visual-prefabs).

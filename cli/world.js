@@ -493,7 +493,41 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
     const report = require('./look.js').assertValid(inspect(after));
     return dryRun ? {...result,lookBindings:looks.impact(inspect(before),report,W.data.equal)} : result;
   }
-  function scene([mode,file,reference]) {
+  function syncPrefab(releaseFile, files) {
+    ensure(files.length && (opt['dry-run'] || typeof opt.out === 'string'),
+      'Use scene sync-prefab RELEASE SCENE ... with --dry-run or --out NEW_DIRECTORY');
+    const source = files.map(file => load(file));
+    ensure(source.every(input => input.world), 'Prefab synchronization needs world or checkpoint files');
+    const result = W.syncPrefab(source, read(releaseFile));
+    if (opt['dry-run'] || !result.report.ok) {
+      process.stdout.write(JSON.stringify(result.report, null, opt.json ? 0 : 2) + '\n');
+      if (!result.report.ok) process.exitCode = 2;
+      return;
+    }
+    const names = files.map(file => path.basename(file).replace(/\.(js|cjs|json)$/i, '') + '.json');
+    ensure(new Set(names).size === names.length, 'Scene basenames must be distinct for batch output');
+    const destination = path.resolve(opt.out);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    const staged = fs.mkdtempSync(path.join(path.dirname(destination), '.ink-prefabs-'));
+    let reserved = false;
+    try {
+      result.scenes.forEach(({world, checkpoint}, i) => write(path.join(staged, names[i]), checkpoint ?? world));
+      fs.mkdirSync(destination);
+      reserved = true;
+      fs.renameSync(staged, destination);
+      reserved = false;
+    } finally {
+      fs.rmSync(staged, { recursive: true, force: true });
+      if (reserved) {
+        try { fs.rmdirSync(destination); } catch (error) {
+          if (error.code !== 'ENOTEMPTY') throw error;
+        }
+      }
+    }
+    process.stdout.write(JSON.stringify(result.report, null, opt.json ? 0 : 2) + '\n');
+  }
+  function scene([mode,file,reference,...additional]) {
+    if (mode === 'sync-prefab') return syncPrefab(file, reference === undefined ? [] : [reference, ...additional]);
     const input=load(file);
     if(mode==='upgrade'){
       ensure(input.world&&typeof opt.to==='string','Prefab upgrades need a world or checkpoint and --to PREFAB');
@@ -537,7 +571,7 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
     else if (mode==='stamp') result=W.stamp(world,reference,opt.as,opt.args?args():{});
     else if (mode==='remix') result=W.remix(world,reference,opt.as,opt.edits?read(opt.edits):[]);
     else if (mode==='history') result=W.history.generate(world,read(reference));
-    else throw Error('Use scene apply|stamp|remix|capture|upgrade|history|promote');
+    else throw Error('Use scene apply|stamp|remix|capture|upgrade|sync-prefab|history|promote');
     R.validate(result.world);
     respond(opt['dry-run']?{changed:result.paths,...(result.events?{events:result.events}:{})}:result.world);
   }

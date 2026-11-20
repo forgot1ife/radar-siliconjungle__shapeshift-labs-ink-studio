@@ -94,18 +94,35 @@ function dataScene(file, override, { installedPacks = false } = {}) {
     spec.finish = { ...spec.finish, look: { ...K.diorama.sceneLook(spec), shadowArt: shadowArtOption() } };
   if (!installedPacks && opt['asset-pack'] !== undefined)
     spec.assetPacks = require('./asset-pack.js').install(K.authoring.assetPacks, spec.assetPacks, opt['asset-pack']);
-  for (const s of K.diorama.solids(spec))
+  let prefabs, expanded;
+  try {
+    if (spec.prefabLibrary !== undefined) {
+      if (typeof spec.prefabLibrary !== 'string' || !spec.prefabLibrary.length) throw new TypeError('Expected a prefabLibrary file path');
+      const library = path.resolve(dir, spec.prefabLibrary);
+      prefabs = JSON.parse(fs.readFileSync(library, 'utf8'));
+      for (const definition of Object.values(prefabs ?? {})) {
+        for (const solid of K.diorama.solids({ solids: Object.values(definition?.solids ?? {}) })) {
+          if (solid.kind === 'mesh' && typeof solid.asset === 'string')
+            solid.asset = path.resolve(path.dirname(library), solid.asset);
+        }
+      }
+    }
+    expanded = K.authoring.scenePrefabs.expand(spec, { prefabs }).spec;
+  } catch (error) {
+    die(error.message);
+  }
+  for (const s of K.diorama.solids(expanded))
     if (s.kind === 'mesh' && typeof s.asset === 'string' && !assets[s.asset]) {
       const f = ['', '.obj', '.glb', '.gltf']
-        .map(e => path.join(dir, s.asset + e))
+        .map(e => path.resolve(dir, s.asset + e))
         .find(q => fs.existsSync(q) && fs.statSync(q).isFile());
       if (f) assets[s.asset] = require('../index.js').readMesh(f);
     }
-  const problems = K.diorama.check(spec, { assets });
+  const problems = K.diorama.check(spec, { assets, prefabs });
   if (problems.length) console.error(K.diorama.report(problems));
   if (problems.some(p => p.level === 'error'))
     die('not built: ' + problems.filter(p => p.level === 'error').length + ' mistake(s) in ' + file);
-  const descriptor=K.diorama.scene(spec,{assets});
+  const descriptor=K.diorama.scene(spec,{assets,prefabs});
   const atlases=new Map();
   return { ...descriptor, lookPreviewPacks:spec.assetPacks, build(...args) {
     const world=descriptor.build(...args);
@@ -659,8 +676,9 @@ const CMD = {
         '  authoring inspect <scene> [--authoring snapshot.json] [--part id]   inspect retained parts',
         '  authoring preview <scene> <edits.json> [--authoring snapshot.json] [--image preview.png]   stage and validate edits',
         '  authoring apply <scene> <edits.json> [--authoring snapshot.json] --out snapshot.json   save validated edits',
-        '  scene apply|stamp|remix|capture|upgrade|history|promote <world> ...  edit or derive a world manifest',
+        '  scene apply|stamp|remix|capture|upgrade|sync-prefab|history|promote <world> ...  edit or derive a world manifest',
         '    scene upgrade <world|checkpoint> <instance> --to PREFAB [--migration FILE] [--dry-run]',
+        '    scene sync-prefab <release.json> <world ...> --out NEW_DIRECTORY | --dry-run',
         '    scene apply <scene> <edits.json> --dry-run   preview edited paths and look targets',
         '  sim run|resume|fork|reset|replay|diff|sweep|render ...  run or compare fixed-tick simulations',
         '    sim run <world> --workers N [--profile]   advance eligible systems in deterministic Node worker partitions',
