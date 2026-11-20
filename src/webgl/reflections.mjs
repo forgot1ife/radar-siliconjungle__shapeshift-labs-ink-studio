@@ -1,5 +1,5 @@
 // Existing planar cameras, bounded captures, and source selection for live water.
-export function waterReflectionPlan(world, frame, camera, width, height, reflection) {
+export function waterReflectionPlan(world, frame, camera, width, height, reflection, textureLimit = Infinity) {
   const ids = frame.water !== false && frame.reflections !== false && world.water?.reflectionPlanes;
   if (!ids?.length) return null;
   if (!reflection) throw new TypeError('Water captures require KIT.reflection in the toolkit');
@@ -12,7 +12,7 @@ export function waterReflectionPlan(world, frame, camera, width, height, reflect
     if (definitions.has(plane.id)) throw new RangeError('Duplicate reflection plane ' + plane.id);
     definitions.set(plane.id, plane);
   }
-  const factor = Math.min(scale, limit / Math.max(width, height));
+  const factor = Math.min(scale, limit / Math.max(width, height), textureLimit / (2*Math.max(width,height)));
   const active = new Float32Array(4), heights = new Float32Array(4);
   const captures = ids.map((id, slot) => {
     const plane = definitions.get(id);

@@ -176,7 +176,9 @@ function traceMedia(volumes, segments, origin, direction, stop, result, sample, 
     let reflected;
     if (style.reflection && options?.reflection) {
       const x = origin[0] + direction[0]*t, z = origin[2] + direction[2]*t, time = options.time ?? 0;
-      const dx = Math.sin(x*3.1 + z*1.9 + time*2), dz = Math.sin(-x*1.7 + z*4.4 - time*1.6);
+      const flow=options.reflectionCurrent?.(x,surface-1e-5,z)?.current;
+      const px=x-(flow?.[0]??0)*time*.25,pz=z-(flow?.[2]??0)*time*.25;
+      const dx = Math.sin(px*3.1 + pz*1.9 + time*2), dz = Math.sin(-px*1.7 + pz*4.4 - time*1.6);
       reflected = options.reflection(style.reflection, options.reflectionX, options.reflectionY, dx, 0, dz, options.reflectionBackground);
     }
     for (let channel = 0; channel < 3; channel++) {
@@ -215,7 +217,7 @@ function mediaSampler(volumes, water, rayAt, width, horizon, options, aerial) {
   const fields = volumes.some(volume => volume.type === 'field' || volume.densityField);
   const tile = fields && options.jitter !== 'off' ? volumeNoise(options.seed) : null;
   const samples = fields ? options.samples : 1;
-  const query = { ...options, jitter: .5 };
+  const query = { ...options, reflectionCurrent:water?.mediumAt, jitter: .5 };
   let opacity = 0, fogCoverage = 0, cloudCoverage = 0, fogThrough = 1;
   const stats = { rays: 0, fallbackRays: 0, depthSamples: 0 };
   function shade(pixel, depth, rgb, geometry = true, fogScale = 1) {

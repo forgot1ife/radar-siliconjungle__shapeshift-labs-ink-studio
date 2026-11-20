@@ -67,10 +67,10 @@ async function browserProbe(createRenderer){
   B.disc(-2,1,-2,[0,0,1],.65,.01,B.P[1],1);
   B.disc(2,2,-2,[0,0,1],.65,.01,B.P[2],1);
   const optics={tint:[0,0,0],extinction:[0,0,0],surfaceColor:[1,1,1],surface:1,refraction:0,foam:0,caustics:0};
-  const volumes=holes=>[-2,2].map((x,i)=>KIT.procedural.waterBodies.create({id:'pool'+i,
+  const volumes=(holes,styled=false)=>[-2,2].map((x,i)=>KIT.procedural.waterBodies.create({id:'pool'+i,
     bounds:{min:[x-1,-3],max:[x+1,2]},resolution:[16,16],
     sample:(px,pz)=>holes&&i===0&&Math.abs(px-x)<.3&&Math.abs(pz)<.4?null:{bed:i-.8,surface:i},
-    optics:{...optics,reflection:{plane:'mirror'+i,distortion:0}}}));
+    optics:{...optics,...(styled&&{deepTint:[0,0,0]}),reflection:{plane:'mirror'+i,distortion:0}}}));
   const world=B.finish({spriteSurfaces:atlas.finish(),water:KIT.procedural.waterBodies.scene(volumes(false)),radius:8,
     reflections:[0,1].map(i=>KIT.reflection.plane({id:'mirror'+i,at:[0,i,0]}))});
   function draw(x,y,options={}){
@@ -84,6 +84,10 @@ async function browserProbe(createRenderer){
   if(first.center[0]<50||first.center[1]>5)throw Error('red reflection behind textured bed: '+first.center);
   if(second.center[1]<50||second.center[0]>5)throw Error('second elevated pool: '+second.center);
   if(disabled.center[1]<50||first.center[1]>5)throw Error('reflection toggle: '+disabled.center);
+  world.water=KIT.procedural.waterBodies.scene(volumes(false,true));
+  const atlasFirst=draw(-2,0).center,atlasSecond=draw(2,1).center;
+  if(atlasFirst.some((v,i)=>Math.abs(v-first.center[i])>1)||atlasSecond.some((v,i)=>Math.abs(v-second.center[i])>1))
+    throw Error('atlas water reflection layout disagrees with uniform layout');
   world.data[0]+=.8;
   const moved=draw(-2,0);
   if(moved.center[0]>first.center[0]*.5)throw Error('reflection did not follow live source: '+moved.center);
@@ -91,6 +95,12 @@ async function browserProbe(createRenderer){
   world.water=KIT.procedural.waterBodies.scene(volumes(true));
   const hole=draw(-2,0).center;const clearHole=draw(-2,0,{water:false}).center;if(hole.some((v,i)=>Math.abs(v-clearHole[i])>1))throw Error('reflection leaked into dry shoreline hole: '+hole+' / '+clearHole);
   world.water=KIT.procedural.waterBodies.scene(volumes(false));
+  const panel=SpriteSurface.make();panel.mesh(mesh(-2,-.8),1,1,()=>0);
+  panel.mesh(TexturedSurface.grid({segments:[1,1],point:(u,v)=>[-2.7+u*1.4,.3+v*1.4,-2]}),1,1,()=>0x0000ff);
+  world.spriteSurfaces=panel.finish();world.data[3]=0;
+  const reflectedPanel=draw(-2,0).center;
+  if(reflectedPanel[2]<50||reflectedPanel[0]>5)throw Error('atlas mesh did not reflect: '+reflectedPanel);
+  world.data[3]=1;
   // Keep both meshes in one atlas so receiver and occluder use the same depth buffer.
   const combined=SpriteSurface.make();combined.mesh(mesh(-2,-.8),1,1,()=>0);combined.mesh(mesh(2,.2),1,1,()=>0);
   combined.mesh(mesh(-2,.5,.6,1.5),1,1,()=>0x2040ff);world.spriteSurfaces=combined.finish();

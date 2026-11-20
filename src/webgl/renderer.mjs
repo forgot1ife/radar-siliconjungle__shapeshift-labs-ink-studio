@@ -545,7 +545,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
     }
 
     function captureWater(world, frame, camera, width, height) {
-      const plan = waterReflectionPlan(world, frame, camera, width, height, toolkit.KIT?.reflection);
+      const plan = waterReflectionPlan(world, frame, camera, width, height, toolkit.KIT?.reflection,maxSize);
       if (!plan?.captures.length) return null;
       reflectionTarget ??= target();
       reflectionTarget.resize(plan.width,plan.height);
@@ -564,7 +564,9 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
           source = expandInstances(world,instances,frame.changedRows).world;
           instances = undefined;
         }
-        source = selectReflectionWorld(source,capture.plane,frame.time??0,toolkit);
+        const t=frame.time??world.lookSnapshot?.time??0;
+        const time=frame.stepAnimation!==false&&world.look?.pixel?Math.floor(t*10)/10:t;
+        source = selectReflectionWorld(source,capture.plane,time,toolkit);
         render(source,{...frame,instances,order:undefined,changedRows:undefined,water:false,reflections:false,
           raw:frame.raw??false,outline:false,dither:0,damp:false,edges:false,clean:false,tone:false},
           plan.width,plan.height,reflectionTarget.framebuffer,capture.camera,capture.equation,undefined,true);
