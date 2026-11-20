@@ -43,6 +43,24 @@ const SpriteSurface = (() => {
     }
     return { face, finish };
   }
-  return Object.freeze({ make });
+  const updates = new WeakMap();
+  function markDirty(atlas, rect = { x: 0, y: 0, width: atlas.width, height: atlas.height }) {
+    if (!Number.isSafeInteger(rect.x) || !Number.isSafeInteger(rect.y) || !Number.isSafeInteger(rect.width) || !Number.isSafeInteger(rect.height) ||
+      rect.x < 0 || rect.y < 0 || rect.width < 1 || rect.height < 1 || rect.x + rect.width > atlas.width || rect.y + rect.height > atlas.height)
+      throw new RangeError('Invalid atlas update rectangle');
+    const revision = (atlas.revision ?? 0) + 1;
+    if (!Number.isSafeInteger(revision) || revision < 1) throw new RangeError('Invalid atlas revision');
+    atlas.revision = revision;
+    if (!updates.has(atlas)) updates.set(atlas, []);
+    const history = updates.get(atlas); history.push({ revision, ...rect });
+    if (history.length > 32) history.shift();
+    return revision;
+  }
+  function updatesSince(atlas, revision) {
+    if (revision === (atlas.revision ?? 0)) return [];
+    const rows = (updates.get(atlas) ?? []).filter(row => row.revision > revision);
+    return rows[0]?.revision === revision + 1 && rows.at(-1).revision === atlas.revision ? rows.map(row => ({ ...row })) : null;
+  }
+  return Object.freeze({ make, markDirty, updatesSince });
 })();
 if (typeof module !== 'undefined') module.exports = SpriteSurface;
