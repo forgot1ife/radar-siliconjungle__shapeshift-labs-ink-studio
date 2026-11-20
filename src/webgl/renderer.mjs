@@ -1,3 +1,4 @@
+import { createFrameComposite } from './frame-composite.mjs';
 import { createSurfacePipeline } from './surfaces.mjs';
 import { createResources } from './resources.mjs';
 import { createTargets } from './targets.mjs';
@@ -991,7 +992,21 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       gl.activeTexture(gl.TEXTURE0);
     }
     const viewportLimit = gl.getParameter(gl.MAX_VIEWPORT_DIMS);
-    return { render: present, dispose() { surfacePipeline?.dispose(); pipeline.dispose(); resources.dispose(); } };
+    let composite;
+    function presentFrame(world, frame, width, height, output) {
+      const definition = frame.composite ?? world.look?.composite;
+      if (definition === undefined || definition === false) return present(world, frame, width, height, output);
+      const api = toolkit.KIT?.frameComposite;
+      if (!api) throw new Error('Mixed-resolution frames need the Ink Studio KIT');
+      const plan = api.prepare(definition, width, height, world.look?.pixelSize ?? 1);
+      if ([plan, plan.world].some(({ w, h }) => w > Math.min(maxSize, viewportLimit[0]) ||
+          h > Math.min(maxSize, viewportLimit[1])) || plan.layers.some(({ w, h }) => w > maxSize || h > maxSize))
+        throw new RangeError('Composite frame exceeds the WebGL viewport or texture size limit');
+      const layers = api.layers(plan, world, frame.time ?? world.lookSnapshot?.time ?? 0);
+      composite ??= createFrameComposite(gl, { program, resources, target, textureUnit, fullscreen });
+      composite(world, frame, plan, layers, output, present);
+    }
+    return { render: presentFrame, dispose() { surfacePipeline?.dispose(); pipeline.dispose(); resources.dispose(); } };
   } catch (error) {
     pipeline?.dispose();
     resources.dispose();

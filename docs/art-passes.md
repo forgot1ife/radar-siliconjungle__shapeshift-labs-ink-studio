@@ -31,6 +31,8 @@ The PNG writer includes a `passes.json` manifest with the art dimensions,
 image scale, and available previews. Read `position` and `objectPosition`
 directly from Node's typed arrays for floating-point coordinates.
 
+With [mixed-resolution compositing](mixed-resolution.md), the color export uses the output grid and diagnostic passes retain their own `w` and `h` on the world grid.
+
 ## Environment passes for compositing
 
 ```sh

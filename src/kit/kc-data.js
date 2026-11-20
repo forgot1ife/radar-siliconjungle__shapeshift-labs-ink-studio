@@ -411,6 +411,11 @@
     if (look?.pixelSize !== undefined && (!Number.isSafeInteger(look.pixelSize) || look.pixelSize < 1))
       bad('finish.look.pixelSize', 'pixelSize must be a positive integer');
     try {
+      FrameComposite.settings(look?.composite);
+    } catch (error) {
+      bad('finish.look.composite', error.message);
+    }
+    try {
       SilhouetteProtection.prepare(look?.silhouetteProtection);
     } catch (error) {
       bad('finish.look.silhouetteProtection', error.message);
