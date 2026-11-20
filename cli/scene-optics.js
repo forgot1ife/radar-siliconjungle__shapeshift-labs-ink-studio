@@ -106,6 +106,8 @@ function volumeNoise(seed) {
   return noiseTiles.get(seed);
 }
 
+const OpticalMaterials = require('../src/optical-materials.js');
+
 function traceMedia(volumes, segments, origin, direction, stop, result, sample, options, aerial) {
   result.fill(0, 0, 3);
   result.fill(1, 3, 6);
@@ -158,10 +160,19 @@ function traceMedia(volumes, segments, origin, direction, stop, result, sample, 
     if (trackFog) result[8] *= ratio;
     aerialThrough = through;
   }
+  function waterSurface(style, t, surface) {
+    const reflection = OpticalMaterials.waterReflection(style, origin[1], direction[1], t, surface);
+    if (!reflection) return;
+    for (let channel = 0; channel < 3; channel++) {
+      result[channel] += result[channel + 3] * reflection * style.surfaceColor[channel];
+      result[channel + 3] *= 1 - reflection;
+    }
+  }
   for (const [start, exit, style, surface] of segments) {
     if (start >= stop) break;
     const end = Math.min(stop, exit);
     air(start);
+    if (direction[1] < 0) waterSurface(style, start, surface);
     const midpoint = (start + end) * .5;
     const depth = surface - origin[1] - midpoint * direction[1];
     const visibility = options?.cloudShadow?.(origin[0] + midpoint * direction[0], surface,
@@ -175,6 +186,7 @@ function traceMedia(volumes, segments, origin, direction, stop, result, sample, 
       result[channel] += result[channel + 3] * loss * tint * gain;
       result[channel + 3] *= 1 - loss;
     }
+    if (direction[1] > 0 && end < stop) waterSurface(style, end, surface);
     cursor = end;
   }
   air(stop);

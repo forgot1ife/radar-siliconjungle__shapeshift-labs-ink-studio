@@ -10,7 +10,7 @@
   const compare = (a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 
   function optics({
-    tint = [0.05, 0.25, 0.31], extinction = [0.8, 0.32, 0.18],
+    optical, tint = [0.05, 0.25, 0.31], extinction = [0.8, 0.32, 0.18],
     surfaceColor = [0.46, 0.75, 0.79], surface = 0.22,
     refraction = 1.5, foam = 0.45, caustics = 0.26,
     deepTint, depthRange = [0.25, 3],
@@ -24,10 +24,22 @@
         !(Math.fround(depthRange[1]) > Math.fround(depthRange[0])) || !rgb(color) ||
         !number(height) || height < 1e-4 || !number(scale) || scale <= 0 || scale > 64)
       throw new RangeError('Invalid water optics');
-    return P.data.freeze({ tint: tint.slice(), extinction: extinction.slice(), surfaceColor: surfaceColor.slice(),
+    const profile = optical === undefined ? undefined : OpticalMaterials.material(optical);
+    if (profile) {
+      const medium = OpticalMaterials.medium(profile, tint);
+      tint = medium.tint;
+      extinction = [medium.extinction, medium.extinction, medium.extinction];
+      surface = profile.reflection;
+      surfaceColor = profile.reflectionColor;
+      if (deepTint) deepTint = deepTint.map(value => value * medium.scatter);
+    }
+    return P.data.freeze({ ...(profile && { optical: profile }), tint: tint.slice(), extinction: extinction.slice(), surfaceColor: surfaceColor.slice(),
       surface, refraction, foam, caustics, deepTint: deepTint?.slice() ?? tint.slice(), depthRange: depthRange.slice(),
       sediment: { color: color.slice(), strength, height, scale }, styled: deepTint !== undefined || strength > 0 });
   }
+
+  // A negative weight identifies the shared Fresnel model in either GPU layout.
+  const surfaceWeight = style => style.optical ? -1 - style.surface : style.surface;
 
   function create({ id, bounds, resolution = [1, 1], sample, optics: look } = {}) {
     if (!name(id) || !pair(bounds?.min) || !pair(bounds?.max) || !Array.isArray(resolution) ||
@@ -320,7 +332,7 @@
         const at = styleBase + i * 6;
         write(at, [...row.tint, row.foam]);
         write(at + 1, [...row.extinction, row.caustics]);
-        write(at + 2, [...row.surfaceColor, row.surface]);
+        write(at + 2, [...row.surfaceColor, surfaceWeight(row)]);
         write(at + 3, [...row.deepTint, row.refraction]);
         write(at + 4, [...row.sediment.color, row.sediment.strength]);
         write(at + 5, [...row.depthRange, row.sediment.height, row.sediment.scale]);
@@ -473,7 +485,7 @@
         grids.set([dx, dz, nx, nz], o);
         tint.set([...style.tint, style.foam], o);
         extinction.set([...style.extinction, style.caustics], o);
-        highlights.set([...style.surfaceColor, style.surface], o);
+        highlights.set([...style.surfaceColor, surfaceWeight(style)], o);
         for (let z = 0; z < nz; z++) {
           const offset = (row + z) * width * 4;
           data.set(grid.subarray(z * nx * 4, (z + 1) * nx * 4), offset);

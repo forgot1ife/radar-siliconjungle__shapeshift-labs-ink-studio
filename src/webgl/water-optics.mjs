@@ -98,7 +98,12 @@ void waterSurface(int body, vec3 p, vec3 ray, vec4 column, WaterStyle style, ino
   float grazing = pow(max(0.0, 1.0 - abs(ray.y)), 3.0);
   float foam = (1.0 - smoothstep(0.05, 0.4, column.y - column.x)) *
     smoothstep(0.08, 0.73, (ripple.x + ripple.y) * 0.5) * style.tint.w;
-  float opacity = clamp(highlight.w * (0.16 + 0.84 * grazing) + foam, 0.0, 1.0);
+  float reflection = highlight.w * (0.16 + 0.84 * grazing);
+  if (highlight.w < 0.0) {
+    float f0 = -1.0 - highlight.w;
+    reflection = f0 > 0.0 ? f0 + (1.0 - f0) * pow(1.0 - abs(ray.y), 5.0) : 0.0;
+  }
+  float opacity = clamp(reflection + foam, 0.0, 1.0);
   light += through * mix(highlight.rgb, vec3(0.9, 0.98, 0.94), foam) * opacity;
   through *= 1.0 - opacity;
   #ifdef WATER_ATLAS

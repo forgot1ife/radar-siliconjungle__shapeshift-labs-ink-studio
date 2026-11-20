@@ -15,6 +15,7 @@ const ArtDirection = require('../src/art-direction.js');
 const SilhouetteProtection = require('../src/silhouette-protection.js');
 const DetailBudgets = require('../src/detail-budgets.js');
 const ShadowArt = require('../src/shadow-art.js');
+const OpticalMaterials = require('../src/optical-materials.js');
 const SplatRelighting = require('../src/splat-relighting.js');
 const MaterialPixelStyle = require('../src/material-pixel-style.js');
 const EffectPalettes = require('../src/effect-palettes.js');
@@ -697,6 +698,8 @@ function renderFrame(world, o, preparedPalettes) {
     live = LiveSun.create(sun, world, { x: X, y: Y, z: Z, alpha: AL, scale: SC }, normalAt, cloudShadow, exposure?.light,
       { shadowArt: o.shadowArt, footprint: shadowFootprint });
   }
+  const optical = world.opticalSplats && OpticalMaterials.frame(world, { view: V, eye, ortho },
+    sampleFrames(world, t), { x: X, y: Y, z: Z });
   const relight = relative && SplatRelighting.rows(world, relative, sampleFrames(world, t), { x: X, y: Y, z: Z, alpha: AL });
   let mn = Infinity;
   for (let i = 0; i < N; i++) if ((i < baseCount || AL[i] > 0) && depth[i] < mn) mn = depth[i];
@@ -890,7 +893,8 @@ function renderFrame(world, o, preparedPalettes) {
       x = X[i],
       y = Y[i],
       z = Z[i];
-    if (al <= 0 || y < -30) continue;
+    const opt = i * OpticalMaterials.STRIDE, opticalActive = optical?.[opt + 3];
+    if (al <= 0 || y < -30 || opticalActive && !optical[opt]) continue;
     if (
       reflectionPlane &&
       (SceneOptics.planeDistance(reflectionPlane, x, y, z) <= reflectionPlane.bias ||
@@ -1003,7 +1007,7 @@ function renderFrame(world, o, preparedPalettes) {
       glint = 0,
       centerPalette = 0;
     const planar = surface?.planar(i);
-    const pixelSurface = PIX?.[i * 8] && !surface?.reveals(i) && (!planar || (al >= 1 && !(flags & 1)));
+    const pixelSurface = !opticalActive && PIX?.[i * 8] && !surface?.reveals(i) && (!planar || (al >= 1 && !(flags & 1)));
     const projected = surface?.projected(i);
     const reflectedSky = !skyOverlay && surface?.environment(i);
     const fragmentSurface = !pixelSurface && (planar || projected || reflectedSky || liveNormal && hasSurface);
@@ -1023,13 +1027,13 @@ function renderFrame(world, o, preparedPalettes) {
       ? targetFog(sstep(world.fog.start,1,dn)*world.fog.max*(exposure?.fog?.(x,y,z)??1),rule) : 0;
     const reflectInRaster = (planar || reflectedSky) && !pixelSurface;
     const normal = fragmentSurface ? surface.surfaceNormal(i) : null;
-    if (fogMix && !reflectInRaster && !staged?.lit && !liveNormal && !splatFlash && !relit && coverGain === 1) {
+    if (fogMix && !opticalActive && !reflectInRaster && !staged?.lit && !liveNormal && !splatFlash && !relit && coverGain === 1) {
       r += (fog[0] - r) * fogMix;
       g += (fog[1] - g) * fogMix;
       b += (fog[2] - b) * fogMix;
     }
     const solid = al >= 1,
-      writesDepth = solid && coverage === 1 && !(flags & 1),
+      writesDepth = !opticalActive && solid && coverage === 1 && !(flags & 1),
       glass = (flags & 16) !== 0,
       x0 = Math.max(0, Math.floor(sx - ex)),
       x1 = Math.min(W - 1, Math.ceil(sx + ex)),
@@ -1042,7 +1046,7 @@ function renderFrame(world, o, preparedPalettes) {
       glassLook = glassLooks.get(target);
     }
     const correction = paint && d[q + 14] === paint.marker;
-    const coat = !retainLayers && PIX && (correction || fieldParticle ||
+    const coat = !retainLayers && PIX && (opticalActive || correction || fieldParticle ||
       hasSurface && (!writesDepth || reflectInRaster || surface.reveals(i)));
     if (coat && !surfaceOverlay) surfaceOverlay = new Float32Array(W * H * 4);
     if (audit && (r > 1 || g > 1 || b > 1)) audit.sample('splat', Math.max(0, r), Math.max(0, g), Math.max(0, b));
@@ -1160,6 +1164,13 @@ function renderFrame(world, o, preparedPalettes) {
           pb = Math.min(1, pb * relight[lightSlot + 2]);
         }
         const scoped = contribution?.applies(i, paletteId);
+        if (opticalActive) {
+          const scatter = optical[opt + 1], reflection = optical[opt + 2], tint = optical[opt + 4] >= 0;
+          pr = (tint ? optical[opt + 4] : pr) * scatter + optical[opt + 8] * reflection;
+          pg = (tint ? optical[opt + 5] : pg) * scatter + optical[opt + 9] * reflection;
+          pb = (tint ? optical[opt + 6] : pb) * scatter + optical[opt + 10] * reflection;
+          a *= optical[opt];
+        }
         if (staged?.lit || scoped || glassLook) {
           let sample;
           if (litMask || (scoped && (ditherRule || contribution.masked(i, paletteId)))) {
@@ -1190,7 +1201,7 @@ function renderFrame(world, o, preparedPalettes) {
           pg = Lightning.shade(pg, splatFlash[1]);
           pb = Lightning.shade(pb, splatFlash[2]);
         }
-        if (staged?.lit || (fragmentSurface && reflectInRaster) || liveNormal || splatFlash || relit || coverGain < 1) {
+        if (opticalActive || staged?.lit || (fragmentSurface && reflectInRaster) || liveNormal || splatFlash || relit || coverGain < 1) {
           pr += (fog[0] - pr) * fogMix;
           pg += (fog[1] - pg) * fogMix;
           pb += (fog[2] - pb) * fogMix;

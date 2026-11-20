@@ -28,7 +28,7 @@ vec4 relightAt(int row) { return texelFetch(u_relight, ivec2(row & 511, row >> 9
 export function splatShaderSources(ascii, sampleCoverage, {
   water = false, airPockets = false, layered = false, atlas = false, portal = false, instances = false,
   contributions = false, masked = false, textured = false, layeredGlass = false, coverageRules, materialStyles = false,
-  environment = false, relighting = false
+  environment = false, relighting = false, optical = false
 } = {}) {
   const SPLAT_VS = `#version 300 es
 precision highp float; precision highp int;
@@ -39,6 +39,10 @@ uniform vec2 u_viewport;
 uniform float u_focal, u_time, u_scale, u_snap, u_dilate, u_near, u_ortho, u_idx;
 uniform float u_paintMarker; flat out int v_paint;
 ${relighting ? relightTable + 'flat out vec4 v_relight;' : ''}
+${optical ? `uniform highp sampler2D u_optical;
+flat out vec4 v_optical;
+flat out vec3 v_scatterTint, v_reflectTint;
+flat out float v_opticalFog;` : ''}
 uniform vec4 u_actor; uniform float u_reveal, u_fade; uniform vec3 u_camdir; uniform ivec2 u_dyn;
 uniform vec4 u_rev, u_rbox;   // the lit part of the world: centre x, z, sin and cos of the view's turn; then near, far, near half-width, far half-width
 uniform vec4 u_sh[16]; uniform int u_shn;
@@ -235,10 +239,17 @@ ${environment ? '  v_envAxial = -cam.z;' : ''}
         if (ci >= 0) { if (!stat) steps = min(steps, 1);   /* (whoever carries the light is not washed out by it) */
           for (int k = 0; k < 3; k++) { if (k >= steps) break; ci = u_lup[ci]; } color = u_lpal[ci]; color0 = color; } } } }
   bool plain = color == color0; float fogk = (flags & 2) == 0 && u_fogp.y > 0.0 && u_fogp.x < 1.0 ? smoothstep(u_fogp.x, 1.0, dn) * u_fogp.y : 0.0;   // (smoothstep from 1 to 1 is undefined: some cards give NaN, a black pixel)
+  ${optical ? `
+  ivec2 opticalUV = ivec2((a_index & 511) * 3, a_index >> 9);
+  v_optical = texelFetch(u_optical, opticalUV, 0);
+  v_scatterTint = texelFetch(u_optical, opticalUV + ivec2(1,0), 0).xyz;
+  v_reflectTint = texelFetch(u_optical, opticalUV + ivec2(2,0), 0).xyz;
+  v_opticalFog = v_optical.w > 0.5 ? fogk : 0.0;
+  fogk -= v_opticalFog;` : ''}
   ${relighting ? 'v_relight = relightAt(a_index); if (v_relight.w > 0.0) { v_relight.w += fogk; fogk = 0.0; }' : ''}
   if (fogk > 0.0) color = mix(color, u_fog, fogk);   // distance haze
   vec3 colorF = color;
-  v_depth = (flags & 1) != 0 ? -1.0 : dn;
+  v_depth = (flags & 1) != 0 ${optical ? '|| v_optical.w > 0.5' : ''} ? -1.0 : dn;
   float iz = -1.0 / cam.z;
   vec2 lim = 1.3 * 0.5 * u_viewport / u_focal;
   float tx = clamp(cam.x * iz, -lim.x, lim.x) / iz, ty = clamp(cam.y * iz, -lim.y, lim.y) / iz;
@@ -295,6 +306,7 @@ ${materialStyleThreshold}` : ''}
 uniform float u_idx;
 uniform bool u_paintPass; flat in int v_paint;
 ${relighting ? 'flat in vec4 v_relight;' : ''}
+${optical ? 'flat in vec4 v_optical; flat in vec3 v_scatterTint, v_reflectTint; flat in float v_opticalFog;' : ''}
 layout(location=0) out vec4 o;
 layout(location=1) out vec4 od;
 ${layeredGlass && !water ? 'vec4 oa;' : 'layout(location=2) out vec4 oa;'}
@@ -319,10 +331,11 @@ void main(){
 ${ascii ? ascii.fsMain : ''}  float power = -0.5 * (v_conic.x * v_d.x * v_d.x + v_conic.z * v_d.y * v_d.y) - v_conic.y * v_d.x * v_d.y;
   if (power > 0.0 || power < -4.5) discard;
   float g = v_color.a * exp(power);
+  ${optical ? 'bool hasOptical = v_optical.w > 0.5; if (hasOptical && v_optical.x == 0.0) discard;' : ''}
   ${layeredGlass ? `
   gl_FragDepth = gl_FragCoord.z;
   if (u_idx > 2.5) {
-    if (v_gl < 0.5 || g < 0.004) discard;
+    if (v_gl < 0.5 || g ${optical ? '* (hasOptical ? v_optical.x : 1.0)' : ''} < 0.004) discard;
     float z = round(clamp(v_ownerDepth,0.0,1.0)*16777215.0);
     gl_FragDepth = clamp(v_ownerDepth,0.000001,1.0);
     o = vec4(mod(z,256.0),mod(floor(z/256.0),256.0),floor(z/65536.0),255.0)/255.0;
@@ -335,13 +348,13 @@ ${ascii ? ascii.fsMain : ''}  float power = -0.5 * (v_conic.x * v_d.x * v_d.x + 
     if (axial <= 0.0 || dot(u_splatPlane, vec4(axialPosition(gl_FragCoord.xy, axial, u_viewport), 1.0)) < 0.0) discard;
   }
   if (u_idx > 1.5) {
-    if (v_color.a < 0.5 || g < 0.38) discard;
+    if (v_color.a < 0.5 || g < 0.38${optical ? ' || hasOptical' : ''}) discard;
     o = vec4(1.0); od = vec4(0.0); oa = vec4(0.0);
     return;
   }
   ` : `
   if (u_idx > 1.5) {
-    if (v_color.a < 0.5 || g < 0.38) discard;
+    if (v_color.a < 0.5 || g < 0.38${optical ? ' || hasOptical' : ''}) discard;
     float k = v_ix + 1.0, z = round(clamp(v_ownerDepth, 0.0, 1.0) * 16777215.0);
     o = vec4(mod(k, 256.0), mod(floor(k / 256.0), 256.0), floor(k / 65536.0), 255.0) / 255.0;
     od = vec4(mod(z, 256.0), mod(floor(z / 256.0), 256.0), floor(z / 65536.0), 255.0) / 255.0;
@@ -377,6 +390,13 @@ ${materialStyles ? `
     rgb = mix(shade, u_fog, v_pixelFog);
   }` : ''}
   ${relighting ? 'if (v_relight.w > 0.0) rgb = mix(min(vec3(1.0), rgb * v_relight.xyz), u_fog, v_relight.w - 1.0);' : ''}
+${optical ? `
+  if (hasOptical) {
+    rgb = (v_scatterTint.x >= 0.0 ? v_scatterTint : rgb) * v_optical.y + v_reflectTint * v_optical.z;
+    rgb = mix(rgb, u_fog, v_opticalFog);
+    a *= v_optical.x;
+    if (a < 0.004) discard;
+  }` : ''}
 ${contributions ? `  if (v_policySlot > 0) {
     ivec2 p = ivec2(floor(gl_FragCoord.xy * u_lookViewportScale));
     p.y = int(u_lookGrid.y) - 1 - p.y;
@@ -394,9 +414,10 @@ ${water ? `  vec3 mark; rgb = waterPaint(rgb, gl_FragCoord.xy, u_viewport,
     ${portal ? 'clipped ? axial : v_portalDepth.x' : 'v_waterAxial'}, mark);` : ''}
   ${environment ? 'rgb = envMedia(rgb, gl_FragCoord.xy, u_viewport, v_envAxial);' : ''}
   if (u_paintPass) {
-    // Every fragment attenuates paint behind it. Only correction splats contribute paint.
-    o = vec4(v_paint != 0 ? rgb * a : vec3(0.0), a);
-    od = vec4(v_paint != 0 ? a : 0.0, 0.0, 0.0, a);
+    // Every fragment attenuates the overlay behind it.
+    bool overlay = v_paint != 0 ${optical ? '|| hasOptical' : ''};
+    o = vec4(overlay ? rgb * a : vec3(0.0), a);
+    od = vec4(overlay ? a : 0.0, 0.0, 0.0, a);
     return;
   }
   o = vec4(rgb * a, a);

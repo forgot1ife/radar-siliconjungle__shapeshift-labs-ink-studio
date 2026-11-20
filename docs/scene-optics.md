@@ -9,7 +9,7 @@ ink-studio sheet examples/beacon-pool.js --t 0.4,0.94,1.5 --raw --out pool-motio
 
 Use `--reflections off` or `--atmosphere off` to inspect each effect separately. The software renderer supports perspective and orthographic views, and the effects run before palette quantization.
 
-The [WebGL canvas renderer](browser-renderer.md) supports the shared glass-beam pass. Planar capture, ripple-driven reflection, and volume integration in this guide use the CPU renderer unless a host implements those passes explicitly.
+The [WebGL canvas renderer](browser-renderer.md) supports the shared glass-beam pass, analytic fog and water bodies. The CPU renderer also supports planar capture, ripple-driven planar reflections and sampled atmosphere fields.
 
 For moving directional light and cast shadows on solid geometry, see [Live sun lighting](live-sun.md). See [Moving cloud shadows](cloud-shadows.md) for a shared coverage grid that shades the terrain, fog, and water. Use [Authored lightning](lightning.md) to time flashes that light clouds, appear in water reflections, and reveal nearby geometry. See [Indoor and outdoor exposure](scene-exposure.md) for rain boundaries and shelter for fog, light, and wind.
 
@@ -39,6 +39,32 @@ Use the [environment inspector](environment-inspector.md) to report which keys, 
 
 Export [environment passes](art-passes.md#environment-passes-for-compositing) for downstream compositing of sky, fog, precipitation, reflections, and foreground coverage.
 
+
+## Unified optical materials
+
+Create a reusable profile with `K.optical.material(settings)`, or supply the same settings as an inline object.
+Attach the profile as `optical` on a sculpt or diorama material, as `optical` on an atmosphere volume, or as
+`optics.optical` on a water body. Diorama materials can also set `glass: true` for the glass pass.
+
+| Setting | Effect |
+| --- | --- |
+| `absorption` | Removes transmitted light per world unit. Ranges from 0 to 32. |
+| `scattering` | Redirects light into the authored scattering color. Ranges from 0 to 32. |
+| `reflection` | Sets the normal-incidence reflectance of glass, splats and water. It increases at grazing angles when enabled. In fog, it adds a diffuse backscatter term. Ranges from 0 to 1. |
+| `scatteringColor` | A hex color or normalized RGB triple. Defaults to the shaded surface color, water tint or atmosphere color. |
+| `reflectionColor` | A hex color or normalized RGB triple. Defaults to white. |
+| `depth.thickness` | Thickness in world units for a glass or splat surface. Defaults to 1 with a range of 0.0001 to 1024. Water and fog use the ray distance through their bounds. |
+| `depth.scale` | Multiplies the distance used for absorption and scattering. Defaults to 1. Ranges from 0 to 32. |
+
+Absorption, reflection and scattering default to zero. Surface splats use the view angle to estimate the
+distance through each dab and composite over the scene without taking ownership of the opaque depth.
+Fog still uses its density, limits and field to shape the profile spatially. Water still supports foam,
+caustics, refraction and depth tint. Reflection uses the authored tint with a Fresnel response on surfaces
+and a diffuse term in fog. Overlapping surface dabs each contribute to transmission.
+
+The CPU and WebGL renderers share these coefficients for native splats, water and analytic fog. The CPU
+renderer also applies them to sampled atmosphere fields. Existing materials and media use their legacy
+settings until a profile is attached.
 
 ## Measured render budgets
 

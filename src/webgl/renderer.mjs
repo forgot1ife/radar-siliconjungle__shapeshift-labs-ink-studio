@@ -111,6 +111,8 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
     const lighting = toolkit.KIT?.splatRelighting, relightUnit = 21;
     const relitSprites = new Map();
     let relightData, relightRows, lastRelighting;
+    const opticalUnit = 22;
+    let opticalData, opticalRows, lastOptical;
     const detailPlans = new WeakMap();
     let detailTable, uploadedDetailFlags;
     let materialStyleTable, materialStyleUpload;
@@ -527,7 +529,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       const wantsRelight = lighting && (frame.relighting ?? world.relighting);
       let group = frame.instances;
       // Per-pixel material, palette, and detail rules index the expanded world.
-      if (group && (frame.order || wantsRelight || !raw && (constraintDefinition || look.pixel && world.pix ||
+      if (group && (frame.order || wantsRelight || world.opticalSplats || instancePlan(group).hasOpticalSplats || !raw && (constraintDefinition || look.pixel && world.pix ||
           needsDetailFlags || budget?.fineOn || budget?.fineOff))) {
         expandInstances ??= createExpandedInstances();
         const expanded = expandInstances(world,group,frame.changedRows);
@@ -633,7 +635,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       if ((paintView || lastPaintView) && (!paintView || !lastPaintView || !sameValues(paintView, lastPaintView)))
         historyValid = false;
       lastPaintView = paintView;
-      const paintOnPatterns = patterned && paintActive;
+      const paintOnPatterns = patterned && (paintActive || !!world.opticalSplats);
       if (paintOnPatterns) {
         paintOverlay ??= target(2);
         paintOverlay.resize(width, height);
@@ -646,6 +648,15 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       lastEnvironment = !!env;
       const wet = water && wetVariant(water,!!env?.media);
       const time = frame.stepAnimation !== false && look.pixel ? Math.floor(t * 10) / 10 : t;
+      const opticalMaterials = !!world.opticalSplats;
+      if (opticalMaterials) {
+        const K = toolkit.KIT;
+        opticalRows = K.optical.frame(world, camera, K.splatFrames.create(world, time, K.M), null, opticalRows);
+        opticalData ??= table(1536, opticalUnit, maxSize);
+        opticalData.upload(opticalRows);
+      }
+      if (opticalMaterials || lastOptical) historyValid = false;
+      lastOptical = opticalMaterials;
       let relighting = false;
       if (wantsRelight) {
         const K = toolkit.KIT;
@@ -722,7 +733,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
       const shader = pipeline.programFor({
         water: !!wet, airPockets: wet?.airPockets, layered: wet?.layered, atlas: wet?.atlas, portal: plane !== zero || !!cover,
         instances: !!plan, contributions:coverage && !!constraints, masked, textured:constraints?.textured, layeredGlass,
-        materialStyles, environment:env?.media, relighting
+        materialStyles, environment:env?.media, relighting, optical:opticalMaterials
       });
       gl.useProgram(shader.p);
       const growth = world.grow ?? {};
@@ -739,6 +750,7 @@ function createBackend(gl, toolkit, specialize, reuseOrder) {
         u_born: [frame.bornAt ?? 0, growth.rate ?? 1, growth.fade ?? 0.5, growth.loop ?? 0],
         u_crisp: +!raw, u_dilate: raw ? 0.3 : 0.15, u_near: camera.clipNear,
         u_paintMarker: paint?.marker ?? 0,
+        ...(opticalMaterials && { u_optical: opticalUnit }),
         ...(relighting && { u_relight: relightUnit }),
         u_fog: rgb(world.pal[fog.c ?? 0] ?? 0),
         u_fogp: [fog.start ?? 1, fog.max ?? 0, ...camera.depthRange], ...water, ...env?.uniforms
@@ -989,6 +1001,9 @@ export function createRenderer(canvas, { toolkit, specialize = true, reuseOrder 
     if (world.materialPixelStyles != null && (!(world.materialPixelStyles instanceof Float32Array) ||
         world.materialPixelStyles.length < world.count * 4))
       throw new RangeError('Ink Studio material pixel styles must cover the splat count');
+    if (world.opticalSplats != null && (!(world.opticalSplats instanceof Float32Array) ||
+        world.opticalSplats.length !== world.count * 12))
+      throw new RangeError('Ink Studio optical materials must match the splat count');
     const plan = frame.instances === undefined ? null : instancePlan(frame.instances);
     if (plan) validateSize(world.count,plan);
     const logicalCount = world.count + (plan?.count ?? 0);
@@ -1040,11 +1055,11 @@ export function createRenderer(canvas, { toolkit, specialize = true, reuseOrder 
       const group = frame.instances, revision = group && instancePlan(group).revision;
       const time = frame.time ?? world.lookSnapshot?.time ?? 0;
       const withdrawal = frame.sampleWithdrawal ?? world.sampleWithdrawal ?? 0;
-      if (picking?.world !== world || picking.data !== world.data || picking.count !== world.count ||
+      if (picking?.world !== world || picking.data !== world.data || picking.count !== world.count || picking.opticalSplats !== world.opticalSplats ||
           picking.group !== group || picking.revision !== revision || picking.withdrawal !== withdrawal ||
           picking.time !== time && (world.moving?.length || world.grow || world.anim?.bones)) {
         const picker = create(group ? group.flatten(world) : world,{ time,sampleWithdrawal:withdrawal });
-        picking = { world,data:world.data,count:world.count,group,revision,time,withdrawal,picker };
+        picking = { world,data:world.data,count:world.count,opticalSplats:world.opticalSplats,group,revision,time,withdrawal,picker };
       }
       return picking.picker.ray({ water:frame.water !== false,...ray });
     },

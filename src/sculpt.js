@@ -1226,7 +1226,7 @@ function makeSculpt(B, rest) {
     /* colour worked out per pixel (S.pixel, for a diorama whose look.pixel is on): the dab says which ramp, how lit, which pattern and
        which way its surface truly faces; each pixel is then coloured from those where it lands. A colour a material chose itself
        (a texture with no pattern behind it), a glowing thing, glass and a glint keep the dab's own colour */
-    if (S.pixel && !surface?.opacity && !m.em && !m.glass && !glint && (m.a === undefined || m.a >= 1) && (!flat || m.pat))
+    if (S.pixel && !m.optical && !surface?.opacity && !m.em && !m.glass && !glint && (m.a === undefined || m.a >= 1) && (!flat || m.pat))
       B.pixNext(
         ramp,
         t,
@@ -1623,7 +1623,7 @@ function makeSculpt(B, rest) {
     const capture = B.describeAlbedo && (preview || S.captureAlbedo || stagedAlbedo(material.surface) || stagedAlbedo(material.top?.surface));
     const fine = owner?.detailBudget?.fine;
     const collectStyle = B.describePixelStyle && (material.pixelStyle || material.top?.pixelStyle);
-    if (!capture && !B.describeSplats && !collectStyle) return light(material, ...sample, undefined, fine);
+    if (!capture && !B.describeSplats && !collectStyle && !material.optical && !material.top?.optical) return light(material, ...sample, undefined, fine);
     const first = B.count();
     let effective = material, style, pair;
     if (material.top || collectStyle) light(material, ...sample, (used, settings, shades) => {
@@ -1633,6 +1633,7 @@ function makeSculpt(B, rest) {
     }, fine);
     else light(material, ...sample, undefined, fine);
     const end = B.count();
+    if (effective.optical !== undefined) B.describeOptical?.(first, end, effective.optical);
     if (style) B.describePixelStyle?.(first, end, style, pair);
     const surfaceId = effective.surfaceId ?? (effective === material ? undefined : effective.surface?.id) ?? material.surfaceId;
     B.describeSplats?.(first, end, {

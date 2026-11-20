@@ -135,7 +135,7 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     cidx = [],
     nrms = [];
   let curN = null;
-  let ownerRows, materialRows, targetRows, muteEmission, materialAlbedo, materialPixelStyles;
+  let ownerRows, materialRows, targetRows, muteEmission, materialAlbedo, materialPixelStyles, opticalSplats;
   let unnamedOwners = new WeakMap(), unnamedMaterials = new WeakMap();
   const ownerIds = new Map(), materialIds = new Map();
   const ownerNames = [null], materialNames = [null];
@@ -187,6 +187,17 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     }
   }
   // Labels can be shared across several solids or supplied for splats built directly.
+  function describeOptical(first, end, profile) {
+    if (first >= end) return;
+    const packed = OpticalMaterials.pack(profile), stride = OpticalMaterials.STRIDE;
+    if (!opticalSplats || opticalSplats.length < end * stride) {
+      const next = new Float32Array(Math.max(end * stride, opticalSplats ? opticalSplats.length * 2 : 256 * stride));
+      if (opticalSplats) next.set(opticalSplats);
+      opticalSplats = next;
+    }
+    for (let i = first; i < end; i++) opticalSplats.set(packed, i * stride);
+  }
+
   function describeSplats(first, end, { object, material, target } = {}) {
     if (!renderMetadata || first === end) return;
     if (!Number.isSafeInteger(first) || !Number.isSafeInteger(end) || first < 0 || end < first || end > n)
@@ -224,9 +235,10 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
   }
 
   function renderRows() {
-    if (!renderMetadata) return undefined;
+    if (!renderMetadata && !opticalSplats) return undefined;
     const normals = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) if (nrms[i]) normals.set(nrms[i], i * 3);
+    if (!renderMetadata) return { normals };
     return {
       normals,
       muteEmission: muteEmission?.slice(0, n),
@@ -1037,6 +1049,11 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
         ...(precipitationRanges.length && { precipitationRanges: precipitationRanges.slice() }),
         ...(fallingSnowRanges.length && { fallingSnowRanges: fallingSnowRanges.slice() }),
         ...(materialAlbedo && { materialAlbedo: materialAlbedo.slice(0, n) }),
+        ...(opticalSplats && {
+          opticalSplats: opticalSplats.length < n * OpticalMaterials.STRIDE ?
+            Float32Array.from({ length: n * OpticalMaterials.STRIDE }, (_, i) => opticalSplats[i] ?? 0) :
+            opticalSplats.slice(0, n * OpticalMaterials.STRIDE)
+        }),
         ...(materialPixelStyles && { materialPixelStyles: materialPixelStyles.slice(0, n * 4) }),
         ...(shadowLod && { shadowLod: shadowLod.length >= n * ShadowArt.stride ? shadowLod.slice(0, n * ShadowArt.stride) :
           Float32Array.from({ length: n * ShadowArt.stride }, (_, i) => shadowLod[i] || 0) }),
@@ -1100,7 +1117,7 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     bounced = 0;
     cidx.length = 0;
     nrms.length = 0;
-    ownerRows = materialRows = muteEmission = materialAlbedo = materialPixelStyles = undefined;
+    ownerRows = materialRows = muteEmission = materialAlbedo = materialPixelStyles = opticalSplats = undefined;
     unnamedOwners = new WeakMap();
     unnamedMaterials = new WeakMap();
     ownerIds.clear();
@@ -1138,6 +1155,7 @@ function makeBuilder(seed, hex, { renderMetadata = true, initialCapacity = 1 << 
     shadowArt,
     shadowNext,
     count: () => n,
+    describeOptical,
     describeSplats: renderMetadata ? describeSplats : undefined,
     describeAlbedo,
     describePixelStyle,

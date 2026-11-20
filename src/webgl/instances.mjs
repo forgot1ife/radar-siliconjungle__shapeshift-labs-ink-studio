@@ -100,7 +100,11 @@ export function createSplatInstances(prototypes, instances) {
       const sourceStyles = world.materialPixelStyles;
       if (sourceStyles != null && (!(sourceStyles instanceof Float32Array) || sourceStyles.length < world.count * 4))
         throw new TypeError('Instance material pixel styles are shorter than their prototype');
+      if (world.opticalSplats != null && (!(world.opticalSplats instanceof Float32Array) ||
+          world.opticalSplats.length !== world.count * 12))
+        throw new TypeError('Instance optical materials must match the prototype splat count');
       asset = { offset:sharedCount, count:world.count, data,
+        opticalSplats: world.opticalSplats?.slice(0, world.count * 12),
         normals: world.renderMetadata?.normals?.slice(0, world.count * 3),
         materialPixelStyles: sourceStyles?.slice(0, world.count * 4), ...bounds(data,world.count) };
       sharedCount += asset.count;
@@ -121,6 +125,7 @@ export function createSplatInstances(prototypes, instances) {
     if (count > maxCount) throw new RangeError('Too many logical splats');
   }
   const plan = { rows, assets:[...unique.values()], count, sharedCount, revision:0, orderRevision:0,
+    hasOpticalSplats: rows.some(row => row.asset.opticalSplats),
     hasMaterialPixelStyles: rows.some(row => row.asset.materialPixelStyles) };
   const api = Object.freeze({
     count:instances.length, splats:count, sharedSplats:sharedCount,
@@ -234,6 +239,12 @@ function flattened(base, plan) {
     for (const row of plan.rows) stampInstanceNormals(normals, row, base.count + row.start);
   }
   const result = { ...base, count, data, renderMetadata };
+  if (base.opticalSplats || plan.hasOpticalSplats) {
+    const profiles = result.opticalSplats = new Float32Array(count * 12);
+    if (base.opticalSplats) profiles.set(base.opticalSplats.subarray(0, base.count * 12));
+    for (const row of plan.rows) if (row.asset.opticalSplats)
+      profiles.set(row.asset.opticalSplats, (base.count + row.start) * 12);
+  }
   if (base.materialPixelStyles || plan.hasMaterialPixelStyles) {
     const styles = result.materialPixelStyles = new Float32Array(count * 4);
     if (base.materialPixelStyles) styles.set(base.materialPixelStyles.subarray(0, base.count * 4));

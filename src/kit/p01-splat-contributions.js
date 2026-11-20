@@ -89,9 +89,10 @@
   }
 
   function picker(world,{time=world.lookSnapshot?.time??0,sampleWithdrawal=world.sampleWithdrawal??0}={}){
-    const {count,renderMetadata}=world;
+    const {count,renderMetadata,opticalSplats}=world;
     if(!(world.data instanceof Float32Array)||!Number.isSafeInteger(count)||count<0||world.data.length<count*16||!Number.isFinite(time))
       throw new TypeError('Picking needs a baked splat world and finite time');
+    const opticalFrames=opticalSplats&&SplatFrames.create(world,time,K.M);
     const data=world.anim?.bones?K.bones.posed({...world,posedBuf:undefined}):world.data;
     const rows=new Float32Array(count*10), selected=[];
     const back=new Set(world.back??[]),withdrawal=SampleCoverage.amount(sampleWithdrawal);
@@ -123,16 +124,18 @@
           const delta=[px,py,pz],x=V.dot(delta,u),y=V.dot(delta,v),cov=rows.subarray(o+4,o+10);
           const A=tensor(cov,u,u), B=tensor(cov,u,v), C=tensor(cov,v,v), det=A*C-B*B;
           if(!(det>0))continue;
-          const density=rows[o+3],alpha=R.alpha(-.5*(C*x*x-2*B*x*y+A*y*y)/det,density,!soft&&density>=1,
-            world.materialPixelStyles?.[i*4]);
+          const density=rows[o+3], opt=i*OpticalMaterials.STRIDE, optical=opticalSplats?.[opt+3];
+          const a=i*3, normals=renderMetadata?.normals;
+          const normal=optical?opticalFrames(i).normal:normals&&[normals[a],normals[a+1],normals[a+2]];
+          const f=normal&&V.dot(normal,d);
+          let alpha=R.alpha(-.5*(C*x*x-2*B*x*y+A*y*y)/det,density,!soft&&density>=1,world.materialPixelStyles?.[i*4]);
+          if(optical)alpha*=OpticalMaterials.slabOpacity(opticalSplats,opt,normal?f:1);
           if(alpha<R.minimum)continue;
           const raw=Math.round(data[i*16+11]), target=(provenance??=TargetSelectors.index(world)).row(i);
-          const a=i*3, normals=renderMetadata?.normals;
-          const normal=normals&&[normals[a],normals[a+1],normals[a+2]], f=normal&&V.dot(normal,d);
           const at=Math.abs(f)>1e-7?V.dot(normal,delta)/f:t;
           const distance=at>0&&at<=maxDistance&&Math.abs(at-t)<=3*Math.sqrt(cov[0]+cov[3]+cov[5])?at:t;
           hits.push({kind:raw&256?'glass':'splat',index:i,...(world.splatIds?.[i]&&{id:world.splatIds[i]}),
-            target,distance,point:V.mad(origin,d,distance),alpha,solid:density>=1&&alpha>=.5&&!(raw&(16|256))});
+            target,distance,point:V.mad(origin,d,distance),alpha,solid:!optical&&density>=1&&alpha>=.5&&!(raw&(16|256))});
         }
       }
       visit(tree);
@@ -140,11 +143,11 @@
       const layers=[], segments=[], media=[];
       if(water)for(const segment of world.water?.raySegments?.(origin,d,maxDistance,{mediumIds:true})??[]){
         const last=segments.at(-1);
-        if(last&&last[2]===segment[2]&&last[4]===segment[4]&&Math.abs(last[1]-segment[0])<1e-8)last[1]=segment[1];
+        if(last&&last[2]===segment[2]&&last[4]===segment[4]&&(!segment[2].optical||last[3]===segment[3])&&Math.abs(last[1]-segment[0])<1e-8)last[1]=segment[1];
         else segments.push(segment.slice());
       }
       let cursor=0;
-      for(const [enter,exit,style,,id] of segments){
+      for(const [enter,exit,style,surface,id] of segments){
         while(cursor<hits.length&&hits[cursor].distance<=enter)layers.push(hits[cursor++]);
         function volume(from,to){
           if(to<=from)return;
@@ -154,12 +157,20 @@
           media.push(interval);
           if(alpha>0)layers.push(interval);
         }
+        function reflection(distance){
+          const alpha=OpticalMaterials.waterReflection(style,origin[1],d[1],distance,surface);
+          if(!alpha)return;
+          const layer={kind:'water',id,distance,exit:distance,point:V.mad(origin,d,distance),alpha};
+          media.push(layer);layers.push(layer);
+        }
+        if(d[1]<0)reflection(enter);
         let from=enter;
         while(cursor<hits.length&&hits[cursor].distance<exit){
           const hit=hits[cursor++];
           volume(from,hit.distance);layers.push(hit);from=hit.distance;
         }
         volume(from,exit);
+        if(d[1]>0&&exit<maxDistance)reflection(exit);
       }
       while(cursor<hits.length)layers.push(hits[cursor++]);
       const result=R.reduce(layers,threshold);

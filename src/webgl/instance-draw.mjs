@@ -45,16 +45,16 @@ function baseDirtyRows(world, rows) {
 
 export function createExpandedInstances() {
   let source, placementGroup, storage, revision;
-  let sourceData, sourceCount, sourceFine, sourcePix, sourceMetadata, sourceStyles;
+  let sourceData, sourceCount, sourceFine, sourcePix, sourceMetadata, sourceStyles, sourceOptical;
   let packed;
   return function expand(world, group, changedRows) {
     const plan = instancePlan(group);
     if (world !== source || group !== placementGroup || world.data !== sourceData || world.count !== sourceCount ||
         world.fine !== sourceFine || world.pix !== sourcePix || world.renderMetadata !== sourceMetadata ||
-        world.materialPixelStyles !== sourceStyles) {
+        world.materialPixelStyles !== sourceStyles || world.opticalSplats !== sourceOptical) {
       storage = group.flatten(world);
-      const { data, count, fine, pix, renderMetadata, materialPixelStyles } = storage;
-      packed = { data, count, fine, pix, renderMetadata, materialPixelStyles };
+      const { data, count, fine, pix, renderMetadata, materialPixelStyles, opticalSplats } = storage;
+      packed = { data, count, fine, pix, renderMetadata, materialPixelStyles, opticalSplats };
       source = world;
       placementGroup = group;
       sourceData = world.data;
@@ -63,6 +63,7 @@ export function createExpandedInstances() {
       sourcePix = world.pix;
       sourceMetadata = world.renderMetadata;
       sourceStyles = world.materialPixelStyles;
+      sourceOptical = world.opticalSplats;
       revision = plan.revision;
       return { world:storage };
     }
@@ -71,6 +72,8 @@ export function createExpandedInstances() {
     for (const row of baseDirty) {
       const from = row * rowSamples * 16, end = Math.min(from + rowSamples * 16, world.count * 16);
       storage.data.set(world.data.subarray(from,end),from);
+      if (sourceOptical) storage.opticalSplats.set(
+        sourceOptical.subarray(from / 16 * 12, end / 16 * 12), from / 16 * 12);
       const normals = world.renderMetadata?.normals;
       if (normals) storage.renderMetadata.normals.set(
         normals.subarray(from / 16 * 3, end / 16 * 3), from / 16 * 3);
