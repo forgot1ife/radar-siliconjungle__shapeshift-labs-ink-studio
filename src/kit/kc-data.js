@@ -116,6 +116,7 @@
     ghost: 'bool',
     separate: 'bool',
     turn: 'vec3',
+    transform: 'obj',
     bump: 'vec2',
     hold: 'bool'
   };
@@ -209,6 +210,17 @@
   // ---------------- checking ----------------
   const isNum = v => typeof v === 'number' && Number.isFinite(v),
     isVec = (v, n) => Array.isArray(v) && v.length === n && v.every(isNum);
+  function solidTransform(value) {
+    if (value === undefined) return null;
+    const fields = ['translation', 'rotation', 'scale', 'pivot'];
+    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !fields.includes(key)))
+      throw new TypeError('A solid transform supports translation, rotation, scale and pivot');
+    const { translation = [0, 0, 0], rotation = [0, 0, 0], scale = 1, pivot } = value;
+    if (![translation, rotation, ...(pivot === undefined ? [] : [pivot])].every(v => isVec(v, 3) && Array.from(v).every(isNum)) ||
+        !isNum(scale) || scale < .02 || scale > 20)
+      throw new RangeError('A transform needs finite XYZ vectors and uniform scale from 0.02 to 20');
+    return { translation, rotation, scale, pivot };
+  }
   const lev = (a, b) => {
     const d = [];
     for (let i = 0; i <= a.length; i++) {
@@ -252,6 +264,10 @@
     return out;
   };
   DIO.sceneLook = spec => styleOf(spec)?.finish.look;
+  DIO.sceneMaterials = spec => {
+    const { palette, roles } = styleOf(spec);
+    return { palette, roles };
+  };
   function applySurface(material, definition) {
     if (typeof definition === 'string') return K.surface.preset(definition, material);
     if (!definition || typeof definition !== 'object' || Array.isArray(definition))
@@ -711,7 +727,7 @@
     function solidOk(s, path, inner) {
       if (!s || typeof s !== 'object')
         return bad(path, 'a solid is an object with a "kind"', 'kinds: ' + Object.keys(DIO.kinds).join(', '));
-      const def = DIO.kinds[s.kind];
+      const def = Object.hasOwn(DIO.kinds, s.kind) && DIO.kinds[s.kind];
       if (!def) {
         const n = nearest(s.kind, Object.keys(DIO.kinds));
         return bad(
@@ -721,6 +737,12 @@
         );
       }
       fields(s, path, def, COMMON);
+      let scale = 1;
+      try {
+        scale = solidTransform(s.transform)?.scale ?? 1;
+      } catch (error) {
+        bad(path + '.transform', error.message);
+      }
       if (K.drawing.kind(s)) {
         try {
           K.drawing.prepare(s);
@@ -776,7 +798,7 @@
                 ? (s.rad || 8) * 0.56
                 : 1,
         g = isNum(s.res) ? s.res : res0;
-      if (!inner && !s.carve) area += (12.6 * r * r) / (g * g);
+      if (!inner && !s.carve) area += (12.6 * (r * scale) ** 2) / (g * g);
     }
     if (!Array.isArray(spec.solids))
       bad(
@@ -788,7 +810,12 @@
     for (const [g, v] of Object.entries(groups))
       if (!v || !isNum(v.blend))
         bad('groups.' + g, 'a group says how far its members melt into each other', '{ "blend": 0.2 }');
-    for (const [p, v] of Object.entries(spec.parts || {})) {
+    const partDefinitions = spec.parts ?? {};
+    for (const [p, v] of Object.entries(partDefinitions)) {
+      if (!v || typeof v !== 'object' || Array.isArray(v)) {
+        bad('parts.' + p, 'a part definition must be an object');
+        continue;
+      }
       if (!parts.has(p))
         bad(
           'parts.' + p,
@@ -800,6 +827,20 @@
         bad('parts.' + p + '.parent', 'no part called "' + v.parent + '"');
       if (v.parent === p) bad('parts.' + p + '.parent', 'a part cannot hang from itself');
       keys(v, 'parts.' + p, { joint: 1, parent: 1 });
+    }
+    const checkedParts = new Set();
+    for (const part of Object.keys(partDefinitions)) {
+      const chain = new Set();
+      let name = part;
+      while (typeof name === 'string' && Object.hasOwn(partDefinitions, name) && !checkedParts.has(name)) {
+        if (chain.has(name)) {
+          if (partDefinitions[name]?.parent !== name) bad('parts.' + name + '.parent', 'part parents form a cycle');
+          break;
+        }
+        chain.add(name);
+        name = partDefinitions[name]?.parent;
+      }
+      for (const name of chain) checkedParts.add(name);
     }
     const listOf = (name, table) => {
       const l = spec[name];
@@ -987,6 +1028,22 @@
               : K.poly2.rect(o.rect[0], o.rect[1]);
     const made = {},
       make = (s, held) => {
+        const transform = solidTransform(s.transform);
+        const recipe = () => makeSolid(s, held);
+        let p;
+        if (transform) {
+          const { translation, rotation, scale, pivot = s.at ?? [0, 0, 0] } = transform;
+          const basis = M.tr(B.frame(...rotation).flat()), inverseBasis = M.tr(basis);
+          const direction = vector => M.app(basis, vector);
+          const translatedPivot = V.add(pivot, translation);
+          const point = vector => V.mad(translatedPivot, direction(V.sub(vector, pivot)), scale);
+          const inverse = vector => V.mad(pivot, M.app(inverseBasis, V.sub(vector, translatedPivot)), 1 / scale);
+          p = S.transformSolids({ point, inverse, direction, scale }, recipe);
+        } else p = recipe();
+        if (s.id) made[s.id] = p;
+        return p;
+      },
+      makeSolid = (s, held) => {
         const o = { res: s.res, objectId: s.part ?? s.id };
         if (s.id || s.surfaceId || s.tags?.length) o.target = {
           ...(s.id && { entity: s.id }), ...(s.surfaceId && { surface: s.surfaceId }), ...(s.tags?.length && { tags: s.tags })
@@ -1006,6 +1063,8 @@
         const m = matOf(s.mat),
           sub = q => make(q, true),
           k = s.kind;
+        if (s.mat !== undefined && ['join', 'fold', 'warp', 'shell', 'swell', 'rough', 'bubbles'].includes(k))
+          o.mat = m;
         let p;
         if (k === 'ground') p = S.ground(m, Object.assign({ rad: s.rad || 8 }, s.stretch ? { zs: s.stretch } : {}, o));
         else if (k === 'ball') p = S.ball(s.at, s.r, m, o);
@@ -1069,7 +1128,6 @@
                     ? K.build.fence(S, s.a, s.b, oo)
                     : K.build.pipe(S, s.pts, oo);
         }
-        if (s.id) made[s.id] = p;
         return p;
       };
     if (modelOptions) {
@@ -1133,10 +1191,14 @@
       }) : [];
       return { meshes, joints, animations };
     }
-    const drawingBounds = new Map();
+    const authoredBounds = new Map();
     function placeSolid(s) {
       const p = make(s);
-      if (K.drawing.kind(s) && p.geometryBounds) drawingBounds.set(s, p.geometryBounds);
+      if (p.geometryBounds && (K.drawing.kind(s) || s.transform)) authoredBounds.set(s, p.geometryBounds);
+      else if (s.transform && s.kind !== 'ground') {
+        const at = p.bc ?? (s.at && V.add(s.at, s.transform.translation ?? [0, 0, 0]));
+        if (at) authoredBounds.set(s, { min: at, max: at });
+      }
     }
     for (const s of spec.solids) if (!s.part) placeSolid(s);
     S.bake();
@@ -1149,7 +1211,7 @@
       lo = [1e9, 1e9, 1e9],
       hi = [-1e9, -1e9, -1e9];
     for (const s of spec.solids) {
-      const b = drawingBounds.get(s) ?? (s.at && s.kind !== 'ground' ? { min: s.at, max: s.at } : null);
+      const b = authoredBounds.get(s) ?? (s.at && s.kind !== 'ground' ? { min: s.at, max: s.at } : null);
       if (b) for (let a = 0; a < 3; a++) {
         lo[a] = Math.min(lo[a], b.min[a]);
         hi[a] = Math.max(hi[a], b.max[a]);

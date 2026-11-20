@@ -123,6 +123,61 @@ function makeSculpt(B, rest) {
     if (p.mat.omitFromProxy && !o.ghost && !o.neg) hasOptionalProxy = true;
     return p;
   }
+  // Transform the geometry registered by one recipe, or its held boolean operand.
+  S.transformSolids = ({ point, inverse, direction, scale }, build) => {
+    const lists = [pos, neg, ghosts], starts = lists.map(list => list.length);
+    const result = build();
+    const solids = lists.flatMap((list, i) => list.slice(starts[i]));
+    if (!solids.length && result?.sd) solids.push(result);
+    for (const solid of solids) {
+      const { sd, sample, lowerBound, along, analytic, geometryBounds, mat } = solid;
+      solid.bc = point(solid.bc);
+      if (solid.br < 1e8) solid.br *= scale;
+      solid.reach *= scale;
+      if (solid.bump) solid.bump = [solid.bump[0] * scale, solid.bump[1]];
+      solid.sd = (x, y, z) => scale * sd(...inverse([x, y, z]));
+      solid.sample = function (visit) {
+        const res = this.res;
+        this.res = res / scale;
+        try {
+          sample.call(this, (x, y, z) => visit(...point([x, y, z])));
+        } finally {
+          this.res = res;
+        }
+      };
+      if (lowerBound) solid.lowerBound = (x, y, z, limit) => scale * lowerBound(...inverse([x, y, z]), limit / scale);
+      if (along) solid.along = (x, y, z) => along(...inverse([x, y, z]));
+      if (mat.rf) solid.mat = { ...mat, rf: (x, y, z) => mat.rf(...inverse([x, y, z])) };
+      if (analytic) {
+        const axes = analytic.frame ?? [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+        solid.analytic = { ...analytic, center: point(analytic.center), frame: axes.map(direction),
+          ...(analytic.radii ? { radii: analytic.radii.map(r => r * scale) } :
+            { major: analytic.major * scale, minor: analytic.minor * scale }) };
+      }
+      if (geometryBounds) {
+        const { min, max } = geometryBounds;
+        const corners = [min[0], max[0]].flatMap(x =>
+          [min[1], max[1]].flatMap(y => [min[2], max[2]].map(z => point([x, y, z]))));
+        solid.geometryBounds = {
+          min: min.map((_, i) => Math.min(...corners.map(p => p[i]))),
+          max: max.map((_, i) => Math.max(...corners.map(p => p[i])))
+        };
+      }
+    }
+    if (result?.sockets) {
+      result.sockets = Object.fromEntries(Object.entries(result.sockets).map(([name, socket]) =>
+        [name, { ...socket, p: point(socket.p), dir: direction(socket.dir) }]));
+    }
+    if (result && !result.sd && solids.length) {
+      const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+      for (const { bc, br } of solids) for (let axis = 0; axis < 3; axis++) {
+        min[axis] = Math.min(min[axis], bc[axis] - br);
+        max[axis] = Math.max(max[axis], bc[axis] + br);
+      }
+      result.geometryBounds = { min, max };
+    }
+    return result;
+  };
   // A measurement pass records per-axis extents without changing sampling,
   // grid bounds or shading for an ordinary sculpt.
   const measureBounds = rest?.measureBounds === true;

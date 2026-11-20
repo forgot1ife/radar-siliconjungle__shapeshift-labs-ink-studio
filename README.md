@@ -288,6 +288,8 @@ console.log(world.count);
 
 `K.diorama.scene(spec)` wraps a specification as a scene with a `build` method. `K.diorama.kinds` exposes the supported solid fields, and `K.diorama.styles` exposes style definitions. Programmatic mesh assets go in the second argument as `{ assets: { name: mesh } }`.
 
+Use the [headless scene editor](docs/scene-editor.md) to select solids, edit transforms and materials, and save the resulting diorama JSON.
+
 The larger [lab/data-shrine.json](lab/data-shrine.json) demonstrates joins, folded and warped geometry, parented parts, lights, particles and tap effects.
 
 ## Animation and puppets

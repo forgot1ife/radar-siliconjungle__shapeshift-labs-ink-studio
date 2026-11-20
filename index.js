@@ -103,6 +103,9 @@ module.exports = {
   readRasterAsset(file) {
     return require('./cli/raster-asset.js').readRasterAsset(file, module.exports.load().KIT.procedural.graph.raster);
   },
+  createSceneEditor(source, options) {
+    return module.exports.load().KIT.authoring.sceneEditor.create(source, options);
+  },
   createSplatPicker(world, options = {}) {
     const K = module.exports.load().KIT;
     const time = options.time ?? world.lookSnapshot?.time ?? 0;
