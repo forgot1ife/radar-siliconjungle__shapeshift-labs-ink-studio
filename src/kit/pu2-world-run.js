@@ -259,7 +259,7 @@
     for (const command of world.commands) actionCheck(command,plan);
     scenarioCheck(world.scenario,plan);
     const catalog = W.materials.catalog(world);
-    W.validateLooks(world, catalog);
+    const visual = W.validateLooks(world, catalog);
     const weather = weatherProgram(world,catalog);
     check(world.history === undefined || record(world.history), 'Invalid history policy');
     if (world.history?.where !== undefined) Q.condition(world.history.where,{});
@@ -273,7 +273,7 @@
     for (const [name,prefab] of Object.entries(world.prefabs)) {
       const sandbox = W.manifest({id:'prefab-check',prefabs:{[name]:prefab},assetPacks:world.assetPacks});
       const stamped = W.stamp(sandbox,name,'instance').world;
-      W.validateLooks({...stamped,visual:world.visual}, catalog);
+      W.validateLooks({...stamped,visual}, catalog);
       const prefabPlan = compile(stamped,implementations);
       for (const port of Object.values(stamped.entities.instance.ports))
         check(own(prefabPlan.ports.inputs,port) || own(prefabPlan.ports.outputs,port), 'Invalid public prefab port ' + port);

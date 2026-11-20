@@ -205,13 +205,13 @@
     }
   };
   const EFFECT = {
-    lamp: { need: { at: 'vec3' }, may: { r: 'pos', strength: 'pos', flicker: 'num', follow: 'str' } },
+    lamp: { need: { at: 'vec3' }, may: { r: 'pos', strength: 'num', flicker: 'num', follow: 'str' } },
     reveal: { need: {}, may: { dur: 'pos', block: 'pos' } },
-    dust: { need: { at: 'vec3' }, may: { every: 'pos', n: 'pos', colours: 'mat', spread: 'pos' } },
-    embers: { need: { at: 'vec3' }, may: { every: 'pos', n: 'pos', colours: 'mat' } },
-    smoke: { need: { at: 'vec3' }, may: { every: 'pos', n: 'pos', colours: 'mat' } },
-    sparks: { need: { at: 'vec3' }, may: { every: 'pos', n: 'pos', colours: 'mat', dir: 'vec3', speed: 'pos' } },
-    rain: { need: { box: 'box' }, may: { rate: 'pos', colours: 'mat' } },
+    dust: { need: { at: 'vec3' }, may: { every: 'pos', n: 'num', colours: 'mat', spread: 'pos' } },
+    embers: { need: { at: 'vec3' }, may: { every: 'pos', n: 'num', colours: 'mat' } },
+    smoke: { need: { at: 'vec3' }, may: { every: 'pos', n: 'num', colours: 'mat' } },
+    sparks: { need: { at: 'vec3' }, may: { every: 'pos', n: 'num', colours: 'mat', dir: 'vec3', speed: 'pos' } },
+    rain: { need: { box: 'box' }, may: { rate: 'num', colours: 'mat' } },
     wind: { need: { v: 'vec3' }, may: { swirl: 'num' } }
   };
   const TOP = {
@@ -312,12 +312,33 @@
     const surface = settings.surface === undefined ? base : applySurface(base, settings.surface);
     return K.authoring.looks.material(surface, settings.lookAsset, catalog);
   }
-  DIO.check = (spec, env) => {
+  const parameterRoots = ['solids', 'roles', 'palette', 'motion', 'light', 'effects', 'finish', 'tap'];
+  function resolveParameters(source, env) {
+    const { spec: expanded } = K.authoring.scenePrefabs.expand(source, env);
+    if (expanded?.parameterBindings === undefined) return { spec: expanded };
     try {
-      spec = K.authoring.scenePrefabs.expand(spec, env).spec;
+      const { parameterBindings, ...base } = expanded, program = K.parameters.prepare(parameterBindings);
+      for (const { path } of program.targets) if (!parameterRoots.includes(path[0]) || path.length < 2)
+        throw new RangeError('Unsupported diorama parameter path: ' + path.join('/'));
+      const inputs = { ...env?.parameterInputs };
+      const { document: spec, values } = program.apply(base, inputs);
+      return { spec, program, values, inputs };
+    } catch (error) {
+      error.problems = [{ level: 'error', path: 'parameterBindings', problem: error.message, hint: '' }];
+      throw error;
+    }
+  }
+
+  DIO.check = (source, env) => {
+    let resolved;
+    try {
+      resolved = resolveParameters(source, env);
     } catch (error) {
       return error.problems ?? [{ level: 'error', path: 'prefabs', problem: error.message, hint: '' }];
     }
+    return checkResolved(resolved.spec, env);
+  };
+  function checkResolved(spec, env) {
     const out = [],
       bad = (path, problem, hint) => out.push({ level: 'error', path, problem, hint: hint || '' }),
       warn = (path, problem, hint) => out.push({ level: 'warning', path, problem, hint: hint || '' });
@@ -933,6 +954,8 @@
             'choices: ' + Object.keys(table).join(', ')
           );
         fields(m, path, def);
+        if (name === 'effects') for (const field of ['n', 'rate', 'strength'])
+          if (isNum(m[field]) && m[field] < 0) bad(path + '.' + field, 'value must be nonnegative');
         for (const k of ['part', 'follow'])
           if (typeof m[k] === 'string' && !parts.has(m[k])) {
             const n = nearest(m[k], [...parts]);
@@ -980,7 +1003,7 @@
         'coarser "res" on the big solids brings it down fastest'
       );
     return out;
-  };
+  }
   DIO.report = list =>
     list
       .map(
@@ -999,11 +1022,11 @@
       m.keys
         ? K.kf(t % m.loop, m.keys)
         : (m.amount === undefined ? 0.3 : m.amount) * Math.sin(TAU * (t / (m.period || 3) + (m.phase || 0)));
-    return t => {
+    return (t, tracks = motion) => {
       for (const p of order) {
         let A = M.id(),
           off = [0, 0, 0];
-        for (const m of motion) {
+        for (const m of tracks) {
           if (m.part !== p) continue;
           const ax = B.norm(m.axis || [0, 1, 0]);
           if (m.do === 'turn') A = M.mul(M.rot(ax, wave(m, t)), A);
@@ -1020,12 +1043,79 @@
   }
 
   // ---------------- building ----------------
+  const dynamicMotion = ['axis', 'amount', 'period', 'phase', 'keys', 'loop', 'speed'];
+  const dynamicEffect = {
+    lamp: ['at', 'r', 'strength', 'flicker'], rain: ['box', 'rate'],
+    dust: ['at', 'n', 'every', 'spread'], embers: ['at', 'n', 'every'],
+    smoke: ['at', 'n', 'every'], sparks: ['at', 'n', 'every', 'dir', 'speed']
+  };
+  function boundRuntime(source, env, resolved) {
+    const { spec, program, inputs } = resolved;
+    if (!program) return null;
+    const live = ([root, index, field]) => root === 'motion' && spec.motion?.[index] && dynamicMotion.includes(field) ||
+      root === 'effects' && dynamicEffect[spec.effects?.[index]?.do]?.includes(field);
+    const targets = program.targets.filter(row => live(row.path));
+    const frameSource = { ...(spec.motion && { motion: spec.motion }), ...(spec.effects && { effects: spec.effects }) };
+    const positive = ['period', 'loop', 'every', 'r', 'spread', 'speed'];
+    const nonnegative = ['n', 'rate', 'strength'];
+    const vectors = ['axis', 'at', 'dir'];
+    let current = { document: frameSource, values: resolved.values }, time = inputs.time ?? 0;
+    const copyControls = options => options?.controls === undefined ? {} :
+      { controls: K.procedural.data.freeze(K.procedural.data.clone(options.controls)) };
+    Object.assign(inputs, copyControls(inputs));
+    function read(at, options = inputs) {
+      if (!targets.length) return { document: frameSource, values: program.sample({ ...options, time: at }) };
+      const result = program.apply(frameSource, { ...options, time: at }, live);
+      for (const { path: [root, index, field] } of targets) {
+        const row = result.document[root][index], value = row[field];
+        const checks = field === 'keys' ? Array.isArray(value) && value.length >= 4 &&
+          value.length % 2 === 0 && Array.from(value).every(isNum) && row.loop > 0 :
+          field === 'box' ? Array.isArray(value) && value.length === 2 && value.every(v => isVec(v, 3)) :
+          vectors.includes(field) ? isVec(value, 3) && Array.from(value).every(isNum) :
+          isNum(value) && (!nonnegative.includes(field) || value >= 0) &&
+            (!positive.includes(field) || field === 'speed' && root === 'motion' || value > 0);
+        if (!checks) throw new RangeError('Invalid live parameter value at ' + [root, index, field].join('/'));
+      }
+      return result;
+    }
+    return {
+      active: targets.length > 0,
+      lamps: targets.some(({ path: [root, index] }) => root === 'effects' && spec.effects[index].do === 'lamp'),
+      update(at) {
+        const next = read(at);
+        current = next;
+        time = at;
+        return next.document;
+      },
+      api: Object.freeze({
+        values: () => current.values,
+        setInputs(options) {
+          const next = { ...inputs, ...options, ...copyControls(options) };
+          const sampled = read(time, next);
+          Object.assign(inputs, next);
+          current = sampled;
+        },
+        bake(options) {
+          return DIO.build(source, { ...env, parameterInputs: { ...inputs, time, ...options } });
+        }
+      })
+    };
+  }
+
   const brushField = Symbol('brush field');
   DIO.brushField = (spec, env) => DIO.build(spec, env, { [brushField]: true });
   DIO.build = (source, env, modelOptions) => {
     env = env || {};
-    const problems = DIO.check(source, env),
-      errs = problems.filter(p => p.level === 'error');
+    let resolved;
+    let problems;
+    try {
+      resolved = resolveParameters(source, env);
+      problems = checkResolved(resolved.spec, env);
+    } catch (error) {
+      if (!error.problems) throw error;
+      problems = error.problems;
+    }
+    const errs = problems.filter(p => p.level === 'error');
     if (errs.length) {
       const e = new Error(
         'diorama "' +
@@ -1040,7 +1130,7 @@
       e.problems = problems;
       throw e;
     }
-    const { spec } = K.authoring.scenePrefabs.expand(source, env);
+    const { spec } = resolved, dynamics = boundRuntime(source, env, resolved);
     const st0 = styleOf(spec), catalog = lookCatalog(spec),
       seed = spec.seed === undefined ? 1 : spec.seed,
       effects = spec.effects || [],
@@ -1052,6 +1142,7 @@
       const { palette, roles, sun } = st0;
       const world = (env.brushSession ?? K.authoring.brushRegions.create()).build(spec, env, { palette, roles, sun });
       world.spec = source;
+      if (dynamics) world.parameters = dynamics.api;
       return world;
     }
     st0.finish = K.authoring.environments.apply(st0.finish,spec.environmentPreset,catalog,st0.palette);
@@ -1298,8 +1389,9 @@
           meshes.push(...K.model.mapModelMeshes(mesh, part => ({ ...part, weights: part.points.map(() => [[index, 1]]) })));
         }
       }
-      const animations = motion.length ? K.model.sampleClips([{ name: 'Scene motion', duration, fps,
-        pose: partMotion(B, previewRig, names, joint, parts, motion) }], (pose, time) => {
+      const pose = motion.length && partMotion(B, previewRig, names, joint, parts, motion);
+      const animations = pose ? K.model.sampleClips([{ name: 'Scene motion', duration, fps,
+        pose: time => pose(time, dynamics?.active ? dynamics.update(time).motion : motion) }], (pose, time) => {
         pose(time);
         return names.map(name => {
           const index = previewRig.names.indexOf(name);
@@ -1349,13 +1441,19 @@
       Object.assign(
         { cam, detail: 14, palName: typeof spec.style === 'string' ? spec.style : 'Data', dither: 0.25, radius: 9 },
         st0.finish,
-        { made, spec: source, paletteRoles: st0.roles,
+        { made, spec: source, paletteRoles: st0.roles, ...(dynamics && { parameters: dynamics.api }),
           ...(spec.light?.surfaceDirection !== undefined && { surfaceLight: spec.light.surfaceDirection }) }
       )
     );
     if (!moving.length && !effects.length && !spec.tap) return W;
     const st = K.stage(W);
     rig.bind(st);
+    let tracks = motion, activeEffects = effects;
+    if (dynamics?.active) st.add({ update(dt, t, stage) {
+      const frame = dynamics.update(t + stage.t0);
+      tracks = frame.motion ?? motion;
+      activeEffects = frame.effects ?? effects;
+    } });
     const partNames = [...new Set(moving.map(s => s.part))],
       PI = spec.parts || {},
       joint = {};
@@ -1379,23 +1477,35 @@
     if (partNames.length)
       st.add({
         update(dt, t) {
-          poseParts(t);
+          poseParts(t, tracks);
           rig.apply();
         }
       });
     let lit = null;
     if (lamps.length) {
-      const L = lamps.map(e => ({ p: e.at.slice(), r: e.r || 6, s: e.strength || 0.9, e, s0: e.strength || 0.9 }));
+      const L = lamps.map(e => ({ p: e.at.slice(), r: e.r ?? 6, s: e.strength ?? 0.9, e,
+        s0: e.strength ?? 0.9, index: effects.indexOf(e) }));
       lit = K.light.system(st, cap, L, { sun: { dir: S.sun, amb: S.amb, sky: S.sky, k: S.sunK, parts: partNames } });
-      st.add(lit);
+      if (!dynamics?.lamps) st.add(lit);
       let acc = 0;
       st.add({
         update(dt, t) {
           acc += dt;
-          if (acc < 1 / 12) return;
+          if (!dynamics?.lamps && acc < 1 / 12) return;
           acc = 0;
           let moved = false;
           L.forEach((l, i) => {
+            if (dynamics?.lamps) {
+              const e = activeEffects[l.index], position = e.follow ? rig.at(e.follow, e.at) : e.at;
+              const strength = (e.strength ?? .9) * (1 - (e.flicker ?? 0) *
+                (.5 + .5 * Math.sin(t * 9.1 + i * 2.3) * Math.sin(t * 5.3 + i)));
+              const range = e.r ?? 6;
+              if (l.s !== strength || l.r !== range || !position.every((n, axis) => n === l.p[axis])) {
+                Object.assign(l, { p: position, s: strength, r: range });
+                moved = true;
+              }
+              return;
+            }
             if (l.e.flicker) {
               l.s = l.s0 * (1 - l.e.flicker * (0.5 + 0.5 * Math.sin(t * 9.1 + i * 2.3) * Math.sin(t * 5.3 + i)));
               moved = true;
@@ -1408,6 +1518,7 @@
           if (moved) lit.touch();
         }
       });
+      if (dynamics?.lamps) st.add(lit);
     }
     let ps = null;
     if (loose) {
@@ -1425,9 +1536,9 @@
         timers = effects.map(() => 0);
       st.add({
         update(dt, t) {
-          effects.forEach((e, i) => {
+          activeEffects.forEach((e, i) => {
             if (e.do === 'rain') {
-              timers[i] += (e.rate || 60) * dt;
+              timers[i] += (e.rate ?? 60) * dt;
               const n = Math.floor(timers[i]);
               timers[i] -= n;
               if (n) ps.rain(e.box, n, cols(e, 'water'));
@@ -1437,7 +1548,8 @@
             timers[i] -= dt;
             if (timers[i] > 0) return;
             timers[i] = e.every || 0.5;
-            const n = e.n || 3;
+            const n = e.n ?? 3;
+            if (!n) return;
             if (e.do === 'dust') ps.dust(e.at, n, cols(e, 'earth'), e.spread);
             else if (e.do === 'embers') ps.embers(e.at, n, cols(e, 'ember'));
             else if (e.do === 'smoke') ps.smoke(e.at, n, cols(e, 'dark'));
@@ -1485,7 +1597,9 @@
       }
       return { ...spec, seed: seed ?? state.seed, solids: solids.concat([...marks.values()]) };
     };
-    const build = (seed, { snapshot } = {}) => DIO.build(resolve(seed, snapshot), env);
+    const build = (seed, { snapshot, controls, parameterInputs } = {}) => DIO.build(resolve(seed, snapshot), {
+      ...env, parameterInputs: { ...env?.parameterInputs, ...parameterInputs, ...(controls !== undefined && { controls }) }
+    });
     const authoring = (seed, { snapshot } = {}) => {
       const A = K.authoring;
       let document;
@@ -1521,8 +1635,10 @@
       blurb: spec.blurb || '',
       seed: seed0,
       build,
-      model: (seed, { snapshot, ...options } = {}) =>
-        DIO.build(resolve(seed, snapshot), env, options),
+      model: (seed, { snapshot, controls, parameterInputs, ...options } = {}) =>
+        DIO.build(resolve(seed, snapshot), {
+          ...env, parameterInputs: { ...env?.parameterInputs, ...parameterInputs, ...(controls !== undefined && { controls }) }
+        }, options),
       authoring
     };
   };

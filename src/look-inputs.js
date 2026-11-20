@@ -63,13 +63,16 @@ const LookInputs = (() => {
     }
   }
 
+  function readQuery(driver, query) {
+    const result = driver.source === 'signal' ? query?.probe('world/signal', undefined, { port: driver.port }) :
+      query?.probe(driver.field, driver.target, driver.args);
+    return result?.status === 'ok' ? result.value : undefined;
+  }
+
   function sample(driver, fallback, session) {
     let input = session.time;
     if (driver.source !== 'time') {
-      const query = session.query();
-      const result = driver.source === 'signal' ? query?.probe('world/signal', undefined, { port: driver.port }) :
-        query?.probe(driver.field, driver.target, driver.args);
-      input = result?.status === 'ok' ? result.value : undefined;
+      input = session.read ? session.read(driver) : readQuery(driver, session.query());
       for (const key of driver.path ?? []) input = input != null && Object.hasOwn(input, key) ? input[key] : undefined;
     }
     if (!driver.keys) return matches(input, fallback) ? input : fallback;
@@ -91,12 +94,19 @@ const LookInputs = (() => {
   function session(time = 0, query) {
     if (!Number.isFinite(time)) throw new TypeError('Look input time must be finite');
     let ready = false, snapshot;
+    const samples = new Map();
     return { time, cache: new WeakMap(), query() {
       if (!ready) {
         snapshot = query?.();
         ready = true;
       }
       return snapshot;
+    }, read(driver) {
+      const signal = driver.source === 'signal';
+      const address = signal ? ['signal', driver.port] : ['query', driver.field, driver.target, driver.args];
+      const key = JSON.stringify(address);
+      if (!samples.has(key)) samples.set(key, readQuery(driver, this.query()));
+      return samples.get(key);
     } };
   }
 
@@ -119,6 +129,6 @@ const LookInputs = (() => {
     return output;
   }
 
-  return Object.freeze({ substitute, validate, session, resolve });
+  return Object.freeze({ substitute, validate, validateDriver, sample, session, resolve });
 })();
 if (typeof module !== 'undefined') module.exports = LookInputs;

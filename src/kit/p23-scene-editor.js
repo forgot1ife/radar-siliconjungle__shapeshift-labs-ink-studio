@@ -220,7 +220,8 @@
       else document.transact('Edit material role ' + name, write);
     }
 
-    const build = () => Object.assign(DIO.build(current().preview, buildEnv), { spec: snapshot() });
+    const build = (inputs = buildEnv.parameterInputs) => Object.assign(
+      DIO.build(current().preview, { ...buildEnv, parameterInputs: inputs }), { spec: snapshot() });
 
     function refreshPrefabs(prefabs, { assets = buildEnv.assets } = {}) {
       const bindings = { ...buildEnv, assets, prefabs: freeze(clone(prefabs)) };

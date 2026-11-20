@@ -450,7 +450,7 @@ module.exports = function createCLI({kit,build,pose,dataScene,opt,renderOptions,
           shot.seed(run.view().world.seed);
           shot.runtime(run.recording());
         }
-        const world=W.visual(kit,run.view(),run.query());
+        const world=W.visual(kit,run.view(),run.query(),{controls:opt.params===undefined?undefined:parse(opt.params)});
         if (atmospherePose) world.atmospherePose=atmospherePose;
         const studio=require('../index.js');
         const image=studio.render(world,{w:Number(opt.w??720),h:Number(opt.h??475),colored:!!opt.colored,

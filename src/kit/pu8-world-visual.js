@@ -7,6 +7,18 @@
     0x173047,0x1c475b,0x226a78,0x329393,0x64b8aa,0xa9ded2,
     0x4e302a,0x815032,0xab6e3b,0xd29f55,0xf0cb7b,0xf8edd0
   ];
+  function visualParameters(world, input) {
+    if (world.visual?.parameterBindings === undefined) return { world };
+    const { parameterBindings, ...visual } = world.visual;
+    const program = K.parameters.prepare(parameterBindings);
+    for (const { path } of program.targets) {
+      if (!(path[0] === 'visual' && path.length >= 2 && path[1] !== 'parameterBindings' ||
+          path[0] === 'entities' && path[2] === 'visual' && path.length >= 3))
+        throw new RangeError('Unsupported world visual parameter path: ' + path.join('/'));
+    }
+    const { document, values } = program.apply({ visual, entities: world.entities }, input);
+    return { world: { ...world, ...document }, values };
+  }
   function visualEnvironment(world, catalog = W.materials.catalog(world)) {
     const config = world.visual ?? {};
     return K.authoring.environments.apply(config,config.environmentPreset,catalog,config.palette ?? palette);
@@ -73,8 +85,11 @@
     return { look, material, forEntity, validate };
   }
 
-  function visual({makeBuilder,makeSculpt},view,query) {
-    const catalog = W.materials.catalog(view.world), config = visualEnvironment(view.world,catalog);
+  function visual({makeBuilder,makeSculpt},view,query,{ controls } = {}) {
+    const time = view.time ?? view.tick * view.world.dt;
+    const { world, values } = visualParameters(view.world, { time, query, controls });
+    if (world !== view.world) view = { ...view, world };
+    const catalog = W.materials.catalog(world), config = visualEnvironment(world,catalog);
     const volume=config.volume&&query.renderVolume(config.volume);
     const enclosed=config.enclosedWater&&query.renderWater(config.enclosedWater);
     const region=W.fields.bounds(config.bounds ?? volume?.bounds ?? enclosed?.bounds ?? {min:[-5,-1,-5],max:[5,5,5]});
@@ -356,7 +371,8 @@
         B.describeSplats?.(start,B.count(),{object:row.entity,material:'contact-spray',target:{surface:'contact-spray'}});
       }
     }
-    const baked=B.finish({lookSnapshot: { time: view.time ?? view.tick * view.world.dt, tick: view.tick, query }, cam,
+    const baked=B.finish({lookSnapshot: { time, tick: view.tick, query }, cam,
+      ...(values && { parameterValues: values }),
       ...(contacts?.kick.some(Boolean)&&{anim:{kick:contacts.kick}}),
       radius:span,detail:30,dither:.22,look:looks.look,paletteRoles:config.paletteRoles,
       ...K.authoring.environments.rendererSettings(config),
@@ -369,5 +385,9 @@
   }
   W.visual = visual;
   W.visualEnvironment = visualEnvironment;
-  W.validateLooks = (world, catalog) => visualLooks(world, catalog).validate();
+  W.validateLooks = (world, catalog) => {
+    const { world: presentation } = visualParameters(world);
+    visualLooks(presentation, catalog).validate();
+    return presentation.visual;
+  };
 })(KIT);

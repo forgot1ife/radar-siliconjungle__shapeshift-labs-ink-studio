@@ -124,8 +124,9 @@ function dataScene(file, override, { installedPacks = false } = {}) {
     die('not built: ' + problems.filter(p => p.level === 'error').length + ' mistake(s) in ' + file);
   const descriptor=K.diorama.scene(spec,{assets,prefabs});
   const atlases=new Map();
-  return { ...descriptor, lookPreviewPacks:spec.assetPacks, build(...args) {
-    const world=descriptor.build(...args);
+  return { ...descriptor, lookPreviewPacks:spec.assetPacks, build(seed, options = {}) {
+    const parameterTime = opt['parameter-time'] ?? (Number.isFinite(Number(opt.t)) ? opt.t : 0);
+    const world=descriptor.build(seed, { ...options, parameterInputs: { time: Number(parameterTime), ...options.parameterInputs } });
     if (Array.isArray(world.spriteAtlases)) world.spriteAtlases=world.spriteAtlases.map(placement=>{
       if (typeof placement?.atlas!=='string') return placement;
       const file=path.resolve(dir,placement.atlas);
@@ -676,6 +677,7 @@ const CMD = {
         '  authoring inspect <scene> [--authoring snapshot.json] [--part id]   inspect retained parts',
         '  authoring preview <scene> <edits.json> [--authoring snapshot.json] [--image preview.png]   stage and validate edits',
         '  authoring apply <scene> <edits.json> [--authoring snapshot.json] --out snapshot.json   save validated edits',
+        '  --params JSON --parameter-time SEC   supply shared controls and choose the material bake time for a diorama',
         '  scene apply|stamp|remix|capture|upgrade|sync-prefab|history|promote <world> ...  edit or derive a world manifest',
         '    scene upgrade <world|checkpoint> <instance> --to PREFAB [--migration FILE] [--dry-run]',
         '    scene sync-prefab <release.json> <world ...> --out NEW_DIRECTORY | --dry-run',
